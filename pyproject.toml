@@ -1,0 +1,169 @@
+[project]
+name = "pawdf"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Tomoya Sawada", email = "stomoya0110@gmail.com" }
+]
+requires-python = ">=3.11"
+dependencies = []
+
+dynamic = ["version"]
+
+
+[tool.maturin]
+module-name = "pawdf._core"
+manifest-path = "crates/pawdf_pyo3/Cargo.toml"
+python-packages = ["pawdf"]
+python-source = "python"
+compatibility = "pypi"
+output = "dist"
+
+[tool.uv]
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "crates/**/*.rs" },
+    { file = "crates/**/Cargo.toml" },
+    { file = "Cargo.toml" },
+    { file = "Cargo.lock" }
+]
+
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+    "pytest-mock>=3.16.0",
+]
+build = [
+    "maturin[zig]>=1.15.0",
+]
+
+
+# ------------------------- Ruff -------------------------
+
+[tool.ruff]
+fix = true
+line-length = 120
+indent-width = 4
+output-format = "concise"
+
+# Adjust per project.
+target-version = "py311"
+src = ["python"]
+
+[tool.ruff.format]
+quote-style = "single"
+indent-style = "space"
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401", "F403", "F405", "D"]
+
+[tool.ruff.lint]
+select = [
+    # "FAST",  # FastAPI apps.
+    "YTT",    # flake8 sys.version usage
+    "ANN",    # flake8 function annotations
+    "ASYNC",  # flake8 async
+    "FBT",    # flake8 boolean trap
+    "B",      # flake8 bugbear
+    "A",      # flake8 builtins
+    "COM",    # flake8 commas
+    "C4",     # flake8 comprehensions
+    "DTZ",    # flake8 datetimez
+    "T10",    # flake8 debugger
+    "T20",    # flake8 print
+    "EM",     # flake8 error message
+    "FA",     # flake8 future annotations
+    "ISC",    # flake8 implicit str concat
+    "LOG",    # flake8 logging
+    "G",      # flake8 logging format
+    "PIE",    # flake8 pie
+    "PYI",    # flake8 pyi
+    "PT",     # flake8 pytest
+    "RSE",    # flake8 raise
+    "RET",    # flake8 return
+    "SIM",    # flake8 simplify
+    "SLOT",   # flake8 slots
+    "TID252", # flake8 tidy imports -- relative imports from parent module
+    # "TID254", # flake8 tidy imports -- lazy import -- This ruleset is in preview
+    # "TID255", # flake8 tidy imports -- lazy import resolved immediately -- This ruleset is in preview
+    "TC",     # flake8 type checking
+    "ARG",    # flake8 unused arguments
+    "PTH",    # flake8 use pathlib
+    "FLY",    # flynt
+    "I",      # isort
+    "C90",    # McCabe complex structure
+    "NPY",    # numpy
+    "N",      # pep8 -- naming
+    "PERF",   # Perlint
+    "E",      # pycodestyle -- error
+    "W",      # pycodestyle -- warning
+    # "DOC",    # pydoclint -- This ruleset is in preview
+    "D",      # pydocstyle
+    "F",      # pyflakes
+    "PGH003", # pygrep-hooks -- blanket type ignore
+    "PGH004", # pygrep-hooks -- blanket noqa
+    "PL",     # pylint
+    "UP",     # pyupgrade
+    "FURB",   # refurb
+    "RUF",    # ruff
+    "TRY",    # tryceratops
+]
+ignore = [
+    "SIM108",  # if: a = ...; else: a = ... -> a = ... if else ...
+    "PYI021",  # docstring in .pyi.
+    "NPY002",  # use np.random.Generator. Most programs still rely on np.random.seed().
+    "D105",    # undocumented magic method
+    "D107",    # undocumented public __init__
+    "D205",    # missing blank line after summary -- ignored to support multiline summary.
+    "PLC2701", # import private name -- patching stuff in third party packages requires this. I do this relatively frequently.
+    "PLR0913", # too many arguments -- Setting max value isn't solving anything. Just remove this.
+    "C408",    # dict().
+    "COM812",  # missing trailing comma -- might conflict with formatter
+]
+# flake8-annotations = { allow-star-arg-any = true }  # TODO: decide if we need this.
+mccabe = { max-complexity = 14 }  # Taken from pydantic. We'll see if this fits me.
+pydocstyle = { convention = 'google' }
+future-annotations = true
+allowed-confusables = [
+    "（",
+    "）",
+    "：",
+] # frequently used in Japanese comments and docstrings.
+
+fixable = ["ALL"]
+
+# ------------------------- ty -------------------------
+
+[tool.ty.src]
+include = ["python"]
+
+[tool.ty.terminal]
+output-format = "concise"
+
+# ------------------------- pytest -------------------------
+
+[tool.pytest]
+testpaths = ["python/tests"]
+addopts = [
+    "-vv",
+    "-s",
+    "-ra",
+    "--cov=python/pawdf",
+    "--cov-report=term-missing",
+    "--cov-report=xml:reports/coverage.xml",
+    "--junitxml=reports/pytest.xml",
+]
+
+[tool.coverage.report]
+exclude_also = [
+    "@(abc\\.)?abstractmethod",
+    'raise\sNotImplementedError',
+    '@(typing\.)?overload',
+    'class .*\bProtocol\):',
+    '(typing\.)?.assert_never',
+]
