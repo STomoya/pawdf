@@ -2,9 +2,11 @@
 
 pub(crate) mod encoding;
 
-use pawdf_core::{DiagnosticKind, Diagnostics, Dict, File, Location, Object, Origin};
+use std::sync::Arc;
 
-use crate::cmap::ToUnicode;
+use pawdf_core::{DiagnosticKind, Diagnostics, Dict, File, Location, Object, Origin, Ref};
+
+use crate::cmap::{CMap, UseCMap};
 use crate::data::{BaseEncoding, encoding_names, std14_width};
 use crate::document::numbers;
 use crate::geom::Matrix;
@@ -210,13 +212,7 @@ pub(crate) fn load_font(file: &File, dict: &Dict, at: Location, diags: &mut Diag
         .collect();
 
     let to_unicode = match dict.get(b"ToUnicode") {
-        Some(Object::Ref(r)) => match file.resolve(*r) {
-            Object::Stream(s) => {
-                let decoded = s.decode(Location::Stream { obj: *r, offset: 0 }, diags);
-                Some(ToUnicode::parse(&decoded.data, Origin::Stream(*r), diags))
-            }
-            _ => None,
-        },
+        Some(Object::Ref(r)) => embedded_cmap(file, *r, 0, diags),
         _ => None,
     };
     let unicode = (0..256u32)
@@ -241,6 +237,37 @@ pub(crate) fn load_font(file: &File, dict: &Dict, at: Location, diags: &mut Diag
         widths,
         unicode,
     }
+}
+
+/// An embedded CMap stream, following `/UseCMap` and `usecmap` to other streams or
+/// predefined names. `None` if `r` is not a stream.
+pub(crate) fn embedded_cmap(
+    file: &File,
+    r: Ref,
+    depth: usize,
+    diags: &mut Diagnostics,
+) -> Option<CMap> {
+    let Object::Stream(s) = file.resolve(r) else {
+        return None;
+    };
+    let decoded = s.decode(Location::Stream { obj: r, offset: 0 }, diags);
+    let base = match s.dict.get(b"UseCMap") {
+        Some(Object::Ref(b)) => Some(UseCMap::Stream(*b)),
+        Some(Object::Name(n)) => Some(UseCMap::Name(n.as_bytes())),
+        _ => None,
+    };
+    let mut resolve = |u: UseCMap, depth: usize, diags: &mut Diagnostics| match u {
+        UseCMap::Stream(b) => embedded_cmap(file, b, depth, diags).map(Arc::new),
+        UseCMap::Name(_) => None,
+    };
+    Some(CMap::parse_based(
+        &decoded.data,
+        Origin::Stream(r),
+        depth,
+        base,
+        &mut resolve,
+        diags,
+    ))
 }
 
 fn apply_differences(names: &mut [Option<String>], diffs: &[Object], file: &File) {
@@ -419,6 +446,23 @@ mod tests {
         ]);
         assert_eq!(text(&f, 65), Some("Z"));
         assert_eq!(text(&f, 66), Some("B"));
+    }
+
+    #[test]
+    fn tounicode_usecmap_cycle_is_cut() {
+        let cmap = stream(
+            "/UseCMap 6 0 R",
+            b"1 begincodespacerange <00> <FF> endcodespacerange 1 beginbfchar <41> <005A> endbfchar",
+        );
+        let (f, d) = load(&[
+            (
+                5,
+                b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /ToUnicode 6 0 R >>",
+            ),
+            (6, &cmap),
+        ]);
+        assert_eq!(text(&f, 65), Some("Z"));
+        assert_eq!(d, [pawdf_core::DiagnosticKind::RecursionLimit]);
     }
 
     #[test]
