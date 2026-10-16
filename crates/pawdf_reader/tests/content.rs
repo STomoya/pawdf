@@ -363,6 +363,23 @@ fn other_color_space_families() {
         ),
         other(ColorSpaceFamily::DeviceN, vec![1., 0.5])
     );
+    // §8.6.6.4, §8.6.6.5: selecting the space alone gives full tint.
+    assert_eq!(
+        fill(
+            "<< /ColorSpace << /C [/DeviceN [/A /B] /DeviceGray 5 0 R] >> >>",
+            b"/C cs",
+            &[(5, tint)]
+        ),
+        other(ColorSpaceFamily::DeviceN, vec![1., 1.])
+    );
+    assert_eq!(
+        fill(
+            "<< /ColorSpace << /C [/Separation /Spot /DeviceGray 5 0 R] >> >>",
+            b"/C cs",
+            &[(5, tint)]
+        ),
+        other(ColorSpaceFamily::Separation, vec![1.])
+    );
     let icc2 = stream("/N 2", b"");
     assert_eq!(
         fill(

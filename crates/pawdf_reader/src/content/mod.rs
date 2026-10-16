@@ -29,6 +29,9 @@ const MAX_OPERATIONS: usize = 1 << 22;
 /// Image bytes returned per pass. Each placement owns its data, so a small file placing
 /// one large image many times would otherwise ask for unbounded memory.
 const MAX_IMAGE_BYTES: usize = MAX_DECODED_LEN;
+/// Glyphs returned per pass. One `Tj` costs one operation but emits a glyph per code, so
+/// a form showing a long string drawn many times would otherwise ask for unbounded memory.
+const MAX_GLYPHS: usize = 1 << 20;
 
 impl Page {
     /// Extracts glyphs, painted paths, and images. Never fails: problems become
@@ -115,6 +118,8 @@ pub(crate) struct Interp<'a> {
     images: HashMap<Ref, Option<Rc<ImageParts>>>,
     image_bytes_left: usize,
     image_budget_reported: bool,
+    pub glyphs_left: usize,
+    pub glyph_budget_reported: bool,
 }
 
 impl<'a> Interp<'a> {
@@ -147,6 +152,8 @@ impl<'a> Interp<'a> {
             images: HashMap::new(),
             image_bytes_left: MAX_IMAGE_BYTES,
             image_budget_reported: false,
+            glyphs_left: MAX_GLYPHS,
+            glyph_budget_reported: false,
         }
     }
 
@@ -411,9 +418,9 @@ impl<'a> Interp<'a> {
         let mut space = |obj: &Object, diags: &mut Diagnostics| match file.deref(obj) {
             Object::Name(n) => device_space(n.as_bytes()).or_else(|| {
                 let cs = self.resource(b"ColorSpace", n.as_bytes())?;
-                resolve_space(file, cs, diags)
+                resolve_space(file, cs, at, diags)
             }),
-            other => resolve_space(file, other, diags),
+            other => resolve_space(file, other, at, diags),
         };
         let parts = read_image(file, s, at, &mut space, true, &mut diags);
         self.diags = diags;
@@ -605,7 +612,7 @@ impl<'a> Interp<'a> {
         let space = match device_space(key) {
             Some(s) => Some(s),
             None => match self.resource(b"ColorSpace", key) {
-                Some(obj) => resolve_space(self.file, obj, &mut self.diags),
+                Some(obj) => resolve_space(self.file, obj, op.location, &mut self.diags),
                 None => None,
             },
         };

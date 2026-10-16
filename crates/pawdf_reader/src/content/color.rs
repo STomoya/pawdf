@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use pawdf_core::{Diagnostics, File, Location, Object};
+use pawdf_core::{DiagnosticKind, Diagnostics, File, Location, Object};
 
 use crate::model::{Color, ColorSpaceFamily};
 
@@ -50,10 +50,17 @@ impl Space {
                 family: ColorSpaceFamily::Indexed,
                 components: vec![0.],
             },
-            Space::Other { family, n } => Color::Other {
-                family: *family,
-                components: vec![0.; *n],
-            },
+            Space::Other { family, n } => {
+                // §8.6.6.4, §8.6.6.5: Separation and DeviceN start at full tint.
+                let tint = match family {
+                    ColorSpaceFamily::Separation | ColorSpaceFamily::DeviceN => 1.,
+                    _ => 0.,
+                };
+                Color::Other {
+                    family: *family,
+                    components: vec![tint; *n],
+                }
+            }
         }
     }
 
@@ -101,13 +108,19 @@ pub(crate) fn device_space(name: &[u8]) -> Option<Space> {
 
 /// Resolves a color space object: a device name or a family array. Names other than
 /// device names must already have been looked up in `/ColorSpace` by the caller.
-pub(crate) fn resolve_space(file: &File, obj: &Object, diags: &mut Diagnostics) -> Option<Space> {
-    resolve_depth(file, obj, diags, 0)
+pub(crate) fn resolve_space(
+    file: &File,
+    obj: &Object,
+    at: Location,
+    diags: &mut Diagnostics,
+) -> Option<Space> {
+    resolve_depth(file, obj, at, diags, 0)
 }
 
 fn resolve_depth(
     file: &File,
     obj: &Object,
+    at: Location,
     diags: &mut Diagnostics,
     depth: usize,
 ) -> Option<Space> {
@@ -143,7 +156,7 @@ fn resolve_depth(
         b"Separation" => other(ColorSpaceFamily::Separation, 1),
         b"DeviceN" => other(ColorSpaceFamily::DeviceN, arg(1)?.as_array()?.len().min(32)),
         b"Indexed" | b"I" => {
-            let base = resolve_depth(file, arr.get(1)?, diags, depth + 1)?;
+            let base = resolve_depth(file, arr.get(1)?, at, diags, depth + 1)?;
             let hival = u8::try_from(arg(2)?.as_int()?.clamp(0, 255)).ok()?;
             let lookup = match arr.get(3)? {
                 Object::String(s) => s.clone(),
@@ -157,10 +170,14 @@ fn resolve_depth(
                 },
                 _ => return None,
             };
-            // §8.6.6.3: only (hival + 1) × components bytes are meaningful.
+            // §8.6.6.3: only (hival + 1) × components bytes are meaningful. A short
+            // palette is zero-padded, as pdf.js does.
             let used = (usize::from(hival) + 1) * base.components();
             let mut lookup = lookup;
-            lookup.truncate(used);
+            if lookup.len() < used {
+                diags.push(DiagnosticKind::BadObject, at);
+            }
+            lookup.resize(used, 0);
             Some(Space::Indexed {
                 base: Box::new(base),
                 hival,

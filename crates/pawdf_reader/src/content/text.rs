@@ -231,6 +231,14 @@ impl<'a> Interp<'a> {
         let ts = self.gs.text.clone();
         let ctm = self.gs.ctm;
         for code in font.codes(s) {
+            if self.glyphs_left == 0 {
+                if !self.glyph_budget_reported {
+                    self.glyph_budget_reported = true;
+                    self.diags.push(DiagnosticKind::RecursionLimit, at);
+                }
+                return;
+            }
+            self.glyphs_left -= 1;
             let w0 = font.width(code);
             let scale = Matrix {
                 a: ts.size * ts.hscale,

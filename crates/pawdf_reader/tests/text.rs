@@ -1,6 +1,6 @@
 mod common;
 
-use common::one_page;
+use common::{one_page, stream};
 use pawdf_core::DiagnosticKind;
 use pawdf_reader::{Color, Document, FontKind, Glyph, Matrix, PageContent, Rect, RenderMode};
 
@@ -248,4 +248,21 @@ fn direct_font_loads_once_per_pass() {
     );
     assert_eq!(kinds(&c), [DiagnosticKind::BadFont]);
     assert_eq!(c.fonts.len(), 1);
+}
+
+#[test]
+fn glyph_output_is_bounded() {
+    // One `Tj` is one operation, so the operation cap alone allows ~4M * string-length glyphs.
+    let shown = format!("BT /F1 1 Tf ({}) Tj ET", "A".repeat(4096));
+    let f = stream(
+        "/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Resources << /Font << /F1 5 0 R >> >>",
+        shown.as_bytes(),
+    );
+    let c = run(
+        "/Fm Do ".repeat(300).as_bytes(),
+        "<< /XObject << /Fm 6 0 R >> >>",
+        &[(5, HELV), (6, &f)],
+    );
+    assert_eq!(c.glyphs.len(), 1 << 20);
+    assert_eq!(kinds(&c), [DiagnosticKind::RecursionLimit]);
 }

@@ -385,6 +385,19 @@ fn indexed_lookup_is_truncated_to_its_palette() {
 }
 
 #[test]
+fn short_indexed_lookup_is_padded() {
+    let c = with_image(
+        "/Width 1 /Height 1 /BitsPerComponent 8 /ColorSpace [/Indexed /DeviceRGB 2 <ff0000>]",
+        b"\x00",
+    );
+    let Some(ColorSpace::Indexed { lookup, .. }) = &c.images[0].color_space else {
+        panic!("indexed")
+    };
+    assert_eq!(lookup, &[0xff, 0, 0, 0, 0, 0, 0, 0, 0]);
+    assert_eq!(kinds(&c), [DiagnosticKind::BadObject]);
+}
+
+#[test]
 fn repeated_placements_are_bounded() {
     // A 1 MiB image placed 400 times would return 400 MiB of samples.
     let samples = vec![0u8; 1 << 20];

@@ -24,7 +24,7 @@ pub enum DiagnosticKind {
     FilterError,
     /// Decoded data exceeded the size limit and was truncated.
     StreamTooLarge,
-    /// Nesting or reference chains were too deep and were cut off.
+    /// Nesting, reference chains, or per-page work and output exceeded a limit and were cut off.
     RecursionLimit,
     /// The diagnostic limit was reached; later diagnostics were dropped.
     TooManyDiagnostics,
