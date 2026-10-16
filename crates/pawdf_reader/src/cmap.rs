@@ -185,29 +185,30 @@ impl CMap {
                         t.bfrange(triple, diags, at);
                     }
                 }
-                b"def" => match args {
-                    [Object::Name(k), v] => match (k.as_bytes(), v) {
-                        (b"WMode", Object::Int(n)) => {
-                            wmode = Some(if *n == 1 {
-                                WritingMode::Vertical
-                            } else {
-                                WritingMode::Horizontal
-                            });
-                        }
-                        (b"Registry", Object::String(s)) => t.registry = Some(text(s)),
-                        (b"Ordering", Object::String(s)) => t.ordering = Some(text(s)),
-                        (b"CIDSystemInfo", Object::Dict(d)) => {
-                            if let Some(Object::String(s)) = d.get(b"Registry") {
-                                t.registry = Some(text(s));
+                b"def" => {
+                    if let [Object::Name(k), v] = args {
+                        match (k.as_bytes(), v) {
+                            (b"WMode", Object::Int(n)) => {
+                                wmode = Some(if *n == 1 {
+                                    WritingMode::Vertical
+                                } else {
+                                    WritingMode::Horizontal
+                                });
                             }
-                            if let Some(Object::String(s)) = d.get(b"Ordering") {
-                                t.ordering = Some(text(s));
+                            (b"Registry", Object::String(s)) => t.registry = Some(text(s)),
+                            (b"Ordering", Object::String(s)) => t.ordering = Some(text(s)),
+                            (b"CIDSystemInfo", Object::Dict(d)) => {
+                                if let Some(Object::String(s)) = d.get(b"Registry") {
+                                    t.registry = Some(text(s));
+                                }
+                                if let Some(Object::String(s)) = d.get(b"Ordering") {
+                                    t.ordering = Some(text(s));
+                                }
                             }
+                            _ => {}
                         }
-                        _ => {}
-                    },
-                    _ => {}
-                },
+                    }
+                }
                 b"usecmap" => match args {
                     [Object::Name(n)] => {
                         t.parent = resolve(UseCMap::Name(n.as_bytes()), depth + 1, diags);

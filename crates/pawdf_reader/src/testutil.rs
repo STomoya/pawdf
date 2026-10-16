@@ -43,9 +43,12 @@ pub fn file(objects: &[(u32, &[u8])]) -> File {
     File::from_bytes(build_pdf(&all)).expect("test file opens")
 }
 
+/// One `cmap` subtable: platform, encoding, and `(codepoint, gid)` pairs.
+pub type Subtable<'a> = (u16, u16, &'a [(u16, u16)]);
+
 /// An sfnt holding only a `cmap` table with one format 4 subtable per
 /// `(platform, encoding, [(codepoint, gid)])`, one segment per pair.
-pub fn sfnt(subtables: &[(u16, u16, &[(u16, u16)])]) -> Vec<u8> {
+pub fn sfnt(subtables: &[Subtable]) -> Vec<u8> {
     let be16 = |v: &mut Vec<u8>, x: u16| v.extend_from_slice(&x.to_be_bytes());
     let mut bodies = Vec::new();
     for (_, _, pairs) in subtables {
