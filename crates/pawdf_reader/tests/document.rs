@@ -149,7 +149,7 @@ fn encrypted_is_core_error() {
         &[(1, CATALOG), (2, b"<< /Type /Pages /Kids [] >>")],
         "/Root 1 0 R /Encrypt << >>",
     );
-    let err = Document::from_bytes(pdf).err().expect("fails");
+    let err = Document::from_bytes(pdf).expect_err("fails");
     assert!(matches!(err.kind, ErrorKind::Core(e) if e.kind == pawdf_core::ErrorKind::Encrypted));
 }
 
