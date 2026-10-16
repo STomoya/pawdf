@@ -2,17 +2,22 @@
 
 pub(crate) mod color;
 pub(crate) mod state;
+pub(crate) mod text;
+
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use pawdf_core::{
     DiagnosticKind, Diagnostics, Dict, File, Location, Object, Operation, Origin, Ref,
     parse_content,
 };
 
-use crate::document::Page;
-use crate::geom::Point;
+use crate::document::{Inner, Page};
+use crate::font::Font;
+use crate::geom::{Matrix, Point};
 use crate::model::{FillRule, PageContent, Path, Segment};
 use color::{Space, device_space, resolve_space};
-use state::{GraphicsState, matrix, name, nums};
+use state::{FontKey, GraphicsState, matrix, name, nums};
 
 const MAX_Q_DEPTH: usize = 256;
 
@@ -22,7 +27,7 @@ impl Page {
     pub fn content(&self) -> PageContent {
         let file = &self.doc.file;
         let resources = self.info.resources.as_ref().and_then(Object::as_dict);
-        let mut interp = Interp::new(file, resources);
+        let mut interp = Interp::new(&self.doc, resources);
         let streams = content_streams(file, self.info.obj);
         let mut carry: Vec<Object> = Vec::new();
         for r in streams {
@@ -62,6 +67,7 @@ fn content_streams(file: &File, page: Ref) -> Vec<Ref> {
 }
 
 pub(crate) struct Interp<'a> {
+    pub doc: &'a Inner,
     pub file: &'a File,
     pub gs: GraphicsState,
     stack: Vec<GraphicsState>,
@@ -75,12 +81,20 @@ pub(crate) struct Interp<'a> {
     /// `BX`/`EX` nesting: unknown operators are expected inside (§8.2).
     compat: usize,
     q_limit_reported: bool,
+    pub in_text: bool,
+    pub tm: Matrix,
+    pub tlm: Matrix,
+    pub fallback: Arc<Font>,
+    pub font_index: HashMap<FontKey, usize>,
+    pub unmapped_reported: HashSet<FontKey>,
+    pub no_font_reported: bool,
 }
 
 impl<'a> Interp<'a> {
-    pub fn new(file: &'a File, resources: Option<&'a Dict>) -> Self {
+    pub fn new(doc: &'a Inner, resources: Option<&'a Dict>) -> Self {
         Interp {
-            file,
+            doc,
+            file: &doc.file,
             gs: GraphicsState::default(),
             stack: Vec::new(),
             out: PageContent::default(),
@@ -91,6 +105,13 @@ impl<'a> Interp<'a> {
             subpath_start: None,
             compat: 0,
             q_limit_reported: false,
+            in_text: false,
+            tm: Matrix::IDENTITY,
+            tlm: Matrix::IDENTITY,
+            fallback: Arc::new(Font::fallback()),
+            font_index: HashMap::new(),
+            unmapped_reported: HashSet::new(),
+            no_font_reported: false,
         }
     }
 
@@ -132,10 +153,13 @@ impl<'a> Interp<'a> {
 
     /// The named entry of a resource category, resolved.
     pub fn resource(&self, category: &[u8], key: &[u8]) -> Option<&'a Object> {
-        let file = self.file;
+        Some(self.file.deref(self.resource_entry(category, key)?))
+    }
+
+    /// The named entry of a resource category as written (possibly a reference).
+    pub fn resource_entry(&self, category: &[u8], key: &[u8]) -> Option<&'a Object> {
         let res = (*self.resources.last()?)?;
-        let cat = file.deref(res.get(category)?).as_dict()?;
-        Some(file.deref(cat.get(key)?))
+        self.file.deref(res.get(category)?).as_dict()?.get(key)
     }
 
     pub fn run(&mut self, ops: &[Operation]) {
@@ -149,6 +173,12 @@ impl<'a> Interp<'a> {
     }
 
     fn op(&mut self, op: &Operation) {
+        if let Some(ok) = self.text_op(op) {
+            if !ok {
+                self.bad(DiagnosticKind::BadOperands, op);
+            }
+            return;
+        }
         let args = op.operands.as_slice();
         let ok = match op.operator.as_slice() {
             b"q" => {
@@ -354,6 +384,14 @@ impl<'a> Interp<'a> {
         }
         if let Some(a) = num(b"CA") {
             self.gs.stroke_alpha = a;
+        }
+        if let Some([font, size]) = dict
+            .get(b"Font")
+            .and_then(|f| file.deref(f).as_array())
+            .and_then(|a| <&[Object; 2]>::try_from(a).ok())
+            && let Some(size) = file.deref(size).as_number().filter(|s| s.is_finite())
+        {
+            self.set_font_ref(font, size, op.location);
         }
     }
 

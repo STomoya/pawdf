@@ -27,8 +27,6 @@ pub(crate) struct Font {
     /// Ascent and descent in text space at size 1.
     pub ascent: f64,
     pub descent: f64,
-    /// Glyph space to text space (§9.2.4): 1/1000 except for Type3.
-    pub font_matrix: Matrix,
     /// Text-space widths at size 1, per code.
     widths: Vec<f64>,
     unicode: Vec<Option<String>>,
@@ -62,7 +60,6 @@ impl Font {
             },
             ascent: 0.8,
             descent: -0.2,
-            font_matrix: GLYPH_SCALE,
             widths: names
                 .iter()
                 .map(|n| glyph_width("Helvetica", n.as_deref()) / 1000.)
@@ -235,7 +232,6 @@ pub(crate) fn load_font(file: &File, dict: &Dict, at: Location, diags: &mut Diag
         },
         ascent,
         descent,
-        font_matrix,
         widths,
         unicode,
     }
@@ -466,7 +462,6 @@ mod tests {
         )]);
         assert_eq!(f.width(65), 1.0);
         assert_eq!((f.ascent, f.descent), (0.8, -0.2));
-        assert_eq!(f.font_matrix.a, 0.002);
         assert_eq!(text(&f, 65), Some("A"));
         assert_eq!(f.info.kind, FontKind::Type3);
     }
