@@ -340,3 +340,34 @@ fn bad_image_parameters_are_diagnosed() {
     );
     assert!(c.diagnostics.is_empty());
 }
+
+#[test]
+fn form_fan_out_is_bounded() {
+    // Form n draws form n+1 twice: a DAG, so cycle and depth checks alone allow 2^30 runs.
+    const DEPTH: u32 = 30;
+    let forms: Vec<Vec<u8>> = (0..DEPTH)
+        .map(|i| {
+            let next = 5 + i + 1;
+            if i + 1 < DEPTH {
+                let res = format!("/Resources << /XObject << /F {next} 0 R >> >>");
+                form(&res, b"0 0 m 1 1 l S /F Do /F Do")
+            } else {
+                form("", b"0 0 m 1 1 l S")
+            }
+        })
+        .collect();
+    let extra: Vec<(u32, &[u8])> = forms
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (5 + i as u32, f.as_slice()))
+        .collect();
+    let c = run(b"/F Do", "<< /XObject << /F 5 0 R >> >>", &extra);
+    assert!(c.paths.len() < 1 << 22, "{}", c.paths.len());
+    assert_eq!(
+        kinds(&c)
+            .iter()
+            .filter(|k| **k == DiagnosticKind::RecursionLimit)
+            .count(),
+        1
+    );
+}

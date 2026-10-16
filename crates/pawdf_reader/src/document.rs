@@ -52,7 +52,7 @@ impl Inner {
 #[derive(Clone)]
 pub(crate) struct PageInfo {
     pub obj: Ref,
-    pub resources: Option<Object>,
+    pub resources: Option<Arc<Object>>,
     pub media_box: Rect,
     pub crop_box: Rect,
     pub rotate: Rotation,
@@ -149,10 +149,10 @@ impl Page {
 
 #[derive(Clone, Default)]
 struct Inherited {
-    resources: Option<Object>,
-    media_box: Option<Object>,
-    crop_box: Option<Object>,
-    rotate: Option<Object>,
+    resources: Option<Arc<Object>>,
+    media_box: Option<Arc<Object>>,
+    crop_box: Option<Arc<Object>>,
+    rotate: Option<Arc<Object>>,
 }
 
 /// Collects leaf pages in document order. `/Count` is ignored because writers get it wrong;
@@ -172,8 +172,8 @@ fn walk_pages(file: &File, diags: &mut Diagnostics) -> Vec<PageInfo> {
         return pages;
     };
     let mut visited = HashSet::new();
-    let mut stack = vec![(root, Inherited::default(), 0usize)];
-    while let Some((r, mut inherited, depth)) = stack.pop() {
+    let mut stack = vec![(root, Arc::new(Inherited::default()), 0usize)];
+    while let Some((r, parent, depth)) = stack.pop() {
         if depth > MAX_TREE_DEPTH || !visited.insert(r.num) {
             bad(diags);
             continue;
@@ -182,6 +182,7 @@ fn walk_pages(file: &File, diags: &mut Diagnostics) -> Vec<PageInfo> {
             bad(diags);
             continue;
         };
+        let mut inherited = Inherited::clone(&parent);
         // §7.7.3.4: these four attributes are inheritable.
         for (key, slot) in [
             (b"Resources".as_slice(), &mut inherited.resources),
@@ -190,16 +191,18 @@ fn walk_pages(file: &File, diags: &mut Diagnostics) -> Vec<PageInfo> {
             (b"Rotate", &mut inherited.rotate),
         ] {
             if let Some(v) = node.get(key) {
-                *slot = Some(file.deref(v).clone());
+                // Shared, so a node with many kids does not copy a large /Resources per kid.
+                *slot = Some(Arc::new(file.deref(v).clone()));
             }
         }
         let kids = node.get(b"Kids").map(|k| file.deref(k));
         let is_page = node.get(b"Type").and_then(Object::as_name) == Some(b"Page");
         match kids.and_then(Object::as_array) {
             Some(kids) if !is_page => {
+                let inherited = Arc::new(inherited);
                 for kid in kids.iter().rev() {
                     match kid.as_ref() {
-                        Some(k) => stack.push((k, inherited.clone(), depth + 1)),
+                        Some(k) => stack.push((k, Arc::clone(&inherited), depth + 1)),
                         None => bad(diags),
                     }
                 }
@@ -289,6 +292,23 @@ impl std::fmt::Debug for Page {
 mod tests {
     use super::*;
     use crate::testutil::build_pdf;
+
+    #[test]
+    fn inherited_resources_are_shared_not_copied() {
+        let pdf = build_pdf(&[
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+            (2, b"<< /Type /Pages /Kids [3 0 R 4 0 R 3 0 R 3 0 R] /Resources << /Font << /F1 << /Type /Font >> >> >> >>"),
+            (3, b"<< /Type /Page >>"),
+            (4, b"<< /Type /Page >>"),
+        ]);
+        let doc = Document::from_bytes(pdf).unwrap();
+        assert_eq!(doc.page_count(), 2);
+        let (a, b) = (doc.page(0).unwrap(), doc.page(1).unwrap());
+        let (Some(ra), Some(rb)) = (&a.info.resources, &b.info.resources) else {
+            panic!("resources inherited");
+        };
+        assert!(Arc::ptr_eq(ra, rb));
+    }
 
     #[test]
     fn font_cache_reuses_by_ref() {

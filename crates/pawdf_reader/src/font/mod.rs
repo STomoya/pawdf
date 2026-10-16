@@ -193,7 +193,11 @@ pub(crate) fn load_font(file: &File, dict: &Dict, at: Location, diags: &mut Diag
     let widths = (0..256i64)
         .map(|code| {
             let listed = widths_arr
-                .and_then(|w| usize::try_from(code - first).ok().and_then(|i| w.get(i)))
+                .and_then(|w| {
+                    code.checked_sub(first)
+                        .and_then(|i| usize::try_from(i).ok())
+                        .and_then(|i| w.get(i))
+                })
                 .and_then(|o| file.deref(o).as_number());
             let w = listed.or(missing).or_else(|| {
                 let name = names.get(code as usize).and_then(|n| n.as_deref());
@@ -502,6 +506,15 @@ mod tests {
             assert_eq!(d, [pawdf_core::DiagnosticKind::BadFont], "{enc}");
             assert_eq!(text(&f, b'a'), Some("a"));
         }
+    }
+
+    #[test]
+    fn extreme_first_char_does_not_overflow() {
+        let (f, _) = load(&[(
+            5,
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Foo /FirstChar -9223372036854775807 /Widths [500] >>",
+        )]);
+        assert_eq!(f.width(0), 0.);
     }
 
     #[test]

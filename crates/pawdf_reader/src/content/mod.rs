@@ -5,6 +5,7 @@ pub(crate) mod state;
 pub(crate) mod text;
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use pawdf_core::{
@@ -22,20 +23,28 @@ use state::{FontKey, GraphicsState, matrix, name, nums};
 
 const MAX_Q_DEPTH: usize = 256;
 const MAX_FORM_DEPTH: usize = 32;
+/// Operations executed per pass, counting every form invocation. Forms that draw each
+/// other several times form a DAG that cycle and depth checks do not bound.
+const MAX_OPERATIONS: usize = 1 << 22;
 
 impl Page {
     /// Extracts glyphs, painted paths, and images. Never fails: problems become
     /// [`PageContent::diagnostics`].
     pub fn content(&self) -> PageContent {
         let file = &self.doc.file;
-        let resources = self.info.resources.as_ref().and_then(Object::as_dict);
+        let resources = self.info.resources.as_deref().and_then(Object::as_dict);
         let mut interp = Interp::new(&self.doc, resources);
         let streams = content_streams(file, self.info.obj);
         let mut carry: Vec<Object> = Vec::new();
         for r in streams {
-            let Some(mut ops) = interp.parse_stream(r) else {
+            let Some(parsed) = interp.parse_stream(r) else {
                 continue;
             };
+            if carry.is_empty() && parsed.last().is_none_or(|o| !o.operator.is_empty()) {
+                interp.run(&parsed);
+                continue;
+            }
+            let mut ops = Vec::clone(&parsed);
             if !carry.is_empty()
                 && let Some(first) = ops.first_mut()
             {
@@ -94,6 +103,9 @@ pub(crate) struct Interp<'a> {
     form_stack: Vec<Ref>,
     /// `Q` cannot pop states saved outside the current form.
     stack_floor: usize,
+    /// Parsed streams by object, so repeated forms and `/Contents` entries decode once.
+    parsed: HashMap<Ref, Option<Rc<Vec<Operation>>>>,
+    ops_left: usize,
 }
 
 impl<'a> Interp<'a> {
@@ -120,6 +132,8 @@ impl<'a> Interp<'a> {
             no_font_reported: false,
             form_stack: Vec::new(),
             stack_floor: 0,
+            parsed: HashMap::new(),
+            ops_left: MAX_OPERATIONS,
         }
     }
 
@@ -129,7 +143,16 @@ impl<'a> Interp<'a> {
     }
 
     /// Decodes and parses one content stream; `None` if it is not a usable stream.
-    pub fn parse_stream(&mut self, r: Ref) -> Option<Vec<Operation>> {
+    pub fn parse_stream(&mut self, r: Ref) -> Option<Rc<Vec<Operation>>> {
+        if let Some(cached) = self.parsed.get(&r) {
+            return cached.clone();
+        }
+        let parsed = self.parse_stream_uncached(r).map(Rc::new);
+        self.parsed.insert(r, parsed.clone());
+        parsed
+    }
+
+    fn parse_stream_uncached(&mut self, r: Ref) -> Option<Vec<Operation>> {
         let at = Location::Stream { obj: r, offset: 0 };
         let Object::Stream(s) = self.file.resolve(r) else {
             self.diags.push(DiagnosticKind::BadObject, at);
@@ -172,6 +195,13 @@ impl<'a> Interp<'a> {
 
     pub fn run(&mut self, ops: &[Operation]) {
         for op in ops {
+            if self.ops_left == 0 {
+                return;
+            }
+            self.ops_left -= 1;
+            if self.ops_left == 0 {
+                self.bad(DiagnosticKind::RecursionLimit, op);
+            }
             self.op(op);
         }
     }
