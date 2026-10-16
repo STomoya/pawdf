@@ -298,3 +298,93 @@ fn page_without_contents_is_empty() {
         .content();
     assert_eq!(c, PageContent::default());
 }
+
+#[test]
+fn unusable_content_streams_are_diagnosed() {
+    let dct = stream("/Filter /DCTDecode", b"xx");
+    let (pdf, _) = build_pdf(
+        &[
+            (1, CATALOG),
+            (2, b"<< /Type /Pages /Kids [3 0 R] >>"),
+            (
+                3,
+                b"<< /Type /Page /MediaBox [0 0 1 1] /Contents [4 0 R 5 0 R] >>",
+            ),
+            (4, b"<< /NotAStream true >>"),
+            (5, &dct),
+        ],
+        "/Root 1 0 R",
+    );
+    let c = Document::from_bytes(pdf)
+        .unwrap()
+        .page(0)
+        .unwrap()
+        .content();
+    assert_eq!(
+        kinds(&c),
+        [DiagnosticKind::BadObject, DiagnosticKind::UnknownFilter]
+    );
+}
+
+#[test]
+fn other_color_space_families() {
+    let fill = |res: &str, ops: &[u8], extra: &[(u32, &[u8])]| {
+        let c = content_with(&[ops, b" 0 0 m 1 1 l f"].concat(), res, extra);
+        assert!(c.diagnostics.is_empty(), "{:?}", c.diagnostics);
+        c.paths[0].fill_color.clone()
+    };
+    let other = |family, components: Vec<f32>| Color::Other { family, components };
+    assert_eq!(
+        fill(
+            "<< /ColorSpace << /C [/CalRGB << >>] >> >>",
+            b"/C cs 0.1 0.2 0.3 sc",
+            &[]
+        ),
+        other(ColorSpaceFamily::CalRgb, vec![0.1, 0.2, 0.3])
+    );
+    assert_eq!(
+        fill("<< /ColorSpace << /C [/CalGray << >>] >> >>", b"/C cs", &[]),
+        other(ColorSpaceFamily::CalGray, vec![0.])
+    );
+    assert_eq!(
+        fill(
+            "<< /ColorSpace << /C [/Lab << >>] >> >>",
+            b"/C cs 50 0 0 sc",
+            &[]
+        ),
+        other(ColorSpaceFamily::Lab, vec![50., 0., 0.])
+    );
+    let tint = b"<< /FunctionType 2 /Domain [0 1] /C0 [0] /C1 [1] /N 1 >>";
+    assert_eq!(
+        fill(
+            "<< /ColorSpace << /C [/DeviceN [/A /B] /DeviceGray 5 0 R] >> >>",
+            b"/C cs 1 0.5 scn",
+            &[(5, tint)]
+        ),
+        other(ColorSpaceFamily::DeviceN, vec![1., 0.5])
+    );
+    let icc2 = stream("/N 2", b"");
+    assert_eq!(
+        fill(
+            "<< /ColorSpace << /C [/ICCBased 5 0 R] >> >>",
+            b"/C cs 0 1 sc",
+            &[(5, &icc2)]
+        ),
+        other(ColorSpaceFamily::Unknown, vec![0., 1.])
+    );
+    let lookup = stream("", b"\x00\x00\x00\xff\xff\xff");
+    assert_eq!(
+        fill(
+            "<< /ColorSpace << /C [/Indexed /DeviceRGB 1 5 0 R] >> >>",
+            b"/C cs 1 sc",
+            &[(5, &lookup)]
+        ),
+        other(ColorSpaceFamily::Indexed, vec![1.])
+    );
+}
+
+#[test]
+fn bad_color_space_is_missing_resource() {
+    let c = content_with(b"/C cs", "<< /ColorSpace << /C [/Bogus] >> >>", &[]);
+    assert_eq!(kinds(&c), [DiagnosticKind::MissingResource]);
+}

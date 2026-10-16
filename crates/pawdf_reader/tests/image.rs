@@ -318,3 +318,25 @@ fn image_drawn_twice_yields_two_images() {
     assert_eq!(c.images.len(), 2);
     assert_eq!((c.images[0].ctm.e, c.images[1].ctm.e), (0., 50.));
 }
+
+#[test]
+fn bad_image_parameters_are_diagnosed() {
+    let c = with_image(
+        "/Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 3",
+        b"\x00",
+    );
+    assert_eq!(c.images[0].bpc, 8);
+    assert_eq!(kinds(&c), [DiagnosticKind::BadImage]);
+    let c = with_image(
+        "/Width 1 /Height 1 /ColorSpace /Nope /BitsPerComponent 8",
+        b"\x00",
+    );
+    assert_eq!(c.images[0].color_space, None);
+    assert_eq!(kinds(&c), [DiagnosticKind::MissingResource]);
+    let c = with_image("/Width 1 /Height 1 /Filter /JPXDecode", b"jp2");
+    assert_eq!(
+        (c.images[0].bpc, c.images[0].data.clone()),
+        (0, ImageData::Jpx(b"jp2".to_vec()))
+    );
+    assert!(c.diagnostics.is_empty());
+}

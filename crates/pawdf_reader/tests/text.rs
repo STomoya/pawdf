@@ -217,3 +217,9 @@ fn same_font_gets_one_index() {
     assert_eq!(idx, [0, 1, 0]);
     assert_eq!(c.fonts.len(), 2);
 }
+
+#[test]
+fn bad_text_operands_are_diagnosed() {
+    let c = text(b"BT 9 Tr 10 Tf /F1 (x) Tf 1 (a) \" (a) TJ 5 Tj ET");
+    assert_eq!(kinds(&c), [DiagnosticKind::BadOperands; 6]);
+}

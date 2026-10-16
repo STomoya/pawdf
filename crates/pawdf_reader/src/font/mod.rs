@@ -494,6 +494,17 @@ mod tests {
     }
 
     #[test]
+    fn bad_encoding_entries_are_diagnosed() {
+        for enc in ["/Bogus", "42"] {
+            let body =
+                format!("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding {enc} >>");
+            let (f, d) = load(&[(5, body.as_bytes())]);
+            assert_eq!(d, [pawdf_core::DiagnosticKind::BadFont], "{enc}");
+            assert_eq!(text(&f, b'a'), Some("a"));
+        }
+    }
+
+    #[test]
     fn fallback_is_helvetica() {
         let f = Font::fallback();
         assert_eq!(f.info.base_font, "Helvetica");

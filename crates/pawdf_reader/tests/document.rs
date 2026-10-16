@@ -159,3 +159,45 @@ fn document_is_send_sync() {
     f::<Document>();
     f::<Page>();
 }
+
+#[test]
+fn catalog_without_pages_has_no_pages() {
+    let doc = open(&[(1, b"<< /Type /Catalog >>")]);
+    assert_eq!(doc.page_count(), 0);
+    assert_eq!(count(&doc, DiagnosticKind::BadPageTree), 1);
+}
+
+#[test]
+fn kid_that_is_not_a_dictionary_is_dropped() {
+    let doc = open(&[
+        (1, CATALOG),
+        (2, b"<< /Type /Pages /Kids [3 0 R] >>"),
+        (3, b"42"),
+    ]);
+    assert_eq!(doc.page_count(), 0);
+    assert_eq!(count(&doc, DiagnosticKind::BadPageTree), 1);
+}
+
+#[test]
+fn bad_crop_box_falls_back_to_media_box() {
+    let doc = single_page("/MediaBox [0 0 10 10] /CropBox [0 0 x 1]");
+    assert_eq!(doc.page(0).unwrap().crop_box(), rect(0., 0., 10., 10.));
+    assert_eq!(count(&doc, DiagnosticKind::BadPageTree), 1);
+}
+
+#[test]
+fn errors_display() {
+    let doc = single_page("/MediaBox [0 0 1 1]");
+    assert_eq!(
+        doc.page(3).unwrap_err().to_string(),
+        "page index 3 out of range (1 pages)"
+    );
+    let (pdf, _) = build_pdf(&[(1, CATALOG)], "/Root 1 0 R /Encrypt << >>");
+    let err = Document::from_bytes(pdf).expect_err("encrypted");
+    assert!(
+        err.to_string()
+            .starts_with("encrypted PDF files are not supported")
+    );
+    assert!(std::error::Error::source(&err).is_some());
+    assert!(format!("{doc:?}").starts_with("Document"));
+}
