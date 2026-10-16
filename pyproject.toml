@@ -41,6 +41,9 @@ dev = [
 build = [
     "maturin[zig]>=1.15.0",
 ]
+validation = [
+    "pypdfium2>=5.14.0",
+]
 
 
 # ------------------------- Ruff -------------------------
@@ -61,6 +64,7 @@ indent-style = "space"
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401", "F403", "F405", "D"]
+"python/validation/**" = ["T201"]  # Validation scripts print their reports.
 
 [tool.ruff.lint]
 select = [
@@ -141,6 +145,11 @@ fixable = ["ALL"]
 
 [tool.ty.src]
 include = ["python"]
+
+# pypdfium2 is only installed with `uv run --group validation`.
+[[tool.ty.overrides]]
+include = ["python/validation/**"]
+rules = { unresolved-import = "ignore" }
 
 [tool.ty.terminal]
 output-format = "concise"
