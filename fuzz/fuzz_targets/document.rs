@@ -15,7 +15,10 @@ fuzz_target!(|data: &[u8]| {
         data.to_vec()
     } else {
         let codes: String = (0..=255u8).map(|b| format!("{b:02x}")).collect();
-        common::one_page(format!("BT /F1 12 Tf <{codes}> Tj ET").as_bytes(), Some(data))
+        common::one_page(
+            format!("BT /F1 12 Tf <{codes}> Tj ET").as_bytes(),
+            Some(data),
+        )
     };
     let Ok(doc) = Document::from_bytes(pdf) else {
         return;

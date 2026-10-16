@@ -1,5 +1,6 @@
 //! Builds a small PDF around fuzz input so the content and CMap parsers are reachable
 //! through the public API.
+#![allow(dead_code)]
 
 fn stream(dict: &str, data: &[u8]) -> Vec<u8> {
     let mut out = format!("<< /Length {} {dict} >>\nstream\n", data.len()).into_bytes();
@@ -29,6 +30,29 @@ pub fn one_page(content: &[u8], to_unicode: Option<&[u8]>) -> Vec<u8> {
         ),
         stream("", to_unicode.unwrap_or_default()),
     ];
+    assemble(&objects)
+}
+
+/// One page showing `shown` (as a hex string, with `Tj` and `TJ`) in a Type0 font whose
+/// `/Encoding` and `/ToUnicode` are both `cmap`, or whose encoding is Identity-V when
+/// `vertical`.
+pub fn type0_page(cmap: &[u8], shown: &[u8], vertical: bool) -> Vec<u8> {
+    let hex: String = shown.iter().map(|b| format!("{b:02X}")).collect();
+    let content = format!("BT /F1 12 Tf <{hex}> Tj [<{hex}> -250 <{hex}>] TJ ET");
+    let encoding = if vertical { "/Identity-V" } else { "6 0 R" };
+    let objects: Vec<Vec<u8>> = vec![
+        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>".to_vec(),
+        stream("", content.as_bytes()),
+        format!("<< /Type /Font /Subtype /Type0 /BaseFont /Foo /Encoding {encoding} /ToUnicode 6 0 R /DescendantFonts [7 0 R] >>").into_bytes(),
+        stream("/Type /CMap /UseCMap /UniJIS-UTF16-H", cmap),
+        b"<< /Type /Font /Subtype /CIDFontType0 /BaseFont /Foo /CIDSystemInfo << /Registry (Adobe) /Ordering (Japan1) /Supplement 6 >> /W [1 [500 600] 100 4294967295 700] /W2 [1 [-1000 250 880]] >>".to_vec(),
+    ];
+    assemble(&objects)
+}
+
+fn assemble(objects: &[Vec<u8>]) -> Vec<u8> {
     let mut out = b"%PDF-1.7\n".to_vec();
     let mut offsets = Vec::new();
     for (i, body) in objects.iter().enumerate() {
@@ -38,13 +62,18 @@ pub fn one_page(content: &[u8], to_unicode: Option<&[u8]>) -> Vec<u8> {
         out.extend_from_slice(b"\nendobj\n");
     }
     let xref = out.len();
-    out.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes());
+    out.extend_from_slice(
+        format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes(),
+    );
     for off in offsets {
         out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
     }
     out.extend_from_slice(
-        format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objects.len() + 1)
-            .as_bytes(),
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+            objects.len() + 1
+        )
+        .as_bytes(),
     );
     out
 }
