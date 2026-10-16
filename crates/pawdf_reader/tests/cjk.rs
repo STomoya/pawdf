@@ -191,3 +191,38 @@ fn broken_type0_still_emits() {
         assert!(k.contains(&want), "{k:?}");
     }
 }
+
+#[test]
+fn vertical_identity_v_geometry() {
+    let (f, d) = type0("/Identity-V", "");
+    let c = run(
+        b"BT /F1 10 Tf 100 700 Td <00010002> Tj ET",
+        &[(5, f.as_bytes()), (6, d.as_bytes())],
+    );
+    let [a, b] = &c.glyphs[..] else {
+        panic!("{:?}", c.glyphs)
+    };
+    assert_eq!(a.wmode, WritingMode::Vertical);
+    assert_eq!(c.fonts[0].wmode, WritingMode::Vertical);
+    at(a, 95., 691.2);
+    at(b, 95., 681.2);
+    assert!(close(a.advance, 10.));
+    let r = a.bbox;
+    assert!(
+        close(r.x0, 95.) && close(r.y0, 690.) && close(r.x1, 105.) && close(r.y1, 700.),
+        "{r:?}"
+    );
+}
+
+#[test]
+fn vertical_w2_tc_and_tj() {
+    let (f, d) = type0("/Identity-V", "/W2 [1 [-500 250 400]]");
+    let c = run(
+        b"BT /F1 10 Tf 1 Tc 100 700 Td [<0001> 500 <0001>] TJ ET",
+        &[(5, f.as_bytes()), (6, d.as_bytes())],
+    );
+    // ty = w1·Tfs + Tc = -4; the TJ number moves down by 500/1000·Tfs = 5.
+    at(&c.glyphs[0], 97.5, 696.);
+    at(&c.glyphs[1], 97.5, 687.);
+    assert!(close(c.glyphs[0].advance, 4.));
+}

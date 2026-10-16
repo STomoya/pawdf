@@ -8,7 +8,7 @@ use crate::content::Interp;
 use crate::content::state::{FontKey, matrix, nums};
 use crate::font::{Font, load_font};
 use crate::geom::{Matrix, Point, Rect};
-use crate::model::{Glyph, RenderMode};
+use crate::model::{Glyph, RenderMode, WritingMode};
 
 fn translate(tx: f64, ty: f64) -> Matrix {
     Matrix {
@@ -144,8 +144,16 @@ impl<'a> Interp<'a> {
                             o => {
                                 if let Some(n) = o.as_number().filter(|n| n.is_finite()) {
                                     let ts = &self.gs.text;
-                                    let tx = -n / 1000. * ts.size * ts.hscale;
-                                    self.tm = translate(tx, 0.).concat(&self.tm);
+                                    let vertical = ts.font.as_ref().is_some_and(|(_, f)| {
+                                        f.info.wmode == WritingMode::Vertical
+                                    });
+                                    // §9.4.4: in vertical writing the number moves along y.
+                                    let shift = if vertical {
+                                        translate(0., -n / 1000. * ts.size)
+                                    } else {
+                                        translate(-n / 1000. * ts.size * ts.hscale, 0.)
+                                    };
+                                    self.tm = shift.concat(&self.tm);
                                 }
                             }
                         }
@@ -257,7 +265,42 @@ impl<'a> Interp<'a> {
             } else {
                 0.
             };
-            let tx = (w0 * ts.size + ts.char_spacing + tw) * ts.hscale;
+            // §9.4.4, §9.7.4.3. In vertical writing the origin pdfium reports (and the
+            // glyph matrix's origin) is the horizontal origin, displaced by -v from the
+            // current point.
+            let (matrix, shift, bbox, advance) = match font.vertical(code) {
+                None => {
+                    let tx = (w0 * ts.size + ts.char_spacing + tw) * ts.hscale;
+                    let bbox = Rect {
+                        x0: 0.,
+                        y0: font.descent,
+                        x1: w0,
+                        y1: font.ascent,
+                    };
+                    (
+                        trm,
+                        translate(tx, 0.),
+                        bbox,
+                        tx.abs() * user.a.hypot(user.b),
+                    )
+                }
+                Some(v) => {
+                    let ty = v.w1 * ts.size + ts.char_spacing + tw;
+                    let bbox = Rect {
+                        x0: 0.,
+                        y0: v.vy + v.w1,
+                        x1: w0,
+                        y1: v.vy,
+                    };
+                    let matrix = translate(-v.vx, -v.vy).concat(&trm);
+                    (
+                        matrix,
+                        translate(0., ty),
+                        bbox,
+                        ty.abs() * user.c.hypot(user.d),
+                    )
+                }
+            };
             let text = match font.unicode(code) {
                 Some(t) => t,
                 None => {
@@ -272,15 +315,10 @@ impl<'a> Interp<'a> {
                 code: code.value,
                 font: index,
                 size: ts.size,
-                matrix: trm,
-                origin: trm.apply(Point { x: 0., y: 0. }),
-                advance: tx.abs() * user.a.hypot(user.b),
-                bbox: trm.transform_rect(Rect {
-                    x0: 0.,
-                    y0: font.descent,
-                    x1: w0,
-                    y1: font.ascent,
-                }),
+                matrix,
+                origin: matrix.apply(Point { x: 0., y: 0. }),
+                advance,
+                bbox: matrix.transform_rect(bbox),
                 wmode: font.info.wmode,
                 render_mode: ts.render_mode,
                 fill: self.gs.fill.clone(),
@@ -288,7 +326,7 @@ impl<'a> Interp<'a> {
                 fill_alpha: self.gs.fill_alpha,
                 stroke_alpha: self.gs.stroke_alpha,
             });
-            self.tm = translate(tx, 0.).concat(&self.tm);
+            self.tm = shift.concat(&self.tm);
         }
     }
 }
