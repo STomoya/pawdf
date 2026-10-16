@@ -7,7 +7,7 @@ use std::sync::Arc;
 use pawdf_core::{DiagnosticKind, Diagnostics, Dict, File, Location, Object, Origin, Ref};
 
 use crate::cmap::{CMap, UseCMap};
-use crate::data::{BaseEncoding, encoding_names, std14_width};
+use crate::data::{BaseEncoding, encoding_names, predefined_cmap, std14_width};
 use crate::document::numbers;
 use crate::geom::Matrix;
 use crate::model::{FontInfo, FontKind, WritingMode};
@@ -258,7 +258,7 @@ pub(crate) fn embedded_cmap(
     };
     let mut resolve = |u: UseCMap, depth: usize, diags: &mut Diagnostics| match u {
         UseCMap::Stream(b) => embedded_cmap(file, b, depth, diags).map(Arc::new),
-        UseCMap::Name(_) => None,
+        UseCMap::Name(n) => predefined_cmap(n),
     };
     Some(CMap::parse_based(
         &decoded.data,
