@@ -342,6 +342,34 @@ fn bad_image_parameters_are_diagnosed() {
 }
 
 #[test]
+fn indirect_jpx_filter_in_array() {
+    let im = stream(
+        "/Type /XObject /Subtype /Image /Width 1 /Height 1 /Filter [6 0 R]",
+        b"jp2",
+    );
+    let c = run(
+        b"/Im1 Do",
+        "<< /XObject << /Im1 5 0 R >> >>",
+        &[(5, &im), (6, b"/JPXDecode")],
+    );
+    assert_eq!(c.images[0].data, ImageData::Jpx(b"jp2".to_vec()));
+    assert!(c.diagnostics.is_empty(), "{:?}", c.diagnostics);
+}
+
+#[test]
+fn form_starts_outside_text_and_compat() {
+    let f = form("", b"BX BT /F1 10 Tf (a) Tj ET");
+    let helv: &[u8] = b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
+    let c = run(
+        b"BT 1 0 0 1 50 50 Tm /Fm1 Do ET foo",
+        "<< /XObject << /Fm1 5 0 R >> /Font << /F1 6 0 R >> >>",
+        &[(5, &f), (6, helv)],
+    );
+    assert_eq!(c.glyphs[0].origin, Point { x: 0., y: 0. });
+    assert_eq!(kinds(&c), [DiagnosticKind::UnknownOperator]);
+}
+
+#[test]
 fn form_fan_out_is_bounded() {
     // Form n draws form n+1 twice: a DAG, so cycle and depth checks alone allow 2^30 runs.
     const DEPTH: u32 = 30;

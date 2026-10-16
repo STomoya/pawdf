@@ -137,6 +137,18 @@ fn non_reference_kids_are_dropped() {
 }
 
 #[test]
+fn pages_node_without_kids_is_diagnosed() {
+    let doc = open(&[
+        (1, CATALOG),
+        (2, b"<< /Type /Pages /Kids [3 0 R 4 0 R] >>"),
+        (3, b"<< /Type /Page /MediaBox [0 0 1 1] >>"),
+        (4, b"<< /Type /Pages /MediaBox [0 0 1 1] >>"),
+    ]);
+    assert_eq!(doc.page_count(), 2);
+    assert_eq!(count(&doc, DiagnosticKind::BadPageTree), 1);
+}
+
+#[test]
 fn page_out_of_range() {
     let doc = single_page("/MediaBox [0 0 1 1]");
     let err = doc.page(5).unwrap_err();

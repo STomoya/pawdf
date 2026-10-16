@@ -211,7 +211,13 @@ fn walk_pages(file: &File, diags: &mut Diagnostics) -> Vec<PageInfo> {
                     }
                 }
             }
-            _ => pages.push(page_info(file, r, inherited, diags)),
+            _ => {
+                // pdfium counts a kid without /Kids as a page whatever its /Type.
+                if node.get(b"Type").and_then(Object::as_name) == Some(b"Pages") {
+                    bad(diags);
+                }
+                pages.push(page_info(file, r, inherited, diags));
+            }
         }
     }
     pages

@@ -507,16 +507,28 @@ impl<'a> Interp<'a> {
             self.in_text,
             self.tm,
             self.tlm,
+            self.compat,
         );
         self.stack_floor = self.stack.len();
         self.gs.ctm = m.concat(&self.gs.ctm);
         self.resources.push(res);
         self.form_stack.push(r);
+        self.in_text = false;
+        self.tm = Matrix::IDENTITY;
+        self.tlm = Matrix::IDENTITY;
+        self.compat = 0;
         self.run(&ops);
         self.form_stack.pop();
         self.resources.pop();
         self.stack.truncate(self.stack_floor);
-        (self.gs, self.stack_floor, self.in_text, self.tm, self.tlm) = saved;
+        (
+            self.gs,
+            self.stack_floor,
+            self.in_text,
+            self.tm,
+            self.tlm,
+            self.compat,
+        ) = saved;
     }
 
     fn curve(&mut self, kind: u8, args: &[Object]) -> bool {
