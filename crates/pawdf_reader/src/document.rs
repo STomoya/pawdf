@@ -127,7 +127,7 @@ impl Page {
         self.info.media_box
     }
 
-    /// `/CropBox` (inherited), defaulting to the media box.
+    /// `/CropBox` (inherited) clipped to the media box, defaulting to the media box.
     pub fn crop_box(&self) -> Rect {
         self.info.crop_box
     }
@@ -226,7 +226,12 @@ fn page_info(file: &File, obj: Ref, inh: Inherited, diags: &mut Diagnostics) -> 
             LETTER
         }
     };
-    let crop_box = match inh.crop_box.map(|b| rect(file, &b)) {
+    // §14.11.2: the crop box is clipped to the media box. With no overlap there is
+    // nothing to show, so fall back to the media box as pdf.js does.
+    let crop_box = match inh
+        .crop_box
+        .map(|b| rect(file, &b).and_then(|c| intersect(c, media_box)))
+    {
         Some(Some(r)) => r,
         Some(None) => {
             bad();
@@ -254,6 +259,16 @@ fn page_info(file: &File, obj: Ref, inh: Inherited, diags: &mut Diagnostics) -> 
         crop_box,
         rotate,
     }
+}
+
+fn intersect(a: Rect, b: Rect) -> Option<Rect> {
+    let r = Rect {
+        x0: a.x0.max(b.x0),
+        y0: a.y0.max(b.y0),
+        x1: a.x1.min(b.x1),
+        y1: a.y1.min(b.y1),
+    };
+    (r.x0 < r.x1 && r.y0 < r.y1).then_some(r)
 }
 
 fn rect(file: &File, obj: &Object) -> Option<Rect> {

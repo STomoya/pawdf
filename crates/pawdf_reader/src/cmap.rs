@@ -35,7 +35,7 @@ impl ToUnicode {
                     for pair in op.operands.chunks(2) {
                         match pair {
                             [Object::String(code), Object::String(dst)] => {
-                                t.insert(code.clone(), utf16_units(dst), diags, at);
+                                t.insert(code.clone(), utf16_units(dst, diags, at), diags, at);
                             }
                             _ => diags.push(DiagnosticKind::BadCMap, at),
                         }
@@ -88,7 +88,7 @@ impl ToUnicode {
         };
         match dst {
             Object::String(d) => {
-                let base = utf16_units(d);
+                let base = utf16_units(d, diags, at);
                 for i in 0..=end - start {
                     let mut units = base.clone();
                     // §9.10.3: the last unit of the destination is incremented.
@@ -106,7 +106,10 @@ impl ToUnicode {
             Object::Array(items) => {
                 for (i, item) in (0..=end - start).zip(items) {
                     match item {
-                        Object::String(d) => self.insert(code_at(i), utf16_units(d), diags, at),
+                        Object::String(d) => {
+                            let units = utf16_units(d, diags, at);
+                            self.insert(code_at(i), units, diags, at);
+                        }
                         _ => diags.push(DiagnosticKind::BadCMap, at),
                     }
                 }
@@ -134,17 +137,17 @@ fn be(bytes: &[u8]) -> Option<u64> {
     Some(bytes.iter().fold(0, |acc, &b| acc << 8 | u64::from(b)))
 }
 
-/// UTF-16BE units. A single byte is taken as one unit, as some writers emit `<41>`.
-fn utf16_units(bytes: &[u8]) -> Vec<u16> {
-    match bytes {
-        [b] => vec![u16::from(*b)],
-        _ => bytes
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|&c| u16::from_be_bytes(c))
-            .collect(),
+/// UTF-16BE units. A single byte is taken as one unit, as some writers emit `<41>`;
+/// a trailing odd byte of a longer string is dropped.
+fn utf16_units(bytes: &[u8], diags: &mut Diagnostics, at: Location) -> Vec<u16> {
+    if let [b] = bytes {
+        return vec![u16::from(*b)];
     }
+    let (units, rest) = bytes.as_chunks::<2>();
+    if !rest.is_empty() {
+        diags.push(DiagnosticKind::BadCMap, at);
+    }
+    units.iter().map(|&c| u16::from_be_bytes(c)).collect()
 }
 
 #[cfg(test)]
@@ -194,6 +197,13 @@ mod tests {
         let (t, d) = parse("1 beginbfrange <01> <02> <FFFF> endbfrange");
         assert_eq!(t.lookup(&[1]).as_deref(), Some("\u{FFFF}"));
         assert_eq!(t.lookup(&[2]), None);
+        assert_eq!(d, [DiagnosticKind::BadCMap]);
+    }
+
+    #[test]
+    fn odd_trailing_byte_is_diagnosed() {
+        let (t, d) = parse("1 beginbfchar <01> <004100> endbfchar");
+        assert_eq!(t.lookup(&[1]).as_deref(), Some("A"));
         assert_eq!(d, [DiagnosticKind::BadCMap]);
     }
 

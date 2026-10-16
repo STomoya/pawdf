@@ -246,7 +246,7 @@ class Page:
         """``/MediaBox``."""
     @property
     def crop_box(self) -> Rect:
-        """``/CropBox``, defaulting to the media box."""
+        """``/CropBox`` clipped to the media box, defaulting to the media box."""
     @property
     def rotate(self) -> Literal[0, 90, 180, 270]:
         """``/Rotate``, normalized."""

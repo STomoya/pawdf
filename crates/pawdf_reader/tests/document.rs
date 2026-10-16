@@ -186,6 +186,16 @@ fn bad_crop_box_falls_back_to_media_box() {
 }
 
 #[test]
+fn crop_box_is_clipped_to_media_box() {
+    let doc = single_page("/MediaBox [0 0 100 100] /CropBox [-10 50 50 200]");
+    assert_eq!(doc.page(0).unwrap().crop_box(), rect(0., 50., 50., 100.));
+    assert!(doc.diagnostics().is_empty());
+    let doc = single_page("/MediaBox [0 0 10 10] /CropBox [20 20 30 30]");
+    assert_eq!(doc.page(0).unwrap().crop_box(), rect(0., 0., 10., 10.));
+    assert_eq!(count(&doc, DiagnosticKind::BadPageTree), 1);
+}
+
+#[test]
 fn errors_display() {
     let doc = single_page("/MediaBox [0 0 1 1]");
     assert_eq!(
