@@ -106,6 +106,7 @@ pub(crate) struct Interp<'a> {
     /// Fonts already used in this pass.
     pub pass_fonts: HashMap<FontKey, Arc<Font>>,
     pub unmapped_reported: HashSet<FontKey>,
+    pub bad_code_reported: HashSet<FontKey>,
     pub no_font_reported: bool,
     /// Forms being drawn, innermost last, to cut cycles.
     form_stack: Vec<Ref>,
@@ -144,6 +145,7 @@ impl<'a> Interp<'a> {
             font_index: HashMap::new(),
             pass_fonts: HashMap::new(),
             unmapped_reported: HashSet::new(),
+            bad_code_reported: HashSet::new(),
             no_font_reported: false,
             form_stack: Vec::new(),
             stack_floor: 0,

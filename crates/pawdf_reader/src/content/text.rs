@@ -248,11 +248,18 @@ impl<'a> Interp<'a> {
             };
             let user = self.tm.concat(&ctm);
             let trm = scale.concat(&user);
+            if !code.matched && self.bad_code_reported.insert(key) {
+                self.diags.push(DiagnosticKind::BadCMap, at);
+            }
             // §9.3.3: word spacing applies to the single-byte code 32 only.
-            let tw = if code == 32 { ts.word_spacing } else { 0. };
+            let tw = if code.len == 1 && code.value == 32 {
+                ts.word_spacing
+            } else {
+                0.
+            };
             let tx = (w0 * ts.size + ts.char_spacing + tw) * ts.hscale;
             let text = match font.unicode(code) {
-                Some(t) => t.to_owned(),
+                Some(t) => t,
                 None => {
                     if self.unmapped_reported.insert(key) {
                         self.diags.push(DiagnosticKind::UnmappedGlyph, at);
@@ -262,7 +269,7 @@ impl<'a> Interp<'a> {
             };
             self.out.glyphs.push(Glyph {
                 text,
-                code,
+                code: code.value,
                 font: index,
                 size: ts.size,
                 matrix: trm,

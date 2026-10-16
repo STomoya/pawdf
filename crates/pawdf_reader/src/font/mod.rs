@@ -1,19 +1,21 @@
-//! Fonts (§9.5–§9.6). M2 handles simple fonts; composite fonts arrive in M3.
+//! Fonts (§9.5–§9.7): simple fonts here, composite fonts in [`cid`].
 
+pub(crate) mod cid;
 pub(crate) mod encoding;
 
 use std::sync::Arc;
 
 use pawdf_core::{DiagnosticKind, Diagnostics, Dict, File, Location, Object, Origin, Ref};
 
-use crate::cmap::{CMap, UseCMap};
+use crate::cmap::{CMap, Code, UseCMap};
 use crate::data::{BaseEncoding, encoding_names, predefined_cmap, std14_width};
 use crate::document::numbers;
 use crate::geom::Matrix;
 use crate::model::{FontInfo, FontKind, WritingMode};
+use cid::{Cid, Vertical, load_type0};
 use encoding::{glyph_unicode, type1_builtin};
 
-const GLYPH_SCALE: Matrix = Matrix {
+pub(crate) const GLYPH_SCALE: Matrix = Matrix {
     a: 0.001,
     b: 0.,
     c: 0.,
@@ -29,25 +31,69 @@ pub(crate) struct Font {
     /// Ascent and descent in text space at size 1.
     pub ascent: f64,
     pub descent: f64,
-    /// Text-space widths at size 1, per code.
-    widths: Vec<f64>,
-    unicode: Vec<Option<String>>,
+    glyphs: Glyphs,
+}
+
+#[derive(Debug, Clone)]
+enum Glyphs {
+    /// Text-space widths at size 1 and Unicode, per 1-byte code.
+    Simple {
+        widths: Vec<f64>,
+        unicode: Vec<Option<String>>,
+    },
+    Composite(Box<Cid>),
 }
 
 impl Font {
-    /// Character codes in a string: one byte each for simple fonts.
-    pub fn codes(&self, s: &[u8]) -> Vec<u32> {
-        s.iter().map(|&b| u32::from(b)).collect()
+    /// The character codes in a string: one byte each for simple fonts, split by the
+    /// CMap's codespace for composite fonts (§9.7.6.2).
+    pub fn codes(&self, s: &[u8]) -> Vec<Code> {
+        match &self.glyphs {
+            Glyphs::Simple { .. } => s
+                .iter()
+                .map(|&b| Code {
+                    value: u32::from(b),
+                    len: 1,
+                    matched: true,
+                })
+                .collect(),
+            Glyphs::Composite(c) => {
+                let mut out = Vec::new();
+                let mut rest = s;
+                while !rest.is_empty() {
+                    let code = c.cmap.next_code(rest);
+                    out.push(code);
+                    rest = rest.get(usize::from(code.len).max(1)..).unwrap_or_default();
+                }
+                out
+            }
+        }
     }
 
     /// Horizontal displacement at size 1, in text space.
-    pub fn width(&self, code: u32) -> f64 {
-        self.widths.get(code as usize).copied().unwrap_or(0.)
+    pub fn width(&self, code: Code) -> f64 {
+        match &self.glyphs {
+            Glyphs::Simple { widths, .. } => widths.get(code.value as usize).copied().unwrap_or(0.),
+            Glyphs::Composite(c) => c.width(c.cmap.cid(code)),
+        }
+    }
+
+    /// Vertical metrics for fonts in vertical writing mode, else `None`.
+    pub fn vertical(&self, code: Code) -> Option<Vertical> {
+        match &self.glyphs {
+            Glyphs::Composite(c) if self.info.wmode == WritingMode::Vertical => {
+                Some(c.vertical(c.cmap.cid(code)))
+            }
+            _ => None,
+        }
     }
 
     /// Unicode text for a code, if known.
-    pub fn unicode(&self, code: u32) -> Option<&str> {
-        self.unicode.get(code as usize)?.as_deref()
+    pub fn unicode(&self, code: Code) -> Option<String> {
+        match &self.glyphs {
+            Glyphs::Simple { unicode, .. } => unicode.get(code.value as usize)?.clone(),
+            Glyphs::Composite(c) => c.unicode(code, c.cmap.cid(code)),
+        }
     }
 
     /// Helvetica with StandardEncoding, for text shown without a usable font.
@@ -62,14 +108,16 @@ impl Font {
             },
             ascent: 0.8,
             descent: -0.2,
-            widths: names
-                .iter()
-                .map(|n| glyph_width("Helvetica", n.as_deref()) / 1000.)
-                .collect(),
-            unicode: names
-                .iter()
-                .map(|n| n.as_deref().and_then(glyph_unicode))
-                .collect(),
+            glyphs: Glyphs::Simple {
+                widths: names
+                    .iter()
+                    .map(|n| glyph_width("Helvetica", n.as_deref()) / 1000.)
+                    .collect(),
+                unicode: names
+                    .iter()
+                    .map(|n| n.as_deref().and_then(glyph_unicode))
+                    .collect(),
+            },
         }
     }
 }
@@ -96,11 +144,7 @@ pub(crate) fn load_font(file: &File, dict: &Dict, at: Location, diags: &mut Diag
         Some(b"MMType1") => FontKind::MmType1,
         Some(b"TrueType") => FontKind::TrueType,
         Some(b"Type3") => FontKind::Type3,
-        Some(b"Type0") => {
-            // Composite fonts are M3; decode their codes as single bytes until then.
-            diags.push(DiagnosticKind::BadFont, at);
-            FontKind::Type0
-        }
+        Some(b"Type0") => return load_type0(file, dict, at, diags),
         _ => {
             diags.push(DiagnosticKind::BadFont, at);
             FontKind::Type1
@@ -234,8 +278,7 @@ pub(crate) fn load_font(file: &File, dict: &Dict, at: Location, diags: &mut Diag
         },
         ascent,
         descent,
-        widths,
-        unicode,
+        glyphs: Glyphs::Simple { widths, unicode },
     }
 }
 
@@ -289,7 +332,7 @@ fn apply_differences(names: &mut [Option<String>], diffs: &[Object], file: &File
 }
 
 /// Ascent and descent at size 1: descriptor values, then `/FontBBox`, then a default.
-fn metrics(
+pub(crate) fn metrics(
     file: &File,
     kind: FontKind,
     fm: &Matrix,
@@ -379,8 +422,16 @@ mod tests {
         (font, d.as_slice().iter().map(|x| x.kind).collect())
     }
 
-    fn text(font: &Font, code: u8) -> Option<&str> {
-        font.unicode(u32::from(code))
+    fn code(c: u8) -> Code {
+        Code {
+            value: u32::from(c),
+            len: 1,
+            matched: true,
+        }
+    }
+
+    fn text(font: &Font, c: u8) -> Option<String> {
+        font.unicode(code(c))
     }
 
     #[test]
@@ -411,10 +462,13 @@ mod tests {
             (5, b"<< /Type /Font /Subtype /Type1 /BaseFont /Foo /FirstChar 65 /Widths [500 600] /FontDescriptor 6 0 R >>"),
             (6, b"<< /Type /FontDescriptor /MissingWidth 250 /Flags 32 >>"),
         ]);
-        assert_eq!((f.width(65), f.width(66), f.width(67)), (0.5, 0.6, 0.25));
+        assert_eq!(
+            (f.width(code(65)), f.width(code(66)), f.width(code(67))),
+            (0.5, 0.6, 0.25)
+        );
         assert!(d.is_empty());
         let (f, _) = load(&[(5, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")]);
-        assert_eq!(f.width(u32::from(b'a')), 0.556);
+        assert_eq!(f.width(code(b'a')), 0.556);
         assert_eq!(f.info.base_font, "Helvetica");
         assert_eq!(f.info.kind, FontKind::Type1);
         assert!(!f.info.embedded);
@@ -426,12 +480,12 @@ mod tests {
             5,
             b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding << /BaseEncoding /WinAnsiEncoding /Differences [65 /Euro /bullet] >> >>",
         )]);
-        assert_eq!(text(&f, 65), Some("\u{20AC}"));
-        assert_eq!(text(&f, 66), Some("\u{2022}"));
-        assert_eq!(text(&f, 0x80), Some("\u{20AC}"));
-        assert_eq!(text(&f, b'a'), Some("a"));
+        assert_eq!(text(&f, 65).as_deref(), Some("\u{20AC}"));
+        assert_eq!(text(&f, 66).as_deref(), Some("\u{2022}"));
+        assert_eq!(text(&f, 0x80).as_deref(), Some("\u{20AC}"));
+        assert_eq!(text(&f, b'a').as_deref(), Some("a"));
         // std-14 widths follow the glyph the code selects, not the code.
-        assert_eq!(f.width(66), 0.35);
+        assert_eq!(f.width(code(66)), 0.35);
     }
 
     #[test]
@@ -444,8 +498,8 @@ mod tests {
             (5, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding /ToUnicode 6 0 R >>"),
             (6, &cmap),
         ]);
-        assert_eq!(text(&f, 65), Some("Z"));
-        assert_eq!(text(&f, 66), Some("B"));
+        assert_eq!(text(&f, 65).as_deref(), Some("Z"));
+        assert_eq!(text(&f, 66).as_deref(), Some("B"));
     }
 
     #[test]
@@ -461,19 +515,19 @@ mod tests {
             ),
             (6, &cmap),
         ]);
-        assert_eq!(text(&f, 65), Some("Z"));
+        assert_eq!(text(&f, 65).as_deref(), Some("Z"));
         assert_eq!(d, [pawdf_core::DiagnosticKind::RecursionLimit]);
     }
 
     #[test]
     fn symbolic_without_base_uses_builtin() {
         let (f, _) = load(&[(5, b"<< /Type /Font /Subtype /Type1 /BaseFont /Symbol >>")]);
-        assert_eq!(text(&f, 0x61), Some("\u{3B1}"));
+        assert_eq!(text(&f, 0x61).as_deref(), Some("\u{3B1}"));
         let (f, _) = load(&[(
             5,
             b"<< /Type /Font /Subtype /Type1 /BaseFont /ZapfDingbats /Encoding << /Differences [34 /a1] >> >>",
         )]);
-        assert_eq!(text(&f, 0x21), Some("\u{2701}"));
+        assert_eq!(text(&f, 0x21).as_deref(), Some("\u{2701}"));
     }
 
     #[test]
@@ -488,7 +542,7 @@ mod tests {
             (6, b"<< /Type /FontDescriptor /Flags 4 /FontFile 7 0 R >>"),
             (7, &ff),
         ]);
-        assert_eq!(text(&f, 65), Some("\u{391}"));
+        assert_eq!(text(&f, 65).as_deref(), Some("\u{391}"));
         assert!(f.info.embedded);
         assert_eq!(f.info.base_font, "ABCDEF+Foo");
     }
@@ -499,8 +553,8 @@ mod tests {
             (5, b"<< /Type /Font /Subtype /TrueType /BaseFont /Foo /Encoding << /Differences [1 /g1] >> /FontDescriptor 6 0 R >>"),
             (6, b"<< /Type /FontDescriptor /Flags 32 >>"),
         ]);
-        assert_eq!(text(&f, 0x27), Some("\u{2019}"));
-        assert_eq!(text(&f, 1), None);
+        assert_eq!(text(&f, 0x27).as_deref(), Some("\u{2019}"));
+        assert_eq!(text(&f, 1).as_deref(), None);
         assert_eq!(f.info.kind, FontKind::TrueType);
     }
 
@@ -510,9 +564,9 @@ mod tests {
             5,
             b"<< /Type /Font /Subtype /Type3 /FontMatrix [0.002 0 0 0.002 0 0] /FontBBox [0 -100 500 400] /FirstChar 65 /Widths [500] /Encoding << /Differences [65 /A] >> /CharProcs << >> >>",
         )]);
-        assert_eq!(f.width(65), 1.0);
+        assert_eq!(f.width(code(65)), 1.0);
         assert_eq!((f.ascent, f.descent), (0.8, -0.2));
-        assert_eq!(text(&f, 65), Some("A"));
+        assert_eq!(text(&f, 65).as_deref(), Some("A"));
         assert_eq!(f.info.kind, FontKind::Type3);
     }
 
@@ -540,7 +594,7 @@ mod tests {
     fn unknown_subtype_is_bad_font() {
         let (f, d) = load(&[(5, b"<< /Type /Font /Subtype /Bogus /BaseFont /Helvetica >>")]);
         assert_eq!(d, [pawdf_core::DiagnosticKind::BadFont]);
-        assert_eq!(f.width(u32::from(b'a')), 0.556);
+        assert_eq!(f.width(code(b'a')), 0.556);
     }
 
     #[test]
@@ -550,7 +604,7 @@ mod tests {
                 format!("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding {enc} >>");
             let (f, d) = load(&[(5, body.as_bytes())]);
             assert_eq!(d, [pawdf_core::DiagnosticKind::BadFont], "{enc}");
-            assert_eq!(text(&f, b'a'), Some("a"));
+            assert_eq!(text(&f, b'a').as_deref(), Some("a"));
         }
     }
 
@@ -560,15 +614,18 @@ mod tests {
             5,
             b"<< /Type /Font /Subtype /Type1 /BaseFont /Foo /FirstChar -9223372036854775807 /Widths [500] >>",
         )]);
-        assert_eq!(f.width(0), 0.);
+        assert_eq!(f.width(code(0)), 0.);
     }
 
     #[test]
     fn fallback_is_helvetica() {
         let f = Font::fallback();
         assert_eq!(f.info.base_font, "Helvetica");
-        assert_eq!(f.width(u32::from(b'a')), 0.556);
-        assert_eq!(f.unicode(u32::from(b'a')), Some("a"));
-        assert_eq!(f.codes(b"ab"), [97, 98]);
+        assert_eq!(f.width(code(b'a')), 0.556);
+        assert_eq!(f.unicode(code(b'a')).as_deref(), Some("a"));
+        assert_eq!(
+            f.codes(b"ab").iter().map(|c| c.value).collect::<Vec<_>>(),
+            [97, 98]
+        );
     }
 }
