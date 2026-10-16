@@ -280,3 +280,20 @@ fn short_cid_to_gid_map_and_garbage_program() {
         kinds(&c)
     );
 }
+
+#[test]
+fn encoding_cmap_without_codespace_falls_back_to_identity() {
+    let (f, d) = type0("7 0 R", "");
+    let cmap = stream("/Type /CMap", b"this is not a cmap");
+    let c = run(
+        b"BT /F1 1 Tf <00410042> Tj ET",
+        &[(5, f.as_bytes()), (6, d.as_bytes()), (7, &cmap)],
+    );
+    let codes: Vec<u32> = c.glyphs.iter().map(|g| g.code).collect();
+    assert_eq!(codes, [0x41, 0x42]);
+    assert!(
+        kinds(&c).contains(&DiagnosticKind::BadCMap),
+        "{:?}",
+        kinds(&c)
+    );
+}

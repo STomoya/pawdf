@@ -245,6 +245,11 @@ impl CMap {
         t
     }
 
+    /// Whether any codespace range is declared or inherited.
+    pub fn has_codespace(&self) -> bool {
+        !self.codespace.is_empty()
+    }
+
     fn full(&self) -> bool {
         self.map.len() + self.cids.len() + self.notdef.len() >= MAX_ENTRIES
     }

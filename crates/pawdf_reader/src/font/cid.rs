@@ -104,7 +104,14 @@ pub(crate) fn load_type0(
     let identity = || Arc::new(CMap::identity(WritingMode::Horizontal));
     let cmap = match dict.get(b"Encoding") {
         Some(Object::Ref(r)) if matches!(file.resolve(*r), Object::Stream(_)) => {
-            embedded_cmap(file, shared, *r, &mut Vec::new(), diags).unwrap_or_else(identity)
+            // Without codespace ranges every byte would become a code mapped to CID 0.
+            match embedded_cmap(file, shared, *r, &mut Vec::new(), diags) {
+                Some(m) if m.has_codespace() => m,
+                _ => {
+                    diags.push(DiagnosticKind::BadCMap, at);
+                    identity()
+                }
+            }
         }
         _ => match get(b"Encoding").and_then(Object::as_name) {
             Some(n) => predefined_cmap(n).unwrap_or_else(|| {
