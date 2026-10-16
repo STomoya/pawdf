@@ -1,0 +1,7 @@
+[package]
+name = "pawdf_core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+miniz_oxide = { workspace = true }
