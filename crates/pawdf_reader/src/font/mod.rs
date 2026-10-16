@@ -151,6 +151,8 @@ pub(crate) fn load_font(file: &File, dict: &Dict, at: Location, diags: &mut Diag
         _ => None,
     };
     let mut names = match get(b"Encoding") {
+        // §9.6.5: the built-in encoding is what draws the glyphs. pdfium uses StandardEncoding
+        // for nonsymbolic fonts here; this deviation is deliberate.
         None => builtin(diags),
         Some(Object::Name(n)) => match named(n.as_bytes()) {
             Some(e) => names_of(encoding_names(e)),
