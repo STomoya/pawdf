@@ -5,3 +5,4 @@ edition.workspace = true
 
 [dependencies]
 pawdf_core = { workspace = true }
+miniz_oxide = { workspace = true }

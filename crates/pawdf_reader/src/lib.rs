@@ -3,6 +3,7 @@
 #![warn(missing_docs)]
 
 mod content;
+mod data;
 mod document;
 mod error;
 mod geom;
