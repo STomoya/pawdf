@@ -46,7 +46,16 @@ dependencies = [
 name = "pawdf_pyo3"
 version = "0.1.0"
 dependencies = [
+ "pawdf_reader",
  "pyo3",
+]
+
+[[package]]
+name = "pawdf_reader"
+version = "0.1.0"
+dependencies = [
+ "miniz_oxide",
+ "pawdf_core",
 ]
 
 [[package]]

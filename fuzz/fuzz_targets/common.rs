@@ -1,0 +1,50 @@
+//! Builds a small PDF around fuzz input so the content and CMap parsers are reachable
+//! through the public API.
+
+fn stream(dict: &str, data: &[u8]) -> Vec<u8> {
+    let mut out = format!("<< /Length {} {dict} >>\nstream\n", data.len()).into_bytes();
+    out.extend_from_slice(data);
+    out.extend_from_slice(b"\nendstream");
+    out
+}
+
+/// One page whose content is `content`, with font `/F1`, image `/Im1` and form `/Fm1` in
+/// its resources. `to_unicode`, if given, becomes `/F1`'s ToUnicode stream.
+pub fn one_page(content: &[u8], to_unicode: Option<&[u8]>) -> Vec<u8> {
+    let res = "<< /Font << /F1 5 0 R >> /XObject << /Im1 6 0 R /Fm1 7 0 R >> >>";
+    let font = match to_unicode {
+        Some(_) => "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /ToUnicode 8 0 R >>",
+        None => "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    };
+    let objects: Vec<Vec<u8>> = vec![
+        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+        format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources {res} >>").into_bytes(),
+        stream("", content),
+        font.as_bytes().to_vec(),
+        stream("/Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8", b"\x00\x01\x02\x03"),
+        stream(
+            &format!("/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Resources {res}"),
+            b"q /Im1 Do Q 0 0 m 1 1 l S BT /F1 1 Tf (a) Tj ET",
+        ),
+        stream("", to_unicode.unwrap_or_default()),
+    ];
+    let mut out = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, body) in objects.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n", i + 1).as_bytes());
+        out.extend_from_slice(body);
+        out.extend_from_slice(b"\nendobj\n");
+    }
+    let xref = out.len();
+    out.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes());
+    for off in offsets {
+        out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(
+        format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objects.len() + 1)
+            .as_bytes(),
+    );
+    out
+}

@@ -1,0 +1,311 @@
+//! What one extraction pass over a page returns. All coordinates are in default user
+//! space (bottom-left origin, y up, `/Rotate` not applied).
+
+use pawdf_core::Diagnostic;
+
+use crate::geom::{Matrix, Point, Rect};
+
+/// Everything extracted from one page, in content-stream order.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PageContent {
+    /// One entry per character code shown.
+    pub glyphs: Vec<Glyph>,
+    /// Painted paths. Clip-only and `n` paths are dropped.
+    pub paths: Vec<Path>,
+    /// One entry per image placement.
+    pub images: Vec<Image>,
+    /// Fonts referenced by [`Glyph::font`].
+    pub fonts: Vec<FontInfo>,
+    /// Recoveries made during this pass only.
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// One shown character code.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Glyph {
+    /// Unicode text; several characters for a ligature, U+FFFD when unmappable.
+    pub text: String,
+    /// The raw character code.
+    pub code: u32,
+    /// Index into [`PageContent::fonts`].
+    pub font: usize,
+    /// Font size (`Tfs`).
+    pub size: f64,
+    /// Text rendering matrix `Trm` (§9.4.4).
+    pub matrix: Matrix,
+    /// Glyph origin.
+    pub origin: Point,
+    /// Length of the displacement along the writing direction.
+    pub advance: f64,
+    /// Axis-aligned bound of the glyph box.
+    pub bbox: Rect,
+    /// Writing mode of the font.
+    pub wmode: WritingMode,
+    /// Text rendering mode (`Tr`).
+    pub render_mode: RenderMode,
+    /// Fill color.
+    pub fill: Color,
+    /// Stroke color.
+    pub stroke: Color,
+    /// Fill alpha (`ca`).
+    pub fill_alpha: f64,
+    /// Stroke alpha (`CA`).
+    pub stroke_alpha: f64,
+}
+
+/// Writing mode (§9.7.4.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WritingMode {
+    /// Left to right.
+    Horizontal,
+    /// Top to bottom.
+    Vertical,
+}
+
+/// Text rendering mode `Tr` 0..=7 (§9.3.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenderMode {
+    /// 0.
+    Fill,
+    /// 1.
+    Stroke,
+    /// 2.
+    FillStroke,
+    /// 3: neither filled nor stroked.
+    Invisible,
+    /// 4.
+    FillClip,
+    /// 5.
+    StrokeClip,
+    /// 6.
+    FillStrokeClip,
+    /// 7.
+    Clip,
+}
+
+/// A font as seen from one page.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FontInfo {
+    /// `/BaseFont`, including any subset tag.
+    pub base_font: String,
+    /// The font type.
+    pub kind: FontKind,
+    /// Whether a font program is embedded.
+    pub embedded: bool,
+    /// Writing mode.
+    pub wmode: WritingMode,
+}
+
+/// Font dictionary `/Subtype`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FontKind {
+    /// `Type1`.
+    Type1,
+    /// `MMType1`.
+    MmType1,
+    /// `TrueType`.
+    TrueType,
+    /// `Type3`.
+    Type3,
+    /// `Type0` (composite).
+    Type0,
+}
+
+/// A painted path.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Path {
+    /// Segments in user space.
+    pub segments: Vec<Segment>,
+    /// Whether it is stroked.
+    pub stroke: bool,
+    /// The fill rule, if filled.
+    pub fill: Option<FillRule>,
+    /// Line width in the path's own space; transform it by `ctm` for user space.
+    pub line_width: f64,
+    /// CTM at painting time.
+    pub ctm: Matrix,
+    /// Fill color.
+    pub fill_color: Color,
+    /// Stroke color.
+    pub stroke_color: Color,
+    /// Fill alpha (`ca`).
+    pub fill_alpha: f64,
+    /// Stroke alpha (`CA`).
+    pub stroke_alpha: f64,
+}
+
+/// A path segment.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Segment {
+    /// Start a subpath.
+    MoveTo(Point),
+    /// Straight line.
+    LineTo(Point),
+    /// Cubic Bézier: two control points, then the end point.
+    CurveTo(Point, Point, Point),
+    /// Close the current subpath.
+    Close,
+}
+
+/// Fill rule (§8.5.3.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FillRule {
+    /// Nonzero winding number.
+    NonZero,
+    /// Even-odd.
+    EvenOdd,
+}
+
+/// A color in its own color space; no conversion is done.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Color {
+    /// DeviceGray, or ICCBased with one component.
+    Gray(f32),
+    /// DeviceRGB, or ICCBased with three components.
+    Rgb([f32; 3]),
+    /// DeviceCMYK, or ICCBased with four components.
+    Cmyk([f32; 4]),
+    /// Any other color space, with its raw components.
+    Other {
+        /// The color space family.
+        family: ColorSpaceFamily,
+        /// The components as given.
+        components: Vec<f32>,
+    },
+    /// A pattern, by its resource name.
+    Pattern(String),
+}
+
+/// Color space families other than the device spaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorSpaceFamily {
+    /// `CalGray`.
+    CalGray,
+    /// `CalRGB`.
+    CalRgb,
+    /// `Lab`.
+    Lab,
+    /// `Separation`.
+    Separation,
+    /// `DeviceN`.
+    DeviceN,
+    /// `Indexed`.
+    Indexed,
+    /// Unrecognized, or `ICCBased` with an unusual component count.
+    Unknown,
+}
+
+/// A placed image.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Image {
+    /// XObject resource name; `None` for inline images.
+    pub name: Option<String>,
+    /// Whether this is an inline image (`BI ID EI`).
+    pub inline: bool,
+    /// Maps the unit square to user space.
+    pub ctm: Matrix,
+    /// The unit square in user space.
+    pub bbox: Rect,
+    /// Width in samples.
+    pub width: u32,
+    /// Height in samples.
+    pub height: u32,
+    /// Bits per component.
+    pub bpc: u8,
+    /// Color space; `None` for image masks and images that do not declare one.
+    pub color_space: Option<ColorSpace>,
+    /// Whether this is a stencil mask (`/ImageMask true`).
+    pub image_mask: bool,
+    /// `/Decode` array, if present.
+    pub decode: Option<Vec<f32>>,
+    /// Sample data, or codec bytes.
+    pub data: ImageData,
+    /// `/SMask`, if present.
+    pub smask: Option<SoftMask>,
+}
+
+/// An image color space.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ColorSpace {
+    /// One component.
+    Gray,
+    /// Three components.
+    Rgb,
+    /// Four components.
+    Cmyk,
+    /// A palette over `base`.
+    Indexed {
+        /// The base color space.
+        base: Box<ColorSpace>,
+        /// The highest valid index.
+        hival: u8,
+        /// `(hival + 1) × components(base)` bytes.
+        lookup: Vec<u8>,
+    },
+    /// Any other color space.
+    Other {
+        /// The family.
+        family: ColorSpaceFamily,
+        /// Number of components.
+        components: u8,
+    },
+}
+
+/// Image bytes after the non-codec filters.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ImageData {
+    /// Decoded samples, packed per row as in the PDF.
+    Samples(Vec<u8>),
+    /// JPEG (`DCTDecode`) file bytes.
+    Jpeg(Vec<u8>),
+    /// JPEG 2000 (`JPXDecode`) bytes.
+    Jpx(Vec<u8>),
+    /// JBIG2 embedded stream.
+    Jbig2 {
+        /// The page data.
+        data: Vec<u8>,
+        /// Decoded `/JBIG2Globals`, if any.
+        globals: Option<Vec<u8>>,
+    },
+    /// CCITT fax data.
+    Ccitt {
+        /// The encoded data.
+        data: Vec<u8>,
+        /// The decode parameters.
+        params: CcittParams,
+    },
+}
+
+/// `CCITTFaxDecode` parameters (§7.4.6, Table 11).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CcittParams {
+    /// `/K`.
+    pub k: i32,
+    /// `/Columns`.
+    pub columns: u32,
+    /// `/Rows`.
+    pub rows: u32,
+    /// `/BlackIs1`.
+    pub black_is_1: bool,
+    /// `/EncodedByteAlign`.
+    pub encoded_byte_align: bool,
+    /// `/EndOfLine`.
+    pub end_of_line: bool,
+    /// `/EndOfBlock`.
+    pub end_of_block: bool,
+}
+
+/// A soft mask image (`/SMask`), always DeviceGray.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SoftMask {
+    /// Width in samples.
+    pub width: u32,
+    /// Height in samples.
+    pub height: u32,
+    /// Bits per component.
+    pub bpc: u8,
+    /// `/Decode` array, if present.
+    pub decode: Option<Vec<f32>>,
+    /// The mask data.
+    pub data: ImageData,
+}

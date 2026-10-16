@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
   "crates/pawdf_core",
+  "crates/pawdf_reader",
   "crates/pawdf_pyo3"
 ]
 
@@ -12,3 +13,5 @@ edition = "2024"
 [workspace.dependencies]
 pyo3 = { version = "0.30.1", features = ["abi3-py311"] }
 miniz_oxide = "0.9.1"
+pawdf_core = { path = "crates/pawdf_core" }
+pawdf_reader = { path = "crates/pawdf_reader" }

@@ -97,6 +97,15 @@ version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
  "pawdf_core",
+ "pawdf_reader",
+]
+
+[[package]]
+name = "pawdf_reader"
+version = "0.1.0"
+dependencies = [
+ "miniz_oxide",
+ "pawdf_core",
 ]
 
 [[package]]

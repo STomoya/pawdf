@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod content;
 mod diag;
 mod error;
 mod file;
@@ -11,6 +12,7 @@ mod object;
 mod parser;
 mod xref;
 
+pub use content::{Operation, parse_content};
 pub use diag::{Diagnostic, DiagnosticKind, Diagnostics, Location, Origin};
 pub use error::{Error, ErrorKind};
 pub use file::File;

@@ -1,0 +1,8 @@
+[package]
+name = "pawdf_reader"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pawdf_core = { workspace = true }
+miniz_oxide = { workspace = true }

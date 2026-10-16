@@ -24,10 +24,60 @@ pub enum DiagnosticKind {
     FilterError,
     /// Decoded data exceeded the size limit and was truncated.
     StreamTooLarge,
-    /// Nesting or reference chains were too deep and were cut off.
+    /// Nesting, reference chains, or per-page work and output exceeded a limit and were cut off.
     RecursionLimit,
     /// The diagnostic limit was reached; later diagnostics were dropped.
     TooManyDiagnostics,
+    /// The page tree was malformed (cycle, bad node, bad box, or bad `/Rotate`).
+    BadPageTree,
+    /// An operator had the wrong operand count or type, or a non-finite number; it was skipped.
+    BadOperands,
+    /// An unknown operator appeared outside `BX`/`EX`.
+    UnknownOperator,
+    /// A text operator appeared outside `BT`/`ET`, or `BT` was nested.
+    MisplacedOperator,
+    /// `Q` with an empty state stack, or `ET` without `BT`.
+    UnbalancedRestore,
+    /// A named font, XObject, color space, or ExtGState was not in the resources.
+    MissingResource,
+    /// A font dictionary was unusable; fallback metrics were used.
+    BadFont,
+    /// A character code has no Unicode mapping.
+    UnmappedGlyph,
+    /// A malformed CMap entry was skipped.
+    BadCMap,
+    /// An image had bad dimensions or short data, or an inline image had no `EI`.
+    BadImage,
+}
+
+impl DiagnosticKind {
+    /// The kind as a snake_case name, as exposed to Python.
+    pub fn name(self) -> &'static str {
+        match self {
+            DiagnosticKind::MissingHeader => "missing_header",
+            DiagnosticKind::XrefRepaired => "xref_repaired",
+            DiagnosticKind::BadXrefEntry => "bad_xref_entry",
+            DiagnosticKind::ObjectNotFound => "object_not_found",
+            DiagnosticKind::ObjectMismatch => "object_mismatch",
+            DiagnosticKind::BadObject => "bad_object",
+            DiagnosticKind::BadStreamLength => "bad_stream_length",
+            DiagnosticKind::UnknownFilter => "unknown_filter",
+            DiagnosticKind::FilterError => "filter_error",
+            DiagnosticKind::StreamTooLarge => "stream_too_large",
+            DiagnosticKind::RecursionLimit => "recursion_limit",
+            DiagnosticKind::TooManyDiagnostics => "too_many_diagnostics",
+            DiagnosticKind::BadPageTree => "bad_page_tree",
+            DiagnosticKind::BadOperands => "bad_operands",
+            DiagnosticKind::UnknownOperator => "unknown_operator",
+            DiagnosticKind::MisplacedOperator => "misplaced_operator",
+            DiagnosticKind::UnbalancedRestore => "unbalanced_restore",
+            DiagnosticKind::MissingResource => "missing_resource",
+            DiagnosticKind::BadFont => "bad_font",
+            DiagnosticKind::UnmappedGlyph => "unmapped_glyph",
+            DiagnosticKind::BadCMap => "bad_cmap",
+            DiagnosticKind::BadImage => "bad_image",
+        }
+    }
 }
 
 /// Where a diagnostic happened.
