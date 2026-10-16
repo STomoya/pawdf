@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod cmap;
 mod content;
 mod data;
 mod document;
