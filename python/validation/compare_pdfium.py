@@ -22,7 +22,7 @@ Documented pdfium policies the comparison accounts for (core/fpdftext/cpdf_textp
 - A hyphen that ends a line is reported as U+0002 (ProcessInsertObject's kHyphen case);
   it is compared as '-'.
 - A code without Unicode is reported as the code itself (CharType::kNotUnicode), where
-  pawdf reports U+FFFD; U+FFFD matches any pdfium character at the same origin.
+  pawdf reports U+FFFD; such a glyph is compared as chr(code), so it matches only that.
 - ProcessTextObject reorders text objects on one line by x. Characters that difflib
   cannot align are therefore re-paired by character and origin before being reported.
 
@@ -71,7 +71,8 @@ def pawdf_chars(content: pawdf.PageContent) -> list[tuple[str, float, float]]:
     """One (char, x, y) per character of each glyph's text, with space runs collapsed."""
     out: list[tuple[str, float, float]] = []
     for g in content.glyphs:
-        for ch in g.text:
+        text = chr(g.code) if g.text == UNMAPPED and g.code else g.text
+        for ch in text:
             if ch == ' ' and out and out[-1][0] == ' ':
                 continue
             out.append((ch, *g.origin))
@@ -151,7 +152,7 @@ def compare_glyphs(report: PageReport, ours: list, theirs: list) -> None:
                 report.position.append(f'{ch!r} ours=({x0:.2f}, {y0:.2f}) pdfium=({x1:.2f}, {y1:.2f})')
     for o in left:
         match = next(
-            (t for t in right if (t[0] == o[0] or o[0] == UNMAPPED) and near(o, t)),
+            (t for t in right if t[0] == o[0] and near(o, t)),
             None,
         )
         if match is None:
