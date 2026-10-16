@@ -41,6 +41,8 @@ dev = [
 build = [
     "maturin[zig]>=1.15.0",
 ]
+# Approved by the maintainer: pdfium is the reference reader for python/validation/compare_pdfium.py.
+# Validation only; never a runtime dependency.
 validation = [
     "pypdfium2>=5.14.0",
 ]
