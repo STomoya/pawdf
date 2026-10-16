@@ -85,10 +85,7 @@ impl File {
         if trailer.contains_key(b"Encrypt") {
             return Err(Error::new(ErrorKind::Encrypted, offset as u64));
         }
-        if !trailer
-            .get(b"Root")
-            .is_some_and(|r| matches!(r, Object::Ref(_)))
-        {
+        if !matches!(trailer.get(b"Root"), Some(Object::Ref(r)) if entries.contains_key(&r.num)) {
             return Err(Error::new(ErrorKind::Unrecoverable, offset as u64));
         }
         let file = File {

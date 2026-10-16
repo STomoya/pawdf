@@ -222,6 +222,7 @@ fn read_stream(data: &[u8], offset: usize, diags: &mut Diagnostics) -> Option<(E
     let row_len = w0 + w1 + w2;
     let mut rows = decoded.chunks_exact(row_len.max(1));
     let mut entries = Entries::new();
+    let mut row_at = 0;
     'outer: for &[first, count] in index.as_chunks::<2>().0 {
         let (Ok(first), Ok(count)) = (u32::try_from(first), u64::try_from(count)) else {
             diags.push(DiagnosticKind::BadXrefEntry, loc);
@@ -232,7 +233,13 @@ fn read_stream(data: &[u8], offset: usize, diags: &mut Diagnostics) -> Option<(E
                 diags.push(DiagnosticKind::BadXrefEntry, loc);
                 break 'outer;
             };
+            let row_loc = Location::Stream {
+                obj: r,
+                offset: row_at as u64,
+            };
+            row_at += row.len();
             let Some(num) = u32::try_from(i).ok().and_then(|i| first.checked_add(i)) else {
+                diags.push(DiagnosticKind::BadXrefEntry, row_loc);
                 break 'outer;
             };
             let (f0, rest) = row.split_at(w0);
@@ -243,17 +250,19 @@ fn read_stream(data: &[u8], offset: usize, diags: &mut Diagnostics) -> Option<(E
                 1 => usize::try_from(be(f1))
                     .ok()
                     .filter(|&offset| offset > 0 && offset < data.len())
-                    .map(|offset| Entry::InFile { offset }),
+                    .map(|offset| Entry::InFile { offset })
+                    .ok_or(()),
                 2 => match (u32::try_from(be(f1)), u32::try_from(be(f2))) {
-                    (Ok(stream), Ok(index)) => Some(Entry::InStream { stream, index }),
-                    _ => None,
+                    (Ok(stream), Ok(index)) => Ok(Entry::InStream { stream, index }),
+                    _ => Err(()),
                 },
-                _ => None,
+                _ => continue,
             };
-            if let Some(entry) = entry
-                && num <= MAX_OBJECT_NUM
-            {
-                entries.entry(num).or_insert(entry);
+            match entry {
+                Ok(entry) if num <= MAX_OBJECT_NUM => {
+                    entries.entry(num).or_insert(entry);
+                }
+                _ => diags.push(DiagnosticKind::BadXrefEntry, row_loc),
             }
         }
     }
@@ -271,8 +280,8 @@ pub(crate) fn header_matches(data: &[u8], offset: usize, num: u32) -> bool {
 
 /// Rebuilds the cross-reference by scanning for `N G obj` and `trailer` (what mature readers
 /// do with broken files). Later definitions win. Objects inside object streams are added
-/// when no direct definition exists. If no trailer names a `/Root`, the first
-/// `/Type /Catalog` object is used.
+/// when no direct definition exists. If no trailer names a `/Root` the scan found, the
+/// first `/Type /Catalog` object is used.
 ///
 /// The scan is a single forward pass: candidates inside an object or trailer already
 /// parsed are skipped, so crafted files cannot make it quadratic.
@@ -357,9 +366,9 @@ pub(crate) fn repair(data: &[u8]) -> (Entries, Dict) {
         .collect();
     parts.extend(trailer_parts);
     let mut trailer = Dict::from_entries(parts);
-    if !trailer.contains_key(b"Root")
-        && let Some(r) = catalog
-    {
+    let root_found =
+        matches!(trailer.get(b"Root"), Some(Object::Ref(r)) if entries.contains_key(&r.num));
+    if !root_found && let Some(r) = catalog {
         trailer.insert("Root".into(), Object::Ref(r));
     }
     (entries, trailer)
@@ -471,8 +480,16 @@ mod tests {
     #[test]
     fn offsets_past_eof_are_dropped() {
         let data = xref_stream("/Size 3 /W [1 2 0]", &[1, 0, 5, 1, 0xff, 0xff, 1, 0, 6]);
-        let (entries, _) = read_stream(&data, 0, &mut Diagnostics::new()).unwrap();
+        let mut d = Diagnostics::new();
+        let (entries, _) = read_stream(&data, 0, &mut d).unwrap();
         assert_eq!(entries.keys().copied().collect::<Vec<_>>(), vec![0, 2]);
+        assert_eq!(
+            d.as_slice()
+                .iter()
+                .filter(|x| x.kind == DiagnosticKind::BadXrefEntry)
+                .count(),
+            1
+        );
     }
 
     #[test]

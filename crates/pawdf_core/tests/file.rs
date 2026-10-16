@@ -493,6 +493,42 @@ fn shared_xrefstm_is_read_once() {
     assert_eq!(count(&file, DiagnosticKind::BadXrefEntry), 1);
 }
 
+/// An xref stream row pointing past EOF is diagnosed, so the object is found by repair.
+#[test]
+fn xref_stream_offset_past_eof_falls_back_to_repair() {
+    let mut pdf = b"%PDF-1.7\n".to_vec();
+    let cat_at = pdf.len();
+    pdf.extend_from_slice(b"1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n");
+    pdf.extend_from_slice(b"2 0 obj << /Type /Pages >> endobj\n");
+    let xref_at = pdf.len();
+    let rows: Vec<[u8; 4]> = vec![[0, 0, 0, 0], [1, 0, cat_at as u8, 0], [1, 0xff, 0xff, 0]];
+    let data: Vec<u8> = rows.concat();
+    pdf.extend_from_slice(
+        format!(
+            "9 0 obj\n<< /Type /XRef /Size 3 /W [1 2 1] /Root 1 0 R /Length {} >>\nstream\n",
+            data.len()
+        )
+        .as_bytes(),
+    );
+    pdf.extend_from_slice(&data);
+    pdf.extend_from_slice(format!("\nendstream\nendobj\nstartxref\n{xref_at}\n%%EOF\n").as_bytes());
+    let file = File::from_bytes(pdf).unwrap();
+    assert!(file.resolve(r(2)).as_dict().is_some());
+    assert!(kinds(&file).contains(&DiagnosticKind::BadXrefEntry));
+}
+
+/// A trailer `/Root` naming no object falls back to the catalog the repair scan found.
+#[test]
+fn repair_replaces_dangling_root_with_catalog() {
+    let pdf = b"%PDF-1.7\n1 0 obj<</Type /Catalog>>endobj\ntrailer<</Root 99 0 R>>";
+    let file = File::from_bytes(pdf.to_vec()).unwrap();
+    assert_eq!(file.trailer().get(b"Root"), Some(&Object::Ref(r(1))));
+
+    let pdf = b"%PDF-1.7\n1 0 obj (x) endobj\ntrailer<</Root 99 0 R>>";
+    let err = File::from_bytes(pdf.to_vec()).err().unwrap();
+    assert_eq!(err.kind, ErrorKind::Unrecoverable);
+}
+
 /// Review I4 + I6: a dangling reference is reported once and does not trigger repair.
 #[test]
 fn missing_object_is_reported_once_without_repair() {

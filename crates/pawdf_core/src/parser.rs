@@ -242,15 +242,28 @@ fn stream_data(
     }
     diags.push(DiagnosticKind::BadStreamLength, Origin::File.at(start));
     let rest = &data[start..];
-    // The earliest of the two keywords, in one pass: searching for `endstream` to EOF
-    // first would make repeated streams without it quadratic.
-    let stop = (0..rest.len())
-        .find(|&i| rest[i..].starts_with(b"endstream") || rest[i..].starts_with(b"endobj"));
-    let (mut end, consumed) = match stop {
-        Some(i) if rest[i..].starts_with(b"endstream") => (i, start + i + 9),
-        Some(i) => (i, start + i),
-        None => (rest.len(), data.len()),
-    };
+    // Prefer `endstream`, since the data itself may contain `endobj`. A `stream` keyword
+    // after an `endobj` belongs to a later object, so the search ends there: scanning on
+    // to EOF would make repeated streams without `endstream` quadratic.
+    let mut endobj = None;
+    let mut found = None;
+    for i in 0..rest.len() {
+        let r = &rest[i..];
+        if r.starts_with(b"endstream") {
+            found = Some((i, start + i + 9));
+            break;
+        }
+        if endobj.is_none() {
+            if r.starts_with(b"endobj") {
+                endobj = Some(i);
+            }
+        } else if r.starts_with(b"stream") {
+            break;
+        }
+    }
+    let (mut end, consumed) = found
+        .or(endobj.map(|i| (i, start + i)))
+        .unwrap_or((rest.len(), data.len()));
     if rest[..end].ends_with(b"\r\n") {
         end -= 2;
     } else if rest[..end].ends_with(b"\n") || rest[..end].ends_with(b"\r") {
@@ -393,6 +406,22 @@ mod tests {
         let (_, o) = parse_indirect(data, 0, &no_len, &mut d).unwrap();
         assert_eq!(o.as_stream().unwrap().raw(), b"hello");
         assert_eq!(d.as_slice()[0].kind, DiagnosticKind::BadStreamLength);
+    }
+
+    #[test]
+    fn wrong_length_prefers_endstream_over_endobj_in_data() {
+        let data = b"7 0 obj << /Length 99 >> stream\nhello endobj world\nendstream endobj";
+        let mut d = Diagnostics::new();
+        let (_, o) = parse_indirect(data, 0, &no_len, &mut d).unwrap();
+        assert_eq!(o.as_stream().unwrap().raw(), b"hello endobj world");
+    }
+
+    #[test]
+    fn wrong_length_without_endstream_stops_at_endobj() {
+        let data = b"7 0 obj << /Length 99 >> stream\nhello\nendobj 8 0 obj << /Length 1 >> stream\nx\nendstream endobj";
+        let mut d = Diagnostics::new();
+        let (_, o) = parse_indirect(data, 0, &no_len, &mut d).unwrap();
+        assert_eq!(o.as_stream().unwrap().raw(), b"hello");
     }
 
     #[test]
