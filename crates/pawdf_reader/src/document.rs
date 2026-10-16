@@ -1,9 +1,10 @@
-use std::collections::HashSet;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 
 use pawdf_core::{Diagnostic, DiagnosticKind, Diagnostics, File, Location, Object, Ref};
 
 use crate::error::{Error, ErrorKind};
+use crate::font::{Font, load_font};
 use crate::geom::{Matrix, Rect, Rotation};
 
 const MAX_TREE_DEPTH: usize = 64;
@@ -23,6 +24,29 @@ pub(crate) struct Inner {
     pub file: File,
     pub pages: Vec<PageInfo>,
     pub tree_diags: Vec<Diagnostic>,
+    /// Fonts by object, parsed once per document.
+    fonts: Mutex<HashMap<Ref, Arc<Font>>>,
+}
+
+impl Inner {
+    /// The font at `r`, loading it on first use. Load problems are reported to the
+    /// pass that loads it.
+    pub fn font(&self, r: Ref, at: Location, diags: &mut Diagnostics) -> Arc<Font> {
+        let mut fonts = self.fonts.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(f) = fonts.get(&r) {
+            return Arc::clone(f);
+        }
+        let font = match self.file.resolve(r).as_dict() {
+            Some(dict) => load_font(&self.file, dict, at, diags),
+            None => {
+                diags.push(DiagnosticKind::BadFont, at);
+                Font::fallback()
+            }
+        };
+        let font = Arc::new(font);
+        fonts.insert(r, Arc::clone(&font));
+        font
+    }
 }
 
 #[derive(Clone)]
@@ -46,6 +70,7 @@ impl Document {
             file,
             pages,
             tree_diags: diags.into_vec(),
+            fonts: Mutex::new(HashMap::new()),
         })))
     }
 
@@ -257,5 +282,38 @@ impl std::fmt::Debug for Page {
             .field("media_box", &self.info.media_box)
             .field("rotate", &self.info.rotate)
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testutil::build_pdf;
+
+    #[test]
+    fn font_cache_reuses_by_ref() {
+        let pdf = build_pdf(&[
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+            (2, b"<< /Type /Pages /Kids [3 0 R 4 0 R] >>"),
+            (
+                3,
+                b"<< /Type /Page /Resources << /Font << /F1 7 0 R >> >> >>",
+            ),
+            (
+                4,
+                b"<< /Type /Page /Resources << /Font << /F1 7 0 R >> >> >>",
+            ),
+            (7, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"),
+        ]);
+        let doc = Document::from_bytes(pdf).unwrap();
+        let r = Ref {
+            num: 7,
+            generation: 0,
+        };
+        let mut d = Diagnostics::new();
+        let a = doc.0.font(r, Location::File(0), &mut d);
+        let b = doc.0.font(r, Location::File(0), &mut d);
+        assert!(Arc::ptr_eq(&a, &b));
+        assert_eq!(a.info.base_font, "Helvetica");
     }
 }

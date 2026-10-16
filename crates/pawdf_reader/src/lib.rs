@@ -7,8 +7,11 @@ mod content;
 mod data;
 mod document;
 mod error;
+mod font;
 mod geom;
 mod model;
+#[cfg(test)]
+mod testutil;
 
 pub use document::{Document, Page};
 pub use error::{Error, ErrorKind};
