@@ -9,14 +9,14 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use pawdf_core::{
-    DiagnosticKind, Diagnostics, Dict, File, Location, Object, Operation, Origin, Ref, Stream,
-    parse_content,
+    DiagnosticKind, Diagnostics, Dict, File, Location, MAX_DECODED_LEN, Object, Operation, Origin,
+    Ref, Stream, parse_content,
 };
 
 use crate::document::{Inner, Page, numbers};
 use crate::font::Font;
 use crate::geom::{Matrix, Point, Rect};
-use crate::image::{expand_inline, read_image};
+use crate::image::{ImageParts, expand_inline, read_image};
 use crate::model::{FillRule, Image, PageContent, Path, Segment};
 use color::{Space, device_space, resolve_space};
 use state::{FontKey, GraphicsState, matrix, name, nums};
@@ -26,6 +26,9 @@ const MAX_FORM_DEPTH: usize = 32;
 /// Operations executed per pass, counting every form invocation. Forms that draw each
 /// other several times form a DAG that cycle and depth checks do not bound.
 const MAX_OPERATIONS: usize = 1 << 22;
+/// Image bytes returned per pass. Each placement owns its data, so a small file placing
+/// one large image many times would otherwise ask for unbounded memory.
+const MAX_IMAGE_BYTES: usize = MAX_DECODED_LEN;
 
 impl Page {
     /// Extracts glyphs, painted paths, and images. Never fails: problems become
@@ -108,6 +111,10 @@ pub(crate) struct Interp<'a> {
     /// Parsed streams by object, so repeated forms and `/Contents` entries decode once.
     parsed: HashMap<Ref, Option<Rc<Vec<Operation>>>>,
     ops_left: usize,
+    /// Decoded image XObjects by object, so repeated placements decode once.
+    images: HashMap<Ref, Option<Rc<ImageParts>>>,
+    image_bytes_left: usize,
+    image_budget_reported: bool,
 }
 
 impl<'a> Interp<'a> {
@@ -137,6 +144,9 @@ impl<'a> Interp<'a> {
             stack_floor: 0,
             parsed: HashMap::new(),
             ops_left: MAX_OPERATIONS,
+            images: HashMap::new(),
+            image_bytes_left: MAX_IMAGE_BYTES,
+            image_budget_reported: false,
         }
     }
 
@@ -253,7 +263,7 @@ impl<'a> Interp<'a> {
             b"BI" => match args {
                 [Object::Stream(s)] => {
                     let s = Stream::new(expand_inline(&s.dict), s.raw().to_vec());
-                    self.place_image(&s, None, op.location);
+                    self.place_image(&s, None, op.location, None);
                     true
                 }
                 _ => false,
@@ -382,15 +392,20 @@ impl<'a> Interp<'a> {
         match s.dict.get(b"Subtype").and_then(Object::as_name) {
             Some(b"Image") => {
                 let name = String::from_utf8_lossy(key).into_owned();
-                self.place_image(s, Some(name), Location::Stream { obj: r, offset: 0 });
+                self.place_image(
+                    s,
+                    Some(name),
+                    Location::Stream { obj: r, offset: 0 },
+                    Some(r),
+                );
             }
             Some(b"Form") => self.run_form(r, s, op),
             _ => {}
         }
     }
 
-    /// Emits one image placement. `name` is `None` for inline images.
-    fn place_image(&mut self, s: &Stream, name: Option<String>, at: Location) {
+    /// Decodes an image stream, resolving named color spaces in the current resources.
+    fn read_image(&mut self, s: &Stream, at: Location) -> Option<ImageParts> {
         let file = self.file;
         let mut diags = std::mem::take(&mut self.diags);
         let mut space = |obj: &Object, diags: &mut Diagnostics| match file.deref(obj) {
@@ -400,13 +415,39 @@ impl<'a> Interp<'a> {
             }),
             other => resolve_space(file, other, diags),
         };
-        // ponytail: each placement decodes and owns its data; a per-page Arc cache keyed by
-        // Ref if memory matters.
         let parts = read_image(file, s, at, &mut space, true, &mut diags);
         self.diags = diags;
+        parts
+    }
+
+    /// Emits one image placement. `name` is `None` for inline images.
+    fn place_image(&mut self, s: &Stream, name: Option<String>, at: Location, obj: Option<Ref>) {
+        let cached = obj.and_then(|r| self.images.get(&r).cloned());
+        let parts = match cached {
+            Some(parts) => parts,
+            None => {
+                let parts = self.read_image(s, at).map(Rc::new);
+                if let Some(r) = obj {
+                    self.images.insert(r, parts.clone());
+                }
+                parts
+            }
+        };
         let Some(p) = parts else {
             return;
         };
+        let bytes = p.data_len();
+        if bytes > self.image_bytes_left {
+            if !self.image_budget_reported {
+                self.image_budget_reported = true;
+                self.diags.push(DiagnosticKind::BadImage, at);
+            }
+            return;
+        }
+        self.image_bytes_left -= bytes;
+        // ponytail: each placement owns a copy of the decoded data, bounded by the per-pass
+        // byte budget; share it (Arc in the public type) if memory matters.
+        let p = ImageParts::clone(&p);
         let ctm = self.gs.ctm;
         self.out.images.push(Image {
             inline: name.is_none(),

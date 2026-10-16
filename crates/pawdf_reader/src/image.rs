@@ -8,6 +8,7 @@ use crate::content::color::Space;
 use crate::model::{CcittParams, ColorSpace, ImageData, SoftMask};
 
 /// Everything of an [`crate::model::Image`] that does not depend on where it is placed.
+#[derive(Clone)]
 pub(crate) struct ImageParts {
     pub width: u32,
     pub height: u32,
@@ -17,6 +18,18 @@ pub(crate) struct ImageParts {
     pub decode: Option<Vec<f32>>,
     pub data: ImageData,
     pub smask: Option<SoftMask>,
+}
+
+impl ImageParts {
+    /// Bytes of image and soft-mask data.
+    pub fn data_len(&self) -> usize {
+        let len = |d: &ImageData| match d {
+            ImageData::Samples(b) | ImageData::Jpeg(b) | ImageData::Jpx(b) => b.len(),
+            ImageData::Jbig2 { data, globals } => data.len() + globals.as_ref().map_or(0, Vec::len),
+            ImageData::Ccitt { data, .. } => data.len(),
+        };
+        len(&self.data) + self.smask.as_ref().map_or(0, |m| len(&m.data))
+    }
 }
 
 /// Expands inline-image abbreviations (§8.9.7, Table 91) to full key names.
@@ -207,7 +220,7 @@ fn public_space(s: &Space) -> Option<ColorSpace> {
         } => ColorSpace::Indexed {
             base: Box::new(public_space(base)?),
             hival: *hival,
-            lookup: lookup.clone(),
+            lookup: lookup.to_vec(),
         },
         Space::Other { family, n } => ColorSpace::Other {
             family: *family,

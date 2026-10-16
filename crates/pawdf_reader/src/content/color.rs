@@ -1,5 +1,7 @@
 //! Color spaces and color operators (§8.6).
 
+use std::sync::Arc;
+
 use pawdf_core::{Diagnostics, File, Location, Object};
 
 use crate::model::{Color, ColorSpaceFamily};
@@ -16,7 +18,8 @@ pub(crate) enum Space {
     Indexed {
         base: Box<Space>,
         hival: u8,
-        lookup: Vec<u8>,
+        /// Shared: the graphics state is cloned on every `q`.
+        lookup: Arc<[u8]>,
     },
     Other {
         family: ColorSpaceFamily,
@@ -154,10 +157,14 @@ fn resolve_depth(
                 },
                 _ => return None,
             };
+            // §8.6.6.3: only (hival + 1) × components bytes are meaningful.
+            let used = (usize::from(hival) + 1) * base.components();
+            let mut lookup = lookup;
+            lookup.truncate(used);
             Some(Space::Indexed {
                 base: Box::new(base),
                 hival,
-                lookup,
+                lookup: lookup.into(),
             })
         }
         b"Pattern" => Some(Space::Pattern),

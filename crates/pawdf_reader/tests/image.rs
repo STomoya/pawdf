@@ -371,3 +371,43 @@ fn form_fan_out_is_bounded() {
         1
     );
 }
+
+#[test]
+fn indexed_lookup_is_truncated_to_its_palette() {
+    let c = with_image(
+        "/Width 1 /Height 1 /BitsPerComponent 8 /ColorSpace [/Indexed /DeviceRGB 1 <ff000000ff00aabbccddeeff>]",
+        b"\x00",
+    );
+    let Some(ColorSpace::Indexed { lookup, .. }) = &c.images[0].color_space else {
+        panic!("indexed")
+    };
+    assert_eq!(lookup.len(), 6);
+}
+
+#[test]
+fn repeated_placements_are_bounded() {
+    // A 1 MiB image placed 400 times would return 400 MiB of samples.
+    let samples = vec![0u8; 1 << 20];
+    let packed = miniz_oxide::deflate::compress_to_vec_zlib(&samples, 9);
+    let im = stream(
+        "/Type /XObject /Subtype /Image /Width 1024 /Height 1024 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode",
+        &packed,
+    );
+    let ops = "/Im1 Do ".repeat(400);
+    let c = run(
+        ops.as_bytes(),
+        "<< /XObject << /Im1 5 0 R >> >>",
+        &[(5, &im)],
+    );
+    let total: usize = c
+        .images
+        .iter()
+        .map(|i| match &i.data {
+            ImageData::Samples(d) => d.len(),
+            _ => 0,
+        })
+        .sum();
+    assert!(total <= 256 << 20, "{total}");
+    assert!(c.images.len() >= 200);
+    assert_eq!(kinds(&c), [DiagnosticKind::BadImage]);
+}
