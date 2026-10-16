@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
+use std::thread::ThreadId;
 
 use crate::diag::{Diagnostic, DiagnosticKind, Diagnostics, Location, Origin};
 use crate::error::{Error, ErrorKind};
@@ -20,6 +21,10 @@ struct Table {
     /// Object streams already parsed into `cache`. A member still empty afterwards is
     /// missing from its stream, and the stream is not decoded again.
     loaded_streams: Mutex<HashSet<u32>>,
+    /// Object streams being parsed, per thread. Re-entering one on the same thread is a
+    /// cycle. Another thread parses the stream itself instead of waiting, since waiting
+    /// could deadlock on streams whose members' filters point into each other.
+    loading_streams: Mutex<HashSet<(u32, ThreadId)>>,
 }
 
 impl Table {
@@ -29,6 +34,7 @@ impl Table {
             entries,
             cache,
             loaded_streams: Mutex::new(HashSet::new()),
+            loading_streams: Mutex::new(HashSet::new()),
         }
     }
 }
@@ -208,9 +214,12 @@ impl File {
         let obj = match *table.entries.get(&r.num)? {
             Entry::InFile { offset } => self.load_in_file(r.num, offset, depth)?,
             Entry::InStream { stream, .. } => {
-                let first_time = lock(&table.loaded_streams).insert(stream);
-                if first_time {
+                let key = (stream, std::thread::current().id());
+                if !lock(&table.loaded_streams).contains(&stream)
+                    && lock(&table.loading_streams).insert(key)
+                {
                     self.load_object_stream(table, stream, depth);
+                    lock(&table.loading_streams).remove(&key);
                 }
                 return slot.get();
             }
@@ -244,7 +253,9 @@ impl File {
             return None;
         };
         let mut lex = Lexer::at(&self.data, offset);
-        crate::parser::parse_header(&mut lex)?;
+        if crate::parser::parse_header(&mut lex)?.num != r.num {
+            return None;
+        }
         parse_object(&mut lex, Origin::File, &mut Diagnostics::new())?.as_int()
     }
 
@@ -275,7 +286,9 @@ impl File {
             generation: 0,
         };
         let Object::Stream(stream) = self.resolve_depth(stream_ref, depth + 1) else {
-            self.report(DiagnosticKind::ObjectNotFound, Location::File(0));
+            if lock(&table.loaded_streams).insert(stream_num) {
+                self.report(DiagnosticKind::ObjectNotFound, Location::File(0));
+            }
             return;
         };
         let mut diags = Diagnostics::new();
@@ -313,7 +326,10 @@ impl File {
             };
             let _ = slot.set(obj);
         }
-        self.lock_diags().append(diags);
+        // Only the first thread to finish reports, so a race does not duplicate diagnostics.
+        if lock(&table.loaded_streams).insert(stream_num) {
+            self.lock_diags().append(diags);
+        }
     }
 }
 

@@ -223,7 +223,11 @@ fn read_stream(data: &[u8], offset: usize, diags: &mut Diagnostics) -> Option<(E
     let mut rows = decoded.chunks_exact(row_len.max(1));
     let mut entries = Entries::new();
     let mut row_at = 0;
-    'outer: for &[first, count] in index.as_chunks::<2>().0 {
+    let (pairs, unpaired) = index.as_chunks::<2>();
+    if !unpaired.is_empty() {
+        diags.push(DiagnosticKind::BadXrefEntry, loc);
+    }
+    'outer: for &[first, count] in pairs {
         let (Ok(first), Ok(count)) = (u32::try_from(first), u64::try_from(count)) else {
             diags.push(DiagnosticKind::BadXrefEntry, loc);
             continue;
@@ -483,6 +487,22 @@ mod tests {
         let mut d = Diagnostics::new();
         let (entries, _) = read_stream(&data, 0, &mut d).unwrap();
         assert_eq!(entries.keys().copied().collect::<Vec<_>>(), vec![0, 2]);
+        assert_eq!(
+            d.as_slice()
+                .iter()
+                .filter(|x| x.kind == DiagnosticKind::BadXrefEntry)
+                .count(),
+            1
+        );
+    }
+
+    /// Review (PR #3): §7.5.8.2 `/Index` holds pairs; a trailing unpaired number is diagnosed.
+    #[test]
+    fn odd_index_length_is_diagnosed() {
+        let data = xref_stream("/Size 3 /Index [0 1 2] /W [1 2 0]", &[1, 0, 5]);
+        let mut d = Diagnostics::new();
+        let (entries, _) = read_stream(&data, 0, &mut d).unwrap();
+        assert_eq!(entries.keys().copied().collect::<Vec<_>>(), vec![0]);
         assert_eq!(
             d.as_slice()
                 .iter()

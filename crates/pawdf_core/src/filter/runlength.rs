@@ -24,7 +24,7 @@ pub(crate) fn decode(input: &[u8], _: &Dict) -> FilterResult {
                     return Err(Failure::Corrupt(out));
                 };
                 i += 1;
-                push_capped(&mut out, &vec![b; 257 - usize::from(len)])
+                push_capped(&mut out, &[b; 128][..257 - usize::from(len)])
             }
         };
         if pushed.is_err() {

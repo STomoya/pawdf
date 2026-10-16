@@ -598,3 +598,47 @@ fn object_stream_is_decoded_once_for_missing_members() {
     assert_eq!(file.resolve(r(4)), &Object::Null);
     assert_eq!(count(&file, DiagnosticKind::FilterError), 1);
 }
+
+/// Review (PR #3): a thread that finds another mid-way through loading an object stream
+/// must not resolve the stream's members to null.
+#[test]
+fn concurrent_object_stream_lookups_all_resolve() {
+    for _ in 0..200 {
+        let file = File::from_bytes(objstm_pdf("/Root 1 0 R")).unwrap();
+        let barrier = std::sync::Barrier::new(8);
+        std::thread::scope(|s| {
+            for i in 0..8 {
+                let (file, barrier) = (&file, &barrier);
+                s.spawn(move || {
+                    barrier.wait();
+                    assert!(file.resolve(r(1 + i % 2)).as_dict().is_some());
+                });
+            }
+        });
+        assert!(file.diagnostics().is_empty(), "{:?}", file.diagnostics());
+    }
+}
+
+/// Review (PR #3): an indirect `/Length` whose xref entry points at a different object is
+/// not trusted, even when that object's integer happens to land on a later `endstream`.
+#[test]
+fn indirect_length_with_mismatched_header_is_ignored() {
+    let swallowed = "\nendstream\nendobj\n4 0 obj\n<< /Length 3 >>\nstream\nxyz";
+    let wrong = ("hello".len() + swallowed.len()).to_string();
+    let objects: [(u32, &[u8]); 6] = [
+        (1, CATALOG),
+        (2, PAGES),
+        (3, b"<< /Length 5 0 R >>\nstream\nhello\nendstream"),
+        (4, b"<< /Length 3 >>\nstream\nxyz\nendstream"),
+        (5, b"5"),
+        (6, wrong.as_bytes()),
+    ];
+    let (pdf, offsets) = build_pdf(&objects, "/Root 1 0 R");
+    let row = |n: usize| format!("{:010} 00000 n", offsets[n].1);
+    let pdf = String::from_utf8(pdf)
+        .unwrap()
+        .replacen(&row(4), &row(5), 1);
+    let file = File::from_bytes(pdf.into_bytes()).unwrap();
+    assert_eq!(file.resolve(r(3)).as_stream().unwrap().raw(), b"hello");
+    assert!(kinds(&file).contains(&DiagnosticKind::BadStreamLength));
+}
