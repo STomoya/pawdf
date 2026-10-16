@@ -46,12 +46,13 @@ enum Glyphs {
 }
 
 impl Font {
-    /// The character codes in a string: one byte each for simple fonts, split by the
-    /// CMap's codespace for composite fonts (§9.7.6.2).
-    pub fn codes(&self, s: &[u8]) -> Vec<Code> {
+    /// The first `limit` character codes in a string: one byte each for simple fonts,
+    /// split by the CMap's codespace for composite fonts (§9.7.6.2).
+    pub fn codes(&self, s: &[u8], limit: usize) -> Vec<Code> {
         match &self.glyphs {
             Glyphs::Simple { .. } => s
                 .iter()
+                .take(limit)
                 .map(|&b| Code {
                     value: u32::from(b),
                     len: 1,
@@ -61,7 +62,7 @@ impl Font {
             Glyphs::Composite(c) => {
                 let mut out = Vec::new();
                 let mut rest = s;
-                while !rest.is_empty() {
+                while !rest.is_empty() && out.len() < limit {
                     let code = c.cmap.next_code(rest);
                     out.push(code);
                     rest = rest.get(usize::from(code.len).max(1)..).unwrap_or_default();
@@ -638,8 +639,12 @@ mod tests {
         assert_eq!(f.info.base_font, "Helvetica");
         assert_eq!(f.width(code(b'a')), 0.556);
         assert_eq!(f.unicode(code(b'a')).as_deref(), Some("a"));
+        assert_eq!(f.codes(b"abc", 2).len(), 2);
         assert_eq!(
-            f.codes(b"ab").iter().map(|c| c.value).collect::<Vec<_>>(),
+            f.codes(b"ab", usize::MAX)
+                .iter()
+                .map(|c| c.value)
+                .collect::<Vec<_>>(),
             [97, 98]
         );
     }

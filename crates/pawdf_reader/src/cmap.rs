@@ -15,6 +15,9 @@ const MAX_ENTRIES: usize = 1 << 20;
 /// Total `bfrange` codes expanded per CMap. Repeated ranges over the same codes do not
 /// grow the map, so the entry cap alone does not bound the work.
 const MAX_RANGE_WORK: u64 = 1 << 20;
+/// Codespace ranges kept per CMap, inherited ones included. Real CMaps declare a handful,
+/// and every code scans them all.
+const MAX_CODESPACE: usize = 64;
 /// Longest `usecmap` chain followed.
 pub(crate) const MAX_USECMAP_DEPTH: usize = 8;
 
@@ -135,6 +138,7 @@ impl CMap {
             }
         }
         let mut wmode = None;
+        let mut codespace_full = false;
         for op in parse_content(data, origin, diags) {
             let at = op.location;
             let args = op.operands.as_slice();
@@ -145,7 +149,12 @@ impl CMap {
                             [Object::String(lo), Object::String(hi)]
                                 if lo.len() == hi.len() && (1..=4).contains(&lo.len()) =>
                             {
-                                t.codespace.push((lo.clone(), hi.clone()));
+                                if t.codespace.len() < MAX_CODESPACE {
+                                    t.codespace.push((lo.clone(), hi.clone()));
+                                } else if !codespace_full {
+                                    codespace_full = true;
+                                    diags.push(DiagnosticKind::BadCMap, at);
+                                }
                             }
                             _ => diags.push(DiagnosticKind::BadCMap, at),
                         }
@@ -224,7 +233,8 @@ impl CMap {
         t.cids.sort_by_key(|r| (r.len, r.lo));
         t.notdef.sort_by_key(|r| (r.len, r.lo));
         if let Some(p) = t.parent.clone() {
-            t.codespace.extend(p.codespace.iter().cloned());
+            let room = MAX_CODESPACE.saturating_sub(t.codespace.len());
+            t.codespace.extend(p.codespace.iter().take(room).cloned());
             t.wmode = p.wmode;
             t.registry = t.registry.or_else(|| p.registry.clone());
             t.ordering = t.ordering.or_else(|| p.ordering.clone());
@@ -581,6 +591,28 @@ mod tests {
     fn unknown_usecmap_is_bad_cmap() {
         let (_, d) = parse("/Nope usecmap");
         assert_eq!(d, [DiagnosticKind::BadCMap]);
+    }
+
+    #[test]
+    fn codespace_ranges_are_capped() {
+        let src = format!(
+            "100 begincodespacerange {} endcodespacerange 100 begincodespacerange {} endcodespacerange",
+            "<FFFFFFFF> <FFFFFFFF> ".repeat(100),
+            "<00> <FF> ".repeat(100)
+        );
+        let (m, d) = parse(&src);
+        assert_eq!(m.codespace.len(), MAX_CODESPACE);
+        assert_eq!(d, [DiagnosticKind::BadCMap]);
+        let parent = Arc::new(m);
+        let mut d = Diagnostics::new();
+        let child = CMap::parse(
+            b"1 begincodespacerange <00> <7F> endcodespacerange /P usecmap",
+            Origin::File,
+            0,
+            &mut |_, _, _| Some(Arc::clone(&parent)),
+            &mut d,
+        );
+        assert_eq!(child.codespace.len(), MAX_CODESPACE);
     }
 
     #[test]

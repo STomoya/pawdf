@@ -238,7 +238,8 @@ impl<'a> Interp<'a> {
         };
         let ts = self.gs.text.clone();
         let ctm = self.gs.ctm;
-        for code in font.codes(s) {
+        // One past the budget, so running out is still reported.
+        for code in font.codes(s, self.glyphs_left.saturating_add(1)) {
             if self.glyphs_left == 0 {
                 if !self.glyph_budget_reported {
                     self.glyph_budget_reported = true;
