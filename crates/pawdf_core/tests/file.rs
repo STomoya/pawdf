@@ -400,3 +400,132 @@ fn malformed_table_entry_ends_table_but_keeps_trailer() {
     assert!(k.contains(&DiagnosticKind::BadXrefEntry));
     assert!(k.contains(&DiagnosticKind::XrefRepaired));
 }
+
+fn count(file: &File, kind: DiagnosticKind) -> usize {
+    file.diagnostics().iter().filter(|d| d.kind == kind).count()
+}
+
+fn assert_fast(what: &str, start: std::time::Instant) {
+    let took = start.elapsed();
+    assert!(
+        took < std::time::Duration::from_secs(1),
+        "{what} took {took:?}"
+    );
+}
+
+/// Review C1: repair must not re-parse from every `trailer` hit inside an earlier parse.
+#[test]
+fn repair_scan_is_linear_for_trailer_spam() {
+    let mut pdf = b"%PDF-1.4\n".to_vec();
+    pdf.extend_from_slice(&b"trailer(".repeat(20_000));
+    let start = std::time::Instant::now();
+    assert!(File::from_bytes(pdf).is_err());
+    assert_fast("trailer spam", start);
+}
+
+/// Review C1: same for `N G obj` hits that sit inside an unterminated earlier object.
+#[test]
+fn repair_scan_is_linear_for_unterminated_objects() {
+    let mut pdf = b"%PDF-1.4\n".to_vec();
+    for i in 0..10_000 {
+        pdf.extend_from_slice(format!("{i} 0 obj(").as_bytes());
+    }
+    let start = std::time::Instant::now();
+    assert!(File::from_bytes(pdf).is_err());
+    assert_fast("object spam", start);
+}
+
+/// Review I1: two sections naming the same `/XRefStm` must read it only once.
+#[test]
+fn shared_xrefstm_is_read_once() {
+    let objstm = b"<< /Type /ObjStm /N 1 /First 4 /Length 8 >>\nstream\n3 0 (hi)\nendstream";
+    let mut xrefstm =
+        b"<< /Type /XRef /Size 6 /Index [3 1] /W [1 2 1] /Length 4 >>\nstream\n".to_vec();
+    xrefstm.extend_from_slice(&[2, 0, 4, 0]);
+    xrefstm.extend_from_slice(b"\nendstream");
+    let objects: [(u32, &[u8]); 4] = [(1, CATALOG), (2, PAGES), (4, objstm), (5, &xrefstm)];
+    let (_, offsets) = build_pdf(&objects, "/Root 1 0 R");
+    let stm = offsets[3].1;
+    let (mut pdf, _) = build_pdf(&objects, &format!("/Root 1 0 R /XRefStm {stm}"));
+    let prev = xref_offset(&pdf);
+    let xref_at = pdf.len();
+    pdf.extend_from_slice(
+        format!(
+            "xref\n0 1\n0000000000 65535 f \ntrailer\n<< /Size 6 /Root 1 0 R /XRefStm {stm} /Prev {prev} >>\nstartxref\n{xref_at}\n%%EOF\n"
+        )
+        .as_bytes(),
+    );
+    let file = File::from_bytes(pdf).unwrap();
+    assert_eq!(file.resolve(r(3)), &Object::String(b"hi".to_vec()));
+    assert_eq!(count(&file, DiagnosticKind::BadXrefEntry), 1);
+}
+
+/// Review I4 + I6: a dangling reference is reported once and does not trigger repair.
+#[test]
+fn missing_object_is_reported_once_without_repair() {
+    let (pdf, _) = build_pdf(&[(1, CATALOG), (2, PAGES)], "/Root 1 0 R");
+    let file = File::from_bytes(pdf).unwrap();
+    assert_eq!(file.resolve(r(9)), &Object::Null);
+    assert_eq!(file.resolve(r(9)), &Object::Null);
+    assert_eq!(count(&file, DiagnosticKind::ObjectNotFound), 1);
+    assert_eq!(count(&file, DiagnosticKind::XrefRepaired), 0);
+}
+
+/// Review I4: a wrong entry is diagnosed once; later resolves reuse the repaired table.
+#[test]
+fn mismatched_entry_is_reported_once() {
+    let (pdf, offsets) = build_pdf(&[(1, CATALOG), (2, PAGES), (3, b"7")], "/Root 1 0 R");
+    let off3 = format!("{:010}", offsets[2].1);
+    let off2 = format!("{:010}", offsets[1].1);
+    let text = String::from_utf8(pdf).unwrap();
+    let xref_at = text.rfind("xref\n0 4").unwrap();
+    let (head, tail) = text.split_at(xref_at);
+    let pdf = format!("{head}{}", tail.replacen(&off3, &off2, 1)).into_bytes();
+    let file = File::from_bytes(pdf).unwrap();
+    assert_eq!(file.resolve(r(3)), &Object::Int(7));
+    assert_eq!(file.resolve(r(3)), &Object::Int(7));
+    assert_eq!(count(&file, DiagnosticKind::ObjectMismatch), 1);
+    assert_eq!(count(&file, DiagnosticKind::XrefRepaired), 1);
+}
+
+/// Review I4: members the xref places in an object stream but its header lacks must not
+/// re-decode the stream on every lookup. The hex data ends in `x`, so each decode adds
+/// one FilterError.
+#[test]
+fn object_stream_is_decoded_once_for_missing_members() {
+    let members = b"2 0 << /Type /Pages /Kids [] /Count 0 >>";
+    let hex: String = members.iter().map(|b| format!("{b:02x}")).collect();
+    let objstm = format!(
+        "<< /Type /ObjStm /N 1 /First 4 /Filter /ASCIIHexDecode /Length {} >>\nstream\n{hex}x\nendstream",
+        hex.len() + 1
+    );
+    let mut pdf = b"%PDF-1.7\n".to_vec();
+    let cat_at = pdf.len();
+    pdf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+    let stm_at = pdf.len();
+    pdf.extend_from_slice(format!("5 0 obj\n{objstm}\nendobj\n").as_bytes());
+    let xref_at = pdf.len();
+    let rows: Vec<[u8; 4]> = vec![
+        [0, 0, 0, 0],
+        [1, 0, cat_at as u8, 0],
+        [2, 0, 5, 0],
+        [2, 0, 5, 1],
+        [2, 0, 5, 2],
+        [1, (stm_at >> 8) as u8, stm_at as u8, 0],
+    ];
+    let data: Vec<u8> = rows.concat();
+    pdf.extend_from_slice(
+        format!(
+            "6 0 obj\n<< /Type /XRef /Size 6 /W [1 2 1] /Root 1 0 R /Length {} >>\nstream\n",
+            data.len()
+        )
+        .as_bytes(),
+    );
+    pdf.extend_from_slice(&data);
+    pdf.extend_from_slice(format!("\nendstream\nendobj\nstartxref\n{xref_at}\n%%EOF\n").as_bytes());
+    let file = File::from_bytes(pdf).unwrap();
+    assert!(file.resolve(r(2)).as_dict().is_some());
+    assert_eq!(file.resolve(r(3)), &Object::Null);
+    assert_eq!(file.resolve(r(4)), &Object::Null);
+    assert_eq!(count(&file, DiagnosticKind::FilterError), 1);
+}

@@ -5,11 +5,13 @@ use std::collections::{BTreeMap, HashSet};
 use crate::diag::{DiagnosticKind, Diagnostics, Location, Origin};
 use crate::lexer::{Lexer, Token, is_regular, is_whitespace};
 use crate::object::{Dict, Object, Ref};
-use crate::parser::{find, parse_header, parse_indirect, parse_object};
+use crate::parser::{find, parse_header, parse_indirect, parse_indirect_end, parse_object};
 
+/// An in-use object's location. Free entries are not stored: a free entry and a missing
+/// one both resolve to null, and storing them would let a tiny compressed xref stream
+/// allocate millions of entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Entry {
-    Free,
     InFile { offset: usize },
     InStream { stream: u32, index: u32 },
 }
@@ -18,6 +20,10 @@ pub(crate) type Entries = BTreeMap<u32, Entry>;
 
 /// Bounds the number of `/Prev` sections followed.
 const MAX_SECTIONS: usize = 4096;
+
+/// Largest object number kept: the 8,388,607 indirect-object limit of ISO 32000-1 Annex C.
+/// It bounds the entries a crafted xref stream can create.
+const MAX_OBJECT_NUM: u32 = 8_388_607;
 
 /// Byte offset of the last `startxref` value.
 fn find_startxref(data: &[u8]) -> Option<usize> {
@@ -28,16 +34,11 @@ fn find_startxref(data: &[u8]) -> Option<usize> {
     }
 }
 
-/// Newer sections win. A free entry never hides an in-use entry from an older section,
-/// because hybrid files mark objects free in the table that their `/XRefStm` defines.
+/// Newer sections win. Free entries are never stored, so a table that marks an object
+/// free does not hide the in-use entry a hybrid file's `/XRefStm` gives it.
 fn merge(into: &mut Entries, from: Entries) {
     for (num, e) in from {
-        match into.get(&num) {
-            None | Some(Entry::Free) => {
-                into.insert(num, e);
-            }
-            Some(_) => {}
-        }
+        into.entry(num).or_insert(e);
     }
 }
 
@@ -71,9 +72,13 @@ pub(crate) fn load(data: &[u8], diags: &mut Diagnostics) -> Option<(Entries, Dic
         };
         merge(&mut entries, section);
         if let Some(stm) = sec_trailer.get(b"XRefStm").and_then(int_offset) {
-            match read_section(data, stm, diags) {
-                Some((hidden, _)) => merge(&mut entries, hidden),
-                None => diags.push(DiagnosticKind::BadXrefEntry, Location::File(stm as u64)),
+            if !seen.insert(stm) {
+                diags.push(DiagnosticKind::BadXrefEntry, Location::File(stm as u64));
+            } else {
+                match read_section(data, stm, diags) {
+                    Some((hidden, _)) => merge(&mut entries, hidden),
+                    None => diags.push(DiagnosticKind::BadXrefEntry, Location::File(stm as u64)),
+                }
             }
         }
         merge_trailer(&mut trailer, &sec_trailer);
@@ -100,6 +105,7 @@ fn read_section(data: &[u8], offset: usize, diags: &mut Diagnostics) -> Option<(
 /// Classic table (§7.5.4). Malformed entries end the table early; the trailer is then
 /// searched for.
 fn read_table(lex: &mut Lexer, diags: &mut Diagnostics) -> (Entries, Dict) {
+    let data_len = lex.data().len();
     let mut entries = Entries::new();
     let mut first_subsection = true;
     'sections: while let Some((pos, tok)) = lex.next_token() {
@@ -141,18 +147,16 @@ fn read_table(lex: &mut Lexer, diags: &mut Diagnostics) -> (Entries, Dict) {
             let Ok(num) = u32::try_from(first + i) else {
                 break 'sections;
             };
-            let entry = match (kind.as_slice(), usize::try_from(off)) {
-                (b"n", Ok(offset)) if offset > 0 => Entry::InFile { offset },
-                (b"f", _) => Entry::Free,
-                _ => {
-                    diags.push(
-                        DiagnosticKind::BadXrefEntry,
-                        Location::File(entry_pos as u64),
-                    );
-                    Entry::Free
+            match (kind.as_slice(), usize::try_from(off)) {
+                (b"n", Ok(offset)) if offset > 0 && offset < data_len && num <= MAX_OBJECT_NUM => {
+                    entries.entry(num).or_insert(Entry::InFile { offset });
                 }
-            };
-            entries.entry(num).or_insert(entry);
+                (b"f", _) => {}
+                _ => diags.push(
+                    DiagnosticKind::BadXrefEntry,
+                    Location::File(entry_pos as u64),
+                ),
+            }
         }
         first_subsection = false;
     }
@@ -233,20 +237,23 @@ fn read_stream(data: &[u8], offset: usize, diags: &mut Diagnostics) -> Option<(E
             let (f0, rest) = row.split_at(w0);
             let (f1, f2) = rest.split_at(w1);
             let kind = if w0 == 0 { 1 } else { be(f0) };
+            // Type 0 is free; §7.5.8.3 treats unknown types as null references.
             let entry = match kind {
-                0 => Entry::Free,
-                1 => match usize::try_from(be(f1)) {
-                    Ok(offset) if offset > 0 => Entry::InFile { offset },
-                    _ => Entry::Free,
-                },
+                1 => usize::try_from(be(f1))
+                    .ok()
+                    .filter(|&offset| offset > 0 && offset < data.len())
+                    .map(|offset| Entry::InFile { offset }),
                 2 => match (u32::try_from(be(f1)), u32::try_from(be(f2))) {
-                    (Ok(stream), Ok(index)) => Entry::InStream { stream, index },
-                    _ => Entry::Free,
+                    (Ok(stream), Ok(index)) => Some(Entry::InStream { stream, index }),
+                    _ => None,
                 },
-                // §7.5.8.3: unknown types are treated as null references.
-                _ => Entry::Free,
+                _ => None,
             };
-            entries.entry(num).or_insert(entry);
+            if let Some(entry) = entry
+                && num <= MAX_OBJECT_NUM
+            {
+                entries.entry(num).or_insert(entry);
+            }
         }
     }
     Some((entries, stream.dict))
@@ -265,35 +272,43 @@ pub(crate) fn header_matches(data: &[u8], offset: usize, num: u32) -> bool {
 /// do with broken files). Later definitions win. Objects inside object streams are added
 /// when no direct definition exists. If no trailer names a `/Root`, the first
 /// `/Type /Catalog` object is used.
+///
+/// The scan is a single forward pass: candidates inside an object or trailer already
+/// parsed are skipped, so crafted files cannot make it quadratic.
 pub(crate) fn repair(data: &[u8]) -> (Entries, Dict) {
-    let mut entries = Entries::new();
-    let mut quiet = Diagnostics::new();
-    for pos in memfind_all(data, b"obj") {
-        if let Some((num, start)) = object_start(data, pos) {
-            entries.insert(num, Entry::InFile { offset: start });
-        }
-    }
-    let mut trailer = Dict::new();
-    for pos in memfind_all(data, b"trailer") {
-        let mut lex = Lexer::at(data, pos + 7);
-        if let Some(Object::Dict(d)) = parse_object(&mut lex, Origin::File, &mut quiet) {
-            for (k, v) in d.iter() {
-                trailer.insert(k.clone(), v.clone());
-            }
-        }
-    }
-    let direct: Vec<(u32, usize)> = entries
-        .iter()
-        .filter_map(|(&n, e)| match *e {
-            Entry::InFile { offset } => Some((n, offset)),
-            _ => None,
-        })
+    let mut hits: Vec<(usize, Option<u32>)> = memfind_all(data, b"obj")
+        .filter_map(|pos| object_start(data, pos))
+        .map(|(num, start)| (start, Some(num)))
+        .chain(memfind_all(data, b"trailer").map(|pos| (pos, None)))
         .collect();
+    hits.sort_unstable_by_key(|&(pos, _)| pos);
+    let mut entries = Entries::new();
+    let mut trailer = Dict::new();
     let mut catalog = None;
-    for (num, offset) in direct {
-        let Some((r, obj)) = parse_indirect(data, offset, &|_| None, &mut quiet) else {
+    let mut quiet = Diagnostics::new();
+    let mut consumed = 0;
+    for (pos, num) in hits {
+        if pos < consumed {
+            continue;
+        }
+        let Some(num) = num else {
+            let mut lex = Lexer::at(data, pos + 7);
+            if let Some(Object::Dict(d)) = parse_object(&mut lex, Origin::File, &mut quiet) {
+                for (k, v) in d.iter() {
+                    trailer.insert(k.clone(), v.clone());
+                }
+            }
+            consumed = lex.pos();
             continue;
         };
+        let Some((r, obj, end)) = parse_indirect_end(data, pos, &|_| None, &mut quiet) else {
+            continue;
+        };
+        consumed = end;
+        if num > MAX_OBJECT_NUM {
+            continue;
+        }
+        entries.insert(num, Entry::InFile { offset: pos });
         let Object::Stream(s) = &obj else {
             if catalog.is_none() && is_catalog(&obj) {
                 catalog = Some(r);
@@ -310,6 +325,9 @@ pub(crate) fn repair(data: &[u8]) -> (Entries, Dict) {
                 for (index, (member, off)) in
                     objstm_header(&s.dict, &decoded).into_iter().enumerate()
                 {
+                    if member > MAX_OBJECT_NUM {
+                        continue;
+                    }
                     let index = u32::try_from(index).unwrap_or(u32::MAX);
                     entries
                         .entry(member)
@@ -408,6 +426,46 @@ fn object_start(data: &[u8], pos: usize) -> Option<(u32, usize)> {
 mod tests {
     use super::*;
 
+    fn xref_stream(extra: &str, rows: &[u8]) -> Vec<u8> {
+        let mut out = format!(
+            "1 0 obj\n<< /Type /XRef {extra} /Length {} >>\nstream\n",
+            rows.len()
+        )
+        .into_bytes();
+        out.extend_from_slice(rows);
+        out.extend_from_slice(b"\nendstream\nendobj\n");
+        out
+    }
+
+    /// Review I2: free rows cost nothing, however many a stream declares.
+    #[test]
+    fn free_rows_are_not_stored() {
+        let data = xref_stream("/Size 1000 /W [1 0 0]", &[0; 1000]);
+        let (entries, _) = read_stream(&data, 0, &mut Diagnostics::new()).unwrap();
+        assert!(entries.is_empty());
+    }
+
+    /// Review I2: object numbers beyond the 8,388,607 implementation limit are dropped.
+    #[test]
+    fn object_numbers_beyond_limit_are_dropped() {
+        let data = xref_stream(
+            "/Size 9000000 /Index [8388606 3] /W [1 1 0]",
+            &[1, 5, 1, 5, 1, 5],
+        );
+        let (entries, _) = read_stream(&data, 0, &mut Diagnostics::new()).unwrap();
+        assert_eq!(
+            entries.keys().copied().collect::<Vec<_>>(),
+            vec![8388606, 8388607]
+        );
+    }
+
+    #[test]
+    fn offsets_past_eof_are_dropped() {
+        let data = xref_stream("/Size 3 /W [1 2 0]", &[1, 0, 5, 1, 0xff, 0xff, 1, 0, 6]);
+        let (entries, _) = read_stream(&data, 0, &mut Diagnostics::new()).unwrap();
+        assert_eq!(entries.keys().copied().collect::<Vec<_>>(), vec![0, 2]);
+    }
+
     #[test]
     fn object_start_finds_headers() {
         let data = b"x\n12 0 obj\n<<>>\nendobj 3 0 obj";
@@ -433,8 +491,8 @@ mod tests {
     }
 
     #[test]
-    fn merge_lets_in_use_override_free() {
-        let mut a = Entries::from([(1, Entry::Free), (2, Entry::InFile { offset: 9 })]);
+    fn merge_keeps_newer_entries() {
+        let mut a = Entries::from([(2, Entry::InFile { offset: 9 })]);
         let b = Entries::from([
             (1, Entry::InFile { offset: 5 }),
             (2, Entry::InFile { offset: 7 }),

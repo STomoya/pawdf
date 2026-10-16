@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 /// An indirect object reference (`num gen R`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Ref {
@@ -139,6 +141,19 @@ impl Dict {
     /// An empty dictionary.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Builds a dictionary from parsed entries; for a repeated key the last value wins.
+    /// Deduplicating once keeps parsing linear in the number of keys.
+    pub(crate) fn from_entries(entries: Vec<(Name, Object)>) -> Self {
+        let mut seen = HashSet::new();
+        let mut kept: Vec<(Name, Object)> = entries
+            .into_iter()
+            .rev()
+            .filter(|(k, _)| seen.insert(k.0.clone()))
+            .collect();
+        kept.reverse();
+        Dict(kept)
     }
 
     /// Value for `key`.

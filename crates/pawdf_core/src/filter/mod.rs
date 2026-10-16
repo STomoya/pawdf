@@ -130,7 +130,11 @@ impl Stream {
 
 /// Appends to `out`, failing with `TooLarge` once the cap is hit.
 pub(crate) fn push_capped(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), ()> {
-    let room = MAX_DECODED_LEN.saturating_sub(out.len());
+    push_capped_to(out, bytes, MAX_DECODED_LEN)
+}
+
+pub(crate) fn push_capped_to(out: &mut Vec<u8>, bytes: &[u8], cap: usize) -> Result<(), ()> {
+    let room = cap.saturating_sub(out.len());
     if bytes.len() > room {
         out.extend_from_slice(&bytes[..room]);
         return Err(());

@@ -100,7 +100,7 @@ fn parse_array(lex: &mut Lexer, origin: Origin, diags: &mut Diagnostics, depth: 
 }
 
 fn parse_dict(lex: &mut Lexer, origin: Origin, diags: &mut Diagnostics, depth: usize) -> Dict {
-    let mut dict = Dict::new();
+    let mut entries = Vec::new();
     loop {
         let Some((start, tok)) = lex.next_token() else {
             diags.push(DiagnosticKind::BadObject, origin.at(lex.pos()));
@@ -112,7 +112,7 @@ fn parse_dict(lex: &mut Lexer, origin: Origin, diags: &mut Diagnostics, depth: u
                 // `/Key >>` has no value; treat it as null and end the dictionary.
                 if let Some((_, Token::DictClose)) = lex.peek_token() {
                     diags.push(DiagnosticKind::BadObject, origin.at(start));
-                    dict.insert(Name(key), Object::Null);
+                    entries.push((Name(key), Object::Null));
                     continue;
                 }
                 let Some((vstart, vtok)) = lex.next_token() else {
@@ -120,7 +120,7 @@ fn parse_dict(lex: &mut Lexer, origin: Origin, diags: &mut Diagnostics, depth: u
                     break;
                 };
                 let value = parse_with_depth(lex, vstart, vtok, origin, diags, depth);
-                dict.insert(Name(key), value);
+                entries.push((Name(key), value));
             }
             // A stray keyword such as `endobj` means the closing `>>` is missing.
             Token::Keyword(k) if k == b"endobj" || k == b"stream" => {
@@ -134,7 +134,7 @@ fn parse_dict(lex: &mut Lexer, origin: Origin, diags: &mut Diagnostics, depth: u
             }
         }
     }
-    dict
+    Dict::from_entries(entries)
 }
 
 /// Parses an indirect object `num gen obj ... endobj` starting at `offset` in the file.
@@ -147,21 +147,30 @@ pub fn parse_indirect(
     length_of: &dyn Fn(Ref) -> Option<i64>,
     diags: &mut Diagnostics,
 ) -> Option<(Ref, Object)> {
+    parse_indirect_end(data, offset, length_of, diags).map(|(r, obj, _)| (r, obj))
+}
+
+/// [`parse_indirect`], plus the offset just past what was consumed.
+pub(crate) fn parse_indirect_end(
+    data: &[u8],
+    offset: usize,
+    length_of: &dyn Fn(Ref) -> Option<i64>,
+    diags: &mut Diagnostics,
+) -> Option<(Ref, Object, usize)> {
     let mut lex = Lexer::at(data, offset);
     let r = parse_header(&mut lex)?;
     let Some(obj) = parse_object(&mut lex, Origin::File, diags) else {
         diags.push(DiagnosticKind::BadObject, Origin::File.at(lex.pos()));
-        return Some((r, Object::Null));
+        return Some((r, Object::Null, lex.pos()));
     };
-    let obj = match (obj, lex.peek_token()) {
+    match (obj, lex.peek_token()) {
         (Object::Dict(dict), Some((_, Token::Keyword(k)))) if k == b"stream" => {
             lex.next_token();
-            let raw = stream_data(data, lex.pos(), &dict, length_of, diags);
-            Object::Stream(Stream::new(dict, raw))
+            let (raw, end) = stream_data(data, lex.pos(), &dict, length_of, diags);
+            Some((r, Object::Stream(Stream::new(dict, raw)), end))
         }
-        (obj, _) => obj,
-    };
-    Some((r, obj))
+        (obj, _) => Some((r, obj, lex.pos())),
+    }
 }
 
 /// Reads `num gen obj`.
@@ -184,14 +193,15 @@ pub(crate) fn parse_header(lex: &mut Lexer) -> Option<Ref> {
     })
 }
 
-/// §7.3.8.1. `pos` is just after the `stream` keyword.
+/// §7.3.8.1. `pos` is just after the `stream` keyword. Returns the data and the offset
+/// just past it (past `endstream` when that was found).
 fn stream_data(
     data: &[u8],
     pos: usize,
     dict: &Dict,
     length_of: &dyn Fn(Ref) -> Option<i64>,
     diags: &mut Diagnostics,
-) -> Vec<u8> {
+) -> (Vec<u8>, usize) {
     let mut start = pos;
     while data.get(start) == Some(&b' ') {
         start += 1;
@@ -217,20 +227,26 @@ fn stream_data(
             after += 1;
         }
         if data[after..].starts_with(b"endstream") {
-            return data[start..end].to_vec();
+            return (data[start..end].to_vec(), after + 9);
         }
     }
     diags.push(DiagnosticKind::BadStreamLength, Origin::File.at(start));
     let rest = &data[start..];
-    let mut end = find(rest, b"endstream")
-        .or_else(|| find(rest, b"endobj"))
-        .unwrap_or(rest.len());
+    // The earliest of the two keywords, in one pass: searching for `endstream` to EOF
+    // first would make repeated streams without it quadratic.
+    let stop = (0..rest.len())
+        .find(|&i| rest[i..].starts_with(b"endstream") || rest[i..].starts_with(b"endobj"));
+    let (mut end, consumed) = match stop {
+        Some(i) if rest[i..].starts_with(b"endstream") => (i, start + i + 9),
+        Some(i) => (i, start + i),
+        None => (rest.len(), data.len()),
+    };
     if rest[..end].ends_with(b"\r\n") {
         end -= 2;
     } else if rest[..end].ends_with(b"\n") || rest[..end].ends_with(b"\r") {
         end -= 1;
     }
-    rest[..end].to_vec()
+    (rest[..end].to_vec(), consumed)
 }
 
 pub(crate) fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -308,6 +324,29 @@ mod tests {
             Object::Array(vec![Object::Int(1), Object::Array(vec![Object::Int(2)])])
         );
         assert!(!d.is_empty());
+    }
+
+    #[test]
+    fn duplicate_keys_keep_last_value() {
+        let (o, _) = parse(b"<< /A 1 /B 2 /A 3 >>");
+        let d = o.as_dict().unwrap();
+        assert_eq!(d.len(), 2);
+        assert_eq!(d.get(b"A"), Some(&Object::Int(3)));
+    }
+
+    /// Review I5: dictionary parsing must not be quadratic in the number of keys.
+    #[test]
+    fn large_dict_parses_in_linear_time() {
+        let mut input = b"<<".to_vec();
+        for i in 0..50_000 {
+            input.extend_from_slice(format!(" /k{i} 1").as_bytes());
+        }
+        input.extend_from_slice(b" >>");
+        let start = std::time::Instant::now();
+        let (o, _) = parse(&input);
+        let took = start.elapsed();
+        assert_eq!(o.as_dict().unwrap().len(), 50_000);
+        assert!(took < std::time::Duration::from_secs(1), "took {took:?}");
     }
 
     #[test]

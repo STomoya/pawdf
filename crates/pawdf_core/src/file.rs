@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 
 use crate::diag::{Diagnostic, DiagnosticKind, Diagnostics, Location, Origin};
@@ -17,13 +17,24 @@ static NULL: Object = Object::Null;
 struct Table {
     entries: Entries,
     cache: HashMap<u32, OnceLock<Object>>,
+    /// Object streams already parsed into `cache`. A member still empty afterwards is
+    /// missing from its stream, and the stream is not decoded again.
+    loaded_streams: Mutex<HashSet<u32>>,
 }
 
 impl Table {
     fn new(entries: Entries) -> Self {
         let cache = entries.keys().map(|&n| (n, OnceLock::new())).collect();
-        Self { entries, cache }
+        Self {
+            entries,
+            cache,
+            loaded_streams: Mutex::new(HashSet::new()),
+        }
     }
+}
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// A parsed PDF file: the cross-reference data plus lazy, cached object resolution.
@@ -37,6 +48,14 @@ pub struct File {
     repaired: OnceLock<Table>,
     trailer: Dict,
     diags: Mutex<Diagnostics>,
+    /// Object numbers whose main-table entry proved unusable; later lookups go straight
+    /// to the repaired table without re-diagnosing.
+    failed: Mutex<HashSet<u32>>,
+    /// Object numbers found nowhere; reported once, then resolved to null directly.
+    missing: Mutex<HashSet<u32>>,
+    /// Loading the xref reported problems, so an absent object may have been lost with a
+    /// damaged section and is worth looking for in the repaired table.
+    xref_damaged: bool,
 }
 
 impl File {
@@ -50,8 +69,10 @@ impl File {
         if find(header_window, b"%PDF-").is_none() {
             diags.push(DiagnosticKind::MissingHeader, Location::File(0));
         }
+        let before = diags.as_slice().len();
         let loaded = xref::load(&data, &mut diags)
             .filter(|(entries, trailer, _)| root_ok(&data, entries, trailer));
+        let xref_damaged = diags.as_slice().len() > before;
         let (entries, trailer, offset, repaired) = match loaded {
             Some((entries, trailer, offset)) => (entries, trailer, offset, None),
             None => {
@@ -76,6 +97,9 @@ impl File {
             repaired: OnceLock::new(),
             trailer,
             diags: Mutex::new(diags),
+            failed: Mutex::new(HashSet::new()),
+            missing: Mutex::new(HashSet::new()),
+            xref_damaged,
         };
         if let Some(t) = repaired {
             let _ = file.repaired.set(t);
@@ -97,9 +121,8 @@ impl File {
     pub fn objects(&self) -> Vec<Ref> {
         self.table
             .entries
-            .iter()
-            .filter(|(_, e)| !matches!(e, Entry::Free))
-            .map(|(&num, _)| Ref { num, generation: 0 })
+            .keys()
+            .map(|&num| Ref { num, generation: 0 })
             .collect()
     }
 
@@ -124,7 +147,7 @@ impl File {
     }
 
     fn lock_diags(&self) -> std::sync::MutexGuard<'_, Diagnostics> {
-        self.diags.lock().unwrap_or_else(|e| e.into_inner())
+        lock(&self.diags)
     }
 
     fn report(&self, kind: DiagnosticKind, location: Location) {
@@ -136,20 +159,37 @@ impl File {
             self.report(DiagnosticKind::RecursionLimit, Location::File(0));
             return &NULL;
         }
-        let obj = match self.lookup(&self.table, r, depth) {
-            Some(o) => o,
-            None => match self.lookup(self.repaired_table(), r, depth) {
-                Some(o) => o,
-                None => {
-                    self.report(DiagnosticKind::ObjectNotFound, Location::File(0));
-                    &NULL
-                }
-            },
-        };
+        let obj = self.find(r, depth).unwrap_or(&NULL);
         match obj {
             Object::Ref(next) => self.resolve_depth(*next, depth + 1),
             o => o,
         }
+    }
+
+    /// The object for `r.num`. In an undamaged xref, a number that is absent (or free) is
+    /// simply missing, without a repair scan (§7.3.10); only an entry that proves wrong, or
+    /// any absence in a damaged xref, falls back to the repaired table. Each failure is
+    /// diagnosed once.
+    fn find(&self, r: Ref, depth: usize) -> Option<&Object> {
+        if lock(&self.missing).contains(&r.num) {
+            return None;
+        }
+        let listed = self.table.entries.contains_key(&r.num);
+        if listed && !lock(&self.failed).contains(&r.num) {
+            if let Some(o) = self.lookup(&self.table, r, depth) {
+                return Some(o);
+            }
+            lock(&self.failed).insert(r.num);
+        }
+        if (listed || self.xref_damaged)
+            && let Some(o) = self.lookup(self.repaired_table(), r, depth)
+        {
+            return Some(o);
+        }
+        if lock(&self.missing).insert(r.num) {
+            self.report(DiagnosticKind::ObjectNotFound, Location::File(0));
+        }
+        None
     }
 
     fn repaired_table(&self) -> &Table {
@@ -169,10 +209,12 @@ impl File {
         // Computed outside the OnceLock: resolution can re-enter (indirect /Length, object
         // streams), and `get_or_init` must not be called re-entrantly.
         let obj = match *table.entries.get(&r.num)? {
-            Entry::Free => return None,
             Entry::InFile { offset } => self.load_in_file(r.num, offset, depth)?,
             Entry::InStream { stream, .. } => {
-                self.load_object_stream(table, stream, depth);
+                let first_time = lock(&table.loaded_streams).insert(stream);
+                if first_time {
+                    self.load_object_stream(table, stream, depth);
+                }
                 return slot.get();
             }
         };

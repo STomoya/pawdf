@@ -1,4 +1,4 @@
-use super::{Failure, FilterResult};
+use super::{Failure, FilterResult, MAX_DECODED_LEN, push_capped_to};
 use crate::lexer::{hex_value, is_whitespace};
 use crate::object::Dict;
 
@@ -33,8 +33,12 @@ pub(crate) fn decode_hex(input: &[u8], _: &Dict) -> FilterResult {
     }
 }
 
-/// §7.4.3. Output is at most 4/5 of the input except for `z`, which expands 1 byte to 4.
+/// §7.4.3.
 pub(crate) fn decode_85(input: &[u8], _: &Dict) -> FilterResult {
+    decode_85_capped(input, MAX_DECODED_LEN)
+}
+
+fn decode_85_capped(input: &[u8], cap: usize) -> FilterResult {
     let input = input.strip_prefix(b"<~").unwrap_or(input);
     let mut out = Vec::with_capacity(input.len());
     let mut group = [0u8; 5];
@@ -42,7 +46,11 @@ pub(crate) fn decode_85(input: &[u8], _: &Dict) -> FilterResult {
     for &b in input {
         match b {
             b'~' => break,
-            b'z' if n == 0 => out.extend_from_slice(&[0; 4]),
+            b'z' if n == 0 => {
+                if push_capped_to(&mut out, &[0; 4], cap).is_err() {
+                    return Err(Failure::TooLarge(out));
+                }
+            }
             b'!'..=b'u' => {
                 group[n] = b - b'!';
                 n += 1;
@@ -50,7 +58,9 @@ pub(crate) fn decode_85(input: &[u8], _: &Dict) -> FilterResult {
                     let Some(word) = group_value(&group) else {
                         return Err(Failure::Corrupt(out));
                     };
-                    out.extend_from_slice(&word.to_be_bytes());
+                    if push_capped_to(&mut out, &word.to_be_bytes(), cap).is_err() {
+                        return Err(Failure::TooLarge(out));
+                    }
                     n = 0;
                 }
             }
@@ -69,7 +79,9 @@ pub(crate) fn decode_85(input: &[u8], _: &Dict) -> FilterResult {
             let Some(word) = group_value(&group) else {
                 return Err(Failure::Corrupt(out));
             };
-            out.extend_from_slice(&word.to_be_bytes()[..n - 1]);
+            if push_capped_to(&mut out, &word.to_be_bytes()[..n - 1], cap).is_err() {
+                return Err(Failure::TooLarge(out));
+            }
             Ok(out)
         }
     }
@@ -116,6 +128,15 @@ mod tests {
         );
         assert_eq!(ok(decode_85(b"<~z!!~>", &Dict::new())), vec![0, 0, 0, 0, 0]);
         assert_eq!(ok(decode_85(b"87cURDZ~>", &Dict::new())), b"Hello");
+    }
+
+    /// Review I3: `z` expands 1 byte to 4, so it must respect the output cap.
+    #[test]
+    fn ascii85_z_respects_cap() {
+        match decode_85_capped(b"zzz~>", 6) {
+            Err(Failure::TooLarge(v)) => assert_eq!(v, vec![0; 6]),
+            _ => panic!("expected TooLarge"),
+        }
     }
 
     #[test]
