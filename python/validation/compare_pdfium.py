@@ -25,6 +25,10 @@ Documented pdfium policies the comparison accounts for (core/fpdftext/cpdf_textp
   pawdf reports U+FFFD; such a glyph is compared as chr(code), so it matches only that.
 - ProcessTextObject reorders text objects on one line by x. Characters that difflib
   cannot align are therefore re-paired by character and origin before being reported.
+- ProcessTextObject skips a text object whose bounds are narrower than kSizeEpsilon (0.01),
+  such as one showing a lone space or a bitmap emoji, whose glyphs have no outline. Such
+  objects are found through FPDFPageObj_GetBounds, and pawdf characters at their origins
+  are not reported.
 
 Exit status is 1 if any page mismatches.
 """
@@ -46,6 +50,7 @@ import pawdf
 TOLERANCE = 0.5
 SHOW = 20
 MAX_FORM_DEPTH = 32
+SIZE_EPSILON = 0.01
 HYPHEN_MARK = 0x2
 UNMAPPED = '\ufffd'
 
@@ -96,17 +101,25 @@ def pdfium_chars(page: pdfium.PdfPage) -> list[tuple[str, float, float]]:
     return out
 
 
-def pdfium_objects(page: pdfium.PdfPage) -> tuple[list[int], list[tuple[int, int]]]:
-    """Segment counts of path objects and pixel sizes of image objects, in content order."""
-    segments, sizes = [], []
+def pdfium_objects(page: pdfium.PdfPage) -> tuple[list[int], list[tuple[int, int]], list[tuple[float, float]]]:
+    """Segment counts of path objects and pixel sizes of image objects, in content order,
+    and the origins of the text objects the text page skips for having no width.
+    """
+    segments, sizes, skipped = [], [], []
     w, h = ctypes.c_uint(), ctypes.c_uint()
+    bounds = [ctypes.c_float() for _ in range(4)]
     for obj in page.get_objects(max_depth=MAX_FORM_DEPTH):
-        if obj.type == pdfium_c.FPDF_PAGEOBJ_PATH:
+        if obj.type == pdfium_c.FPDF_PAGEOBJ_TEXT:
+            pdfium_c.FPDFPageObj_GetBounds(obj.raw, *map(ctypes.byref, bounds))
+            left, bottom, right, _ = (b.value for b in bounds)
+            if abs(right - left) < SIZE_EPSILON:
+                skipped.append((left, bottom))
+        elif obj.type == pdfium_c.FPDF_PAGEOBJ_PATH:
             segments.append(pdfium_c.FPDFPath_CountSegments(obj.raw))
         elif obj.type == pdfium_c.FPDF_PAGEOBJ_IMAGE:
             pdfium_c.FPDFImageObj_GetImagePixelSize(obj.raw, ctypes.byref(w), ctypes.byref(h))
             sizes.append((w.value, h.value))
-    return segments, sizes
+    return segments, sizes, skipped
 
 
 def pdfium_point_count(path: pawdf.Path) -> int:
@@ -134,7 +147,7 @@ def near(a: tuple[str, float, float], b: tuple[str, float, float]) -> bool:
     return abs(a[1] - b[1]) <= TOLERANCE and abs(a[2] - b[2]) <= TOLERANCE
 
 
-def compare_glyphs(report: PageReport, ours: list, theirs: list) -> None:
+def compare_glyphs(report: PageReport, ours: list, theirs: list, skipped: list[tuple[float, float]]) -> None:
     """Align the two character sequences and record Unicode and position mismatches."""
     a = ''.join(c for c, _, _ in ours)
     b = ''.join(c for c, _, _ in theirs)
@@ -155,6 +168,8 @@ def compare_glyphs(report: PageReport, ours: list, theirs: list) -> None:
             (t for t in right if t[0] == o[0] and near(o, t)),
             None,
         )
+        if match is None and any(near(o, ('', x, y)) for x, y in skipped):
+            continue
         if match is None:
             report.unicode.append(f'ours {o[0]!r} at ({o[1]:.2f}, {o[2]:.2f}) not in pdfium')
         else:
@@ -166,8 +181,8 @@ def compare_page(index: int, ours: pawdf.Page, theirs: pdfium.PdfPage) -> PageRe
     """Compare one page."""
     content = ours.content()
     report = PageReport(index, glyphs=len(content.glyphs))
-    compare_glyphs(report, pawdf_chars(content), pdfium_chars(theirs))
-    segments, sizes = pdfium_objects(theirs)
+    segments, sizes, skipped = pdfium_objects(theirs)
+    compare_glyphs(report, pawdf_chars(content), pdfium_chars(theirs), skipped)
     counts = [pdfium_point_count(p) for p in content.paths]
     if counts != segments:
         matcher = difflib.SequenceMatcher(None, counts, segments, autojunk=False)
