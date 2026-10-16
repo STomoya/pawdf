@@ -21,3 +21,6 @@ pub use model::{
     CcittParams, Color, ColorSpace, ColorSpaceFamily, FillRule, FontInfo, FontKind, Glyph, Image,
     ImageData, PageContent, Path, RenderMode, Segment, SoftMask, WritingMode,
 };
+pub use pawdf_core::{
+    Diagnostic, DiagnosticKind, Error as CoreError, ErrorKind as CoreErrorKind, Location, Ref,
+};

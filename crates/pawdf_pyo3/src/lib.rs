@@ -1,4 +1,699 @@
+use pyo3::create_exception;
+use pyo3::exceptions::{PyException, PyIndexError};
 use pyo3::prelude::*;
+use pyo3::types::{PyBytes, PyList, PyTuple};
+
+use pawdf_reader as r;
+use r::{Diagnostic as CoreDiagnostic, Location};
+
+create_exception!(
+    pawdf._core,
+    PdfError,
+    PyException,
+    "The PDF could not be read."
+);
+create_exception!(
+    pawdf._core,
+    EncryptedError,
+    PdfError,
+    "The PDF is encrypted; decryption is not supported."
+);
+
+type Rect4 = (f64, f64, f64, f64);
+type Matrix6 = (f64, f64, f64, f64, f64, f64);
+
+fn rect(r: r::Rect) -> Rect4 {
+    (r.x0, r.y0, r.x1, r.y1)
+}
+
+fn matrix(m: r::Matrix) -> Matrix6 {
+    (m.a, m.b, m.c, m.d, m.e, m.f)
+}
+
+fn to_py_err(e: r::Error) -> PyErr {
+    match e.kind {
+        r::ErrorKind::Core(c) if c.kind == r::CoreErrorKind::Encrypted => {
+            EncryptedError::new_err(c.to_string())
+        }
+        r::ErrorKind::PageOutOfRange { .. } => PyIndexError::new_err(e.to_string()),
+        r::ErrorKind::Core(_) => PdfError::new_err(e.to_string()),
+    }
+}
+
+fn wmode(w: r::WritingMode) -> &'static str {
+    match w {
+        r::WritingMode::Horizontal => "horizontal",
+        r::WritingMode::Vertical => "vertical",
+    }
+}
+
+fn family(f: r::ColorSpaceFamily) -> &'static str {
+    match f {
+        r::ColorSpaceFamily::CalGray => "cal_gray",
+        r::ColorSpaceFamily::CalRgb => "cal_rgb",
+        r::ColorSpaceFamily::Lab => "lab",
+        r::ColorSpaceFamily::Separation => "separation",
+        r::ColorSpaceFamily::DeviceN => "device_n",
+        r::ColorSpaceFamily::Indexed => "indexed",
+        r::ColorSpaceFamily::Unknown => "unknown",
+    }
+}
+
+fn space_name(s: &r::ColorSpace) -> &'static str {
+    match s {
+        r::ColorSpace::Gray => "gray",
+        r::ColorSpace::Rgb => "rgb",
+        r::ColorSpace::Cmyk => "cmyk",
+        r::ColorSpace::Indexed { .. } => "indexed",
+        r::ColorSpace::Other { family: f, .. } => family(*f),
+    }
+}
+
+fn image_kind(d: &r::ImageData) -> &'static str {
+    match d {
+        r::ImageData::Samples(_) => "samples",
+        r::ImageData::Jpeg(_) => "jpeg",
+        r::ImageData::Jpx(_) => "jpx",
+        r::ImageData::Jbig2 { .. } => "jbig2",
+        r::ImageData::Ccitt { .. } => "ccitt",
+    }
+}
+
+fn image_bytes(d: &r::ImageData) -> &[u8] {
+    match d {
+        r::ImageData::Samples(b) | r::ImageData::Jpeg(b) | r::ImageData::Jpx(b) => b,
+        r::ImageData::Jbig2 { data, .. } | r::ImageData::Ccitt { data, .. } => data,
+    }
+}
+
+/// A recovery from malformed input.
+#[pyclass(frozen, module = "pawdf._core")]
+struct Diagnostic(CoreDiagnostic);
+
+#[pymethods]
+impl Diagnostic {
+    #[getter]
+    fn kind(&self) -> &'static str {
+        self.0.kind.name()
+    }
+
+    #[getter]
+    fn offset(&self) -> u64 {
+        match self.0.location {
+            Location::File(o) | Location::Stream { offset: o, .. } => o,
+        }
+    }
+
+    #[getter]
+    fn object(&self) -> Option<(u32, u16)> {
+        match self.0.location {
+            Location::Stream { obj, .. } => Some((obj.num, obj.generation)),
+            Location::File(_) => None,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Diagnostic(kind={:?}, offset={}, object={:?})",
+            self.kind(),
+            self.offset(),
+            self.object()
+        )
+    }
+}
+
+fn diagnostics(py: Python<'_>, d: Vec<CoreDiagnostic>) -> PyResult<Py<PyList>> {
+    let items = d
+        .into_iter()
+        .map(|x| Py::new(py, Diagnostic(x)))
+        .collect::<PyResult<Vec<_>>>()?;
+    Ok(PyList::new(py, items)?.unbind())
+}
+
+/// A color in its own color space.
+#[pyclass(frozen, module = "pawdf._core")]
+struct Color(r::Color);
+
+#[pymethods]
+impl Color {
+    #[getter]
+    fn family(&self) -> &'static str {
+        match &self.0 {
+            r::Color::Gray(_) => "gray",
+            r::Color::Rgb(_) => "rgb",
+            r::Color::Cmyk(_) => "cmyk",
+            r::Color::Pattern(_) => "pattern",
+            r::Color::Other { family: f, .. } => family(*f),
+        }
+    }
+
+    #[getter]
+    fn components<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        let c: Vec<f64> = match &self.0 {
+            r::Color::Gray(g) => vec![f64::from(*g)],
+            r::Color::Rgb(c) => c.iter().map(|&v| f64::from(v)).collect(),
+            r::Color::Cmyk(c) => c.iter().map(|&v| f64::from(v)).collect(),
+            r::Color::Other { components, .. } => {
+                components.iter().map(|&v| f64::from(v)).collect()
+            }
+            r::Color::Pattern(_) => Vec::new(),
+        };
+        PyTuple::new(py, c)
+    }
+
+    #[getter]
+    fn pattern(&self) -> Option<&str> {
+        match &self.0 {
+            r::Color::Pattern(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        Ok(format!(
+            "Color(family={:?}, components={})",
+            self.family(),
+            self.components(py)?.repr()?
+        ))
+    }
+}
+
+/// A font as seen from one page.
+#[pyclass(frozen, module = "pawdf._core")]
+struct FontInfo(r::FontInfo);
+
+#[pymethods]
+impl FontInfo {
+    #[getter]
+    fn base_font(&self) -> &str {
+        &self.0.base_font
+    }
+
+    #[getter]
+    fn kind(&self) -> &'static str {
+        match self.0.kind {
+            r::FontKind::Type1 => "type1",
+            r::FontKind::MmType1 => "mmtype1",
+            r::FontKind::TrueType => "truetype",
+            r::FontKind::Type3 => "type3",
+            r::FontKind::Type0 => "type0",
+        }
+    }
+
+    #[getter]
+    fn embedded(&self) -> bool {
+        self.0.embedded
+    }
+
+    #[getter]
+    fn wmode(&self) -> &'static str {
+        wmode(self.0.wmode)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "FontInfo(base_font={:?}, kind={:?}, embedded={})",
+            self.0.base_font,
+            self.kind(),
+            if self.0.embedded { "True" } else { "False" }
+        )
+    }
+}
+
+/// One shown character code.
+#[pyclass(frozen, module = "pawdf._core")]
+struct Glyph(r::Glyph);
+
+#[pymethods]
+impl Glyph {
+    #[getter]
+    fn text(&self) -> &str {
+        &self.0.text
+    }
+
+    #[getter]
+    fn code(&self) -> u32 {
+        self.0.code
+    }
+
+    #[getter]
+    fn font(&self) -> usize {
+        self.0.font
+    }
+
+    #[getter]
+    fn size(&self) -> f64 {
+        self.0.size
+    }
+
+    #[getter]
+    fn matrix(&self) -> Matrix6 {
+        matrix(self.0.matrix)
+    }
+
+    #[getter]
+    fn origin(&self) -> (f64, f64) {
+        (self.0.origin.x, self.0.origin.y)
+    }
+
+    #[getter]
+    fn advance(&self) -> f64 {
+        self.0.advance
+    }
+
+    #[getter]
+    fn bbox(&self) -> Rect4 {
+        rect(self.0.bbox)
+    }
+
+    #[getter]
+    fn wmode(&self) -> &'static str {
+        wmode(self.0.wmode)
+    }
+
+    #[getter]
+    fn render_mode(&self) -> u8 {
+        self.0.render_mode as u8
+    }
+
+    #[getter]
+    fn fill(&self) -> Color {
+        Color(self.0.fill.clone())
+    }
+
+    #[getter]
+    fn stroke(&self) -> Color {
+        Color(self.0.stroke.clone())
+    }
+
+    #[getter]
+    fn fill_alpha(&self) -> f64 {
+        self.0.fill_alpha
+    }
+
+    #[getter]
+    fn stroke_alpha(&self) -> f64 {
+        self.0.stroke_alpha
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Glyph(text={:?}, origin={:?}, font={})",
+            self.0.text,
+            self.origin(),
+            self.0.font
+        )
+    }
+}
+
+/// A painted path.
+#[pyclass(frozen, module = "pawdf._core")]
+struct Path(r::Path);
+
+#[pymethods]
+impl Path {
+    #[getter]
+    fn segments<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let items = self
+            .0
+            .segments
+            .iter()
+            .map(|s| {
+                let (op, pts): (&str, Vec<f64>) = match *s {
+                    r::Segment::MoveTo(p) => ("m", vec![p.x, p.y]),
+                    r::Segment::LineTo(p) => ("l", vec![p.x, p.y]),
+                    r::Segment::CurveTo(a, b, c) => ("c", vec![a.x, a.y, b.x, b.y, c.x, c.y]),
+                    r::Segment::Close => ("h", Vec::new()),
+                };
+                (op, PyTuple::new(py, pts)?).into_pyobject(py)
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        PyList::new(py, items)
+    }
+
+    #[getter]
+    fn stroke(&self) -> bool {
+        self.0.stroke
+    }
+
+    #[getter]
+    fn fill(&self) -> Option<&'static str> {
+        self.0.fill.map(|f| match f {
+            r::FillRule::NonZero => "nonzero",
+            r::FillRule::EvenOdd => "evenodd",
+        })
+    }
+
+    #[getter]
+    fn line_width(&self) -> f64 {
+        self.0.line_width
+    }
+
+    #[getter]
+    fn ctm(&self) -> Matrix6 {
+        matrix(self.0.ctm)
+    }
+
+    #[getter]
+    fn fill_color(&self) -> Color {
+        Color(self.0.fill_color.clone())
+    }
+
+    #[getter]
+    fn stroke_color(&self) -> Color {
+        Color(self.0.stroke_color.clone())
+    }
+
+    #[getter]
+    fn fill_alpha(&self) -> f64 {
+        self.0.fill_alpha
+    }
+
+    #[getter]
+    fn stroke_alpha(&self) -> f64 {
+        self.0.stroke_alpha
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Path(segments={}, stroke={}, fill={:?})",
+            self.0.segments.len(),
+            if self.0.stroke { "True" } else { "False" },
+            self.fill()
+        )
+    }
+}
+
+fn decode_tuple<'py>(
+    py: Python<'py>,
+    d: &Option<Vec<f32>>,
+) -> PyResult<Option<Bound<'py, PyTuple>>> {
+    d.as_ref()
+        .map(|d| PyTuple::new(py, d.iter().map(|&v| f64::from(v))))
+        .transpose()
+}
+
+/// A soft mask (`/SMask`) image.
+#[pyclass(frozen, module = "pawdf._core")]
+struct SoftMask(r::SoftMask);
+
+#[pymethods]
+impl SoftMask {
+    #[getter]
+    fn width(&self) -> u32 {
+        self.0.width
+    }
+
+    #[getter]
+    fn height(&self) -> u32 {
+        self.0.height
+    }
+
+    #[getter]
+    fn bpc(&self) -> u8 {
+        self.0.bpc
+    }
+
+    #[getter]
+    fn decode<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyTuple>>> {
+        decode_tuple(py, &self.0.decode)
+    }
+
+    #[getter]
+    fn kind(&self) -> &'static str {
+        image_kind(&self.0.data)
+    }
+
+    #[getter]
+    fn data<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, image_bytes(&self.0.data))
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SoftMask(width={}, height={}, kind={:?})",
+            self.0.width,
+            self.0.height,
+            self.kind()
+        )
+    }
+}
+
+/// A placed image.
+#[pyclass(frozen, module = "pawdf._core")]
+struct Image(r::Image);
+
+#[pymethods]
+impl Image {
+    #[getter]
+    fn name(&self) -> Option<&str> {
+        self.0.name.as_deref()
+    }
+
+    #[getter]
+    fn inline(&self) -> bool {
+        self.0.inline
+    }
+
+    #[getter]
+    fn ctm(&self) -> Matrix6 {
+        matrix(self.0.ctm)
+    }
+
+    #[getter]
+    fn bbox(&self) -> Rect4 {
+        rect(self.0.bbox)
+    }
+
+    #[getter]
+    fn width(&self) -> u32 {
+        self.0.width
+    }
+
+    #[getter]
+    fn height(&self) -> u32 {
+        self.0.height
+    }
+
+    #[getter]
+    fn bpc(&self) -> u8 {
+        self.0.bpc
+    }
+
+    #[getter]
+    fn color_space(&self) -> Option<&'static str> {
+        self.0.color_space.as_ref().map(space_name)
+    }
+
+    #[getter]
+    fn indexed<'py>(&self, py: Python<'py>) -> Option<(&'static str, u8, Bound<'py, PyBytes>)> {
+        match &self.0.color_space {
+            Some(r::ColorSpace::Indexed {
+                base,
+                hival,
+                lookup,
+            }) => Some((space_name(base), *hival, PyBytes::new(py, lookup))),
+            _ => None,
+        }
+    }
+
+    #[getter]
+    fn image_mask(&self) -> bool {
+        self.0.image_mask
+    }
+
+    #[getter]
+    fn decode<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyTuple>>> {
+        decode_tuple(py, &self.0.decode)
+    }
+
+    #[getter]
+    fn kind(&self) -> &'static str {
+        image_kind(&self.0.data)
+    }
+
+    #[getter]
+    fn data<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, image_bytes(&self.0.data))
+    }
+
+    #[getter]
+    fn jbig2_globals<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyBytes>> {
+        match &self.0.data {
+            r::ImageData::Jbig2 {
+                globals: Some(g), ..
+            } => Some(PyBytes::new(py, g)),
+            _ => None,
+        }
+    }
+
+    #[getter]
+    fn ccitt<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, pyo3::types::PyDict>>> {
+        let r::ImageData::Ccitt { params: p, .. } = &self.0.data else {
+            return Ok(None);
+        };
+        let d = pyo3::types::PyDict::new(py);
+        d.set_item("k", p.k)?;
+        d.set_item("columns", p.columns)?;
+        d.set_item("rows", p.rows)?;
+        d.set_item("black_is_1", p.black_is_1)?;
+        d.set_item("encoded_byte_align", p.encoded_byte_align)?;
+        d.set_item("end_of_line", p.end_of_line)?;
+        d.set_item("end_of_block", p.end_of_block)?;
+        Ok(Some(d))
+    }
+
+    #[getter]
+    fn smask(&self) -> Option<SoftMask> {
+        self.0.smask.clone().map(SoftMask)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Image(name={:?}, width={}, height={}, kind={:?})",
+            self.0.name,
+            self.0.width,
+            self.0.height,
+            self.kind()
+        )
+    }
+}
+
+/// Everything extracted from one page, in content-stream order.
+#[pyclass(frozen, module = "pawdf._core")]
+struct PageContent {
+    #[pyo3(get)]
+    glyphs: Py<PyList>,
+    #[pyo3(get)]
+    paths: Py<PyList>,
+    #[pyo3(get)]
+    images: Py<PyList>,
+    #[pyo3(get)]
+    fonts: Py<PyList>,
+    #[pyo3(get)]
+    diagnostics: Py<PyList>,
+}
+
+fn list<T, W: pyo3::PyClass + Into<pyo3::PyClassInitializer<W>>>(
+    py: Python<'_>,
+    items: Vec<T>,
+    wrap: fn(T) -> W,
+) -> PyResult<Py<PyList>> {
+    let objs = items
+        .into_iter()
+        .map(|x| Py::new(py, wrap(x)))
+        .collect::<PyResult<Vec<_>>>()?;
+    Ok(PyList::new(py, objs)?.unbind())
+}
+
+#[pymethods]
+impl PageContent {
+    fn __repr__(&self, py: Python<'_>) -> String {
+        format!(
+            "PageContent(glyphs={}, paths={}, images={}, fonts={}, diagnostics={})",
+            self.glyphs.bind(py).len(),
+            self.paths.bind(py).len(),
+            self.images.bind(py).len(),
+            self.fonts.bind(py).len(),
+            self.diagnostics.bind(py).len()
+        )
+    }
+}
+
+/// One page of a document.
+#[pyclass(frozen, module = "pawdf._core")]
+struct Page(r::Page);
+
+#[pymethods]
+impl Page {
+    #[getter]
+    fn index(&self) -> usize {
+        self.0.index()
+    }
+
+    #[getter]
+    fn media_box(&self) -> Rect4 {
+        rect(self.0.media_box())
+    }
+
+    #[getter]
+    fn crop_box(&self) -> Rect4 {
+        rect(self.0.crop_box())
+    }
+
+    #[getter]
+    fn rotate(&self) -> u16 {
+        self.0.rotate().degrees()
+    }
+
+    #[getter]
+    fn display_matrix(&self) -> Matrix6 {
+        matrix(self.0.display_matrix())
+    }
+
+    /// Extracts glyphs, painted paths, and images. Releases the GIL while parsing.
+    fn content(&self, py: Python<'_>) -> PyResult<PageContent> {
+        let c = py.detach(|| self.0.content());
+        Ok(PageContent {
+            glyphs: list(py, c.glyphs, Glyph)?,
+            paths: list(py, c.paths, Path)?,
+            images: list(py, c.images, Image)?,
+            fonts: list(py, c.fonts, FontInfo)?,
+            diagnostics: diagnostics(py, c.diagnostics)?,
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Page(index={}, media_box={:?}, rotate={})",
+            self.index(),
+            self.media_box(),
+            self.rotate()
+        )
+    }
+}
+
+/// An open PDF document.
+#[pyclass(frozen, module = "pawdf._core")]
+struct Document(r::Document);
+
+#[pymethods]
+impl Document {
+    #[new]
+    fn new(py: Python<'_>, data: Vec<u8>) -> PyResult<Self> {
+        py.detach(|| r::Document::from_bytes(data))
+            .map(Document)
+            .map_err(to_py_err)
+    }
+
+    fn __len__(&self) -> usize {
+        self.0.page_count()
+    }
+
+    fn __getitem__(&self, index: isize) -> PyResult<Page> {
+        let count = self.0.page_count();
+        let resolved = if index < 0 {
+            count.checked_sub(index.unsigned_abs())
+        } else {
+            Some(index.unsigned_abs())
+        };
+        let Some(i) = resolved else {
+            return Err(PyIndexError::new_err(format!(
+                "page index {index} out of range ({count} pages)"
+            )));
+        };
+        self.0.page(i).map(Page).map_err(to_py_err)
+    }
+
+    #[getter]
+    fn diagnostics(&self, py: Python<'_>) -> PyResult<Py<PyList>> {
+        diagnostics(py, self.0.diagnostics())
+    }
+
+    fn __repr__(&self) -> String {
+        format!("Document(pages={})", self.0.page_count())
+    }
+}
 
 /// A Python module implemented in Rust. The name of this module must match
 /// the `lib.name` setting in the `Cargo.toml`, else Python will not be able to
@@ -6,6 +701,12 @@ use pyo3::prelude::*;
 #[pymodule]
 mod _core {
     use pyo3::prelude::*;
+
+    #[pymodule_export]
+    use super::{
+        Color, Diagnostic, Document, EncryptedError, FontInfo, Glyph, Image, Page, PageContent,
+        Path, PdfError, SoftMask,
+    };
 
     #[pyfunction]
     fn hello_from_bin() -> String {
