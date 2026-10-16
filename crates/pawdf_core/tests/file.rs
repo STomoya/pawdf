@@ -360,3 +360,43 @@ fn hybrid_file_uses_xref_stream_entries() {
     assert_eq!(file.resolve(r(3)), &Object::String(b"hi".to_vec()));
     assert!(file.diagnostics().is_empty(), "{:?}", file.diagnostics());
 }
+
+fn xref_offset(pdf: &[u8]) -> usize {
+    pdf.windows(6).rposition(|w| w == b"\nxref\n").unwrap() + 1
+}
+
+#[test]
+fn prev_cycle_terminates() {
+    let objects: [(u32, &[u8]); 2] = [(1, CATALOG), (2, PAGES)];
+    let (pdf, _) = build_pdf(&objects, "/Root 1 0 R");
+    let own = xref_offset(&pdf);
+    let (pdf, _) = build_pdf(&objects, &format!("/Root 1 0 R /Prev {own}"));
+    let file = File::from_bytes(pdf).unwrap();
+    assert!(file.resolve(r(2)).as_dict().is_some());
+    assert!(kinds(&file).contains(&DiagnosticKind::BadXrefEntry));
+}
+
+#[test]
+fn unreadable_prev_section_keeps_newer_entries() {
+    let (pdf, _) = build_pdf(&[(1, CATALOG), (2, PAGES)], "/Root 1 0 R /Prev 3");
+    let file = File::from_bytes(pdf).unwrap();
+    assert!(file.resolve(r(2)).as_dict().is_some());
+    let k = kinds(&file);
+    assert!(k.contains(&DiagnosticKind::BadXrefEntry));
+    assert!(!k.contains(&DiagnosticKind::XrefRepaired));
+}
+
+#[test]
+fn malformed_table_entry_ends_table_but_keeps_trailer() {
+    let (pdf, offsets) = build_pdf(&[(1, CATALOG), (2, PAGES)], "/Root 1 0 R");
+    let entry = format!("{:010} 00000 n", offsets[1].1);
+    let text = String::from_utf8(pdf)
+        .unwrap()
+        .replacen(&entry, "zzzzzzzzzz 00000 n", 1);
+    let file = File::from_bytes(text.into_bytes()).unwrap();
+    assert!(file.resolve(r(1)).as_dict().is_some());
+    assert!(file.resolve(r(2)).as_dict().is_some());
+    let k = kinds(&file);
+    assert!(k.contains(&DiagnosticKind::BadXrefEntry));
+    assert!(k.contains(&DiagnosticKind::XrefRepaired));
+}
