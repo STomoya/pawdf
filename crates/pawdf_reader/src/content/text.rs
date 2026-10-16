@@ -165,10 +165,15 @@ impl<'a> Interp<'a> {
     /// The font a `Tf` (or `gs /Font`) name selects; the fallback if it is missing.
     fn named_font(&mut self, key: &[u8], at: Location) -> (FontKey, Arc<Font>) {
         match self.resource_entry(b"Font", key) {
-            Some(Object::Ref(r)) => (FontKey::Ref(*r), self.doc.font(*r, at, &mut self.diags)),
+            Some(Object::Ref(r)) => (FontKey::Ref(*r), self.ref_font(*r, at)),
             Some(Object::Dict(d)) => {
-                let font = load_font(self.file, d, at, &mut self.diags);
-                (FontKey::Direct(d as *const _ as usize), Arc::new(font))
+                let key = FontKey::Direct(d as *const _ as usize);
+                if let Some(f) = self.pass_fonts.get(&key) {
+                    return (key, Arc::clone(f));
+                }
+                let font = Arc::new(load_font(self.file, d, at, &mut self.diags));
+                self.pass_fonts.insert(key, Arc::clone(&font));
+                (key, font)
             }
             _ => {
                 self.diags.push(DiagnosticKind::MissingResource, at);
@@ -177,9 +182,23 @@ impl<'a> Interp<'a> {
         }
     }
 
+    /// A document-cached font, reporting its load diagnostics once per pass.
+    fn ref_font(&mut self, r: pawdf_core::Ref, at: Location) -> Arc<Font> {
+        let key = FontKey::Ref(r);
+        if let Some(f) = self.pass_fonts.get(&key) {
+            return Arc::clone(f);
+        }
+        let (font, diags) = self.doc.font(r, at);
+        for d in diags {
+            self.diags.push(d.kind, d.location);
+        }
+        self.pass_fonts.insert(key, Arc::clone(&font));
+        font
+    }
+
     pub(crate) fn set_font_ref(&mut self, font: &Object, size: f64, at: Location) {
         let selected = match font {
-            Object::Ref(r) => (FontKey::Ref(*r), self.doc.font(*r, at, &mut self.diags)),
+            Object::Ref(r) => (FontKey::Ref(*r), self.ref_font(*r, at)),
             _ => {
                 self.diags.push(DiagnosticKind::BadFont, at);
                 (FontKey::Fallback, Arc::clone(&self.fallback))

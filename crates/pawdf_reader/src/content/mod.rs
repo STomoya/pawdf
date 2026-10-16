@@ -97,6 +97,8 @@ pub(crate) struct Interp<'a> {
     pub tlm: Matrix,
     pub fallback: Arc<Font>,
     pub font_index: HashMap<FontKey, usize>,
+    /// Fonts already used in this pass.
+    pub pass_fonts: HashMap<FontKey, Arc<Font>>,
     pub unmapped_reported: HashSet<FontKey>,
     pub no_font_reported: bool,
     /// Forms being drawn, innermost last, to cut cycles.
@@ -128,6 +130,7 @@ impl<'a> Interp<'a> {
             tlm: Matrix::IDENTITY,
             fallback: Arc::new(Font::fallback()),
             font_index: HashMap::new(),
+            pass_fonts: HashMap::new(),
             unmapped_reported: HashSet::new(),
             no_font_reported: false,
             form_stack: Vec::new(),

@@ -20,32 +20,36 @@ const LETTER: Rect = Rect {
 #[derive(Clone)]
 pub struct Document(Arc<Inner>);
 
+/// A parsed font and the diagnostics loading it gave.
+type LoadedFont = (Arc<Font>, Vec<Diagnostic>);
+
 pub(crate) struct Inner {
     pub file: File,
     pub pages: Vec<PageInfo>,
     pub tree_diags: Vec<Diagnostic>,
-    /// Fonts by object, parsed once per document.
-    fonts: Mutex<HashMap<Ref, Arc<Font>>>,
+    /// Fonts by object, parsed once per document, with the diagnostics loading them gave.
+    fonts: Mutex<HashMap<Ref, LoadedFont>>,
 }
 
 impl Inner {
-    /// The font at `r`, loading it on first use. Load problems are reported to the
-    /// pass that loads it.
-    pub fn font(&self, r: Ref, at: Location, diags: &mut Diagnostics) -> Arc<Font> {
+    /// The font at `r`, loading it on first use, plus the diagnostics its loading gave,
+    /// so every pass that uses it can report them.
+    pub fn font(&self, r: Ref, at: Location) -> LoadedFont {
         let mut fonts = self.fonts.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(f) = fonts.get(&r) {
-            return Arc::clone(f);
+        if let Some((f, d)) = fonts.get(&r) {
+            return (Arc::clone(f), d.clone());
         }
+        let mut diags = Diagnostics::new();
         let font = match self.file.resolve(r).as_dict() {
-            Some(dict) => load_font(&self.file, dict, at, diags),
+            Some(dict) => load_font(&self.file, dict, at, &mut diags),
             None => {
                 diags.push(DiagnosticKind::BadFont, at);
                 Font::fallback()
             }
         };
-        let font = Arc::new(font);
-        fonts.insert(r, Arc::clone(&font));
-        font
+        let entry = (Arc::new(font), diags.into_vec());
+        fonts.insert(r, entry.clone());
+        entry
     }
 }
 
@@ -330,9 +334,8 @@ mod tests {
             num: 7,
             generation: 0,
         };
-        let mut d = Diagnostics::new();
-        let a = doc.0.font(r, Location::File(0), &mut d);
-        let b = doc.0.font(r, Location::File(0), &mut d);
+        let (a, _) = doc.0.font(r, Location::File(0));
+        let (b, _) = doc.0.font(r, Location::File(0));
         assert!(Arc::ptr_eq(&a, &b));
         assert_eq!(a.info.base_font, "Helvetica");
     }

@@ -8,17 +8,26 @@ use pawdf_core::{DiagnosticKind, Diagnostics, Location, Object, Origin, parse_co
 const MAX_RANGE: u64 = 1 << 16;
 /// Total mappings kept, so crafted input cannot exhaust memory.
 const MAX_ENTRIES: usize = 1 << 20;
+/// Total `bfrange` codes expanded per CMap. Repeated ranges over the same codes do not
+/// grow the map, so the entry cap alone does not bound the work.
+const MAX_RANGE_WORK: u64 = 1 << 20;
 
 /// A parsed ToUnicode CMap: character code bytes to UTF-16 units.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub(crate) struct ToUnicode {
     map: HashMap<Vec<u8>, Vec<u16>>,
+    range_work: u64,
+    range_work_exhausted: bool,
 }
 
 impl ToUnicode {
     /// Parses CMap source. Malformed entries are skipped with `BadCMap`.
     pub fn parse(data: &[u8], origin: Origin, diags: &mut Diagnostics) -> ToUnicode {
-        let mut t = ToUnicode::default();
+        let mut t = ToUnicode {
+            map: HashMap::new(),
+            range_work: MAX_RANGE_WORK,
+            range_work_exhausted: false,
+        };
         for op in parse_content(data, origin, diags) {
             let at = op.location;
             match op.operator.as_slice() {
@@ -64,6 +73,15 @@ impl ToUnicode {
             diags.push(DiagnosticKind::BadCMap, at);
             return;
         }
+        let count = end - start + 1;
+        if self.range_work < count {
+            if !self.range_work_exhausted {
+                self.range_work_exhausted = true;
+                diags.push(DiagnosticKind::BadCMap, at);
+            }
+            return;
+        }
+        self.range_work -= count;
         let code_at = |i: u64| -> Vec<u8> {
             let v = (start + i).to_be_bytes();
             v[v.len() - lo.len()..].to_vec()
@@ -208,6 +226,23 @@ mod tests {
             parse("1 beginbfchar <01> endbfchar 1 beginbfrange <05> <01> <0041> endbfrange");
         assert_eq!(t.lookup(&[1]), None);
         assert_eq!(d, [DiagnosticKind::BadCMap, DiagnosticKind::BadCMap]);
+    }
+
+    #[test]
+    fn repeated_ranges_are_bounded() {
+        let mut d = Diagnostics::new();
+        let src = format!(
+            "1 begincodespacerange <0000> <FFFF> endcodespacerange 100 beginbfrange {} endbfrange",
+            "<0000> <7FFF> <0041> ".repeat(100)
+        );
+        let t = ToUnicode::parse(src.as_bytes(), Origin::File, &mut d);
+        let bad = d
+            .as_slice()
+            .iter()
+            .filter(|x| x.kind == DiagnosticKind::BadCMap)
+            .count();
+        assert_eq!(bad, 1);
+        assert_eq!(t.lookup(&[0, 0]).as_deref(), Some("A"));
     }
 
     #[test]

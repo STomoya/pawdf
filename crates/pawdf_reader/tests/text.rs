@@ -223,3 +223,29 @@ fn bad_text_operands_are_diagnosed() {
     let c = text(b"BT 9 Tr 10 Tf /F1 (x) Tf 1 (a) \" (a) TJ 5 Tj ET");
     assert_eq!(kinds(&c), [DiagnosticKind::BadOperands; 6]);
 }
+
+#[test]
+fn font_diagnostics_do_not_depend_on_call_order() {
+    let font: &[u8] = b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /Bogus >>";
+    let doc = Document::from_bytes(one_page(
+        b"BT /F1 10 Tf (a) Tj ET",
+        "<< /Font << /F1 5 0 R >> >>",
+        &[(5, font)],
+    ))
+    .unwrap();
+    let page = doc.page(0).unwrap();
+    let first = kinds(&page.content());
+    assert_eq!(first, [DiagnosticKind::BadFont]);
+    assert_eq!(kinds(&page.content()), first);
+}
+
+#[test]
+fn direct_font_loads_once_per_pass() {
+    let c = run(
+        b"BT /F1 10 Tf (a) Tj /F1 12 Tf (b) Tj /F1 14 Tf (c) Tj ET",
+        "<< /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /Bogus >> >> >>",
+        &[],
+    );
+    assert_eq!(kinds(&c), [DiagnosticKind::BadFont]);
+    assert_eq!(c.fonts.len(), 1);
+}
