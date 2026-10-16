@@ -5,7 +5,7 @@ use std::sync::Arc;
 use pawdf_core::{DiagnosticKind, Diagnostics, Dict, File, Location, Object};
 
 use super::truetype::{self, TrueType};
-use super::{Font, GLYPH_SCALE, Glyphs, embedded_cmap, metrics};
+use super::{Font, GLYPH_SCALE, Glyphs, Shared, embedded_cmap, metrics};
 use crate::cmap::{CMap, Code};
 use crate::data::{predefined_cmap, ucs2};
 use crate::model::{FontInfo, FontKind, WritingMode};
@@ -24,7 +24,7 @@ pub(crate) struct Vertical {
 #[derive(Debug, Clone)]
 pub(crate) struct Cid {
     pub cmap: Arc<CMap>,
-    to_unicode: Option<CMap>,
+    to_unicode: Option<Arc<CMap>>,
     ucs2: Option<Arc<CMap>>,
     /// `(first, last, w0)` sorted by `first`.
     w: Vec<(u32, u32, f64)>,
@@ -35,7 +35,7 @@ pub(crate) struct Cid {
     dw2: [f64; 2],
     /// For Identity-encoded CIDFontType2 fonts: the embedded program's cmap, and the
     /// `/CIDToGIDMap` stream (`None` for `/Identity`).
-    truetype: Option<(TrueType, Option<Vec<u8>>)>,
+    truetype: Option<(Arc<TrueType>, Option<Vec<u8>>)>,
 }
 
 /// The entry covering `cid` in ranges sorted by start.
@@ -93,14 +93,18 @@ impl Cid {
 }
 
 /// Loads a Type0 font dictionary (§9.7.6). Problems become `BadFont` or `BadCMap` at `at`.
-pub(crate) fn load_type0(file: &File, dict: &Dict, at: Location, diags: &mut Diagnostics) -> Font {
+pub(crate) fn load_type0(
+    file: &File,
+    shared: &Shared,
+    dict: &Dict,
+    at: Location,
+    diags: &mut Diagnostics,
+) -> Font {
     let get = |k: &[u8]| dict.get(k).map(|o| file.deref(o));
     let identity = || Arc::new(CMap::identity(WritingMode::Horizontal));
     let cmap = match dict.get(b"Encoding") {
         Some(Object::Ref(r)) if matches!(file.resolve(*r), Object::Stream(_)) => {
-            embedded_cmap(file, *r, 0, diags)
-                .map(Arc::new)
-                .unwrap_or_else(identity)
+            embedded_cmap(file, shared, *r, &mut Vec::new(), diags).unwrap_or_else(identity)
         }
         _ => match get(b"Encoding").and_then(Object::as_name) {
             Some(n) => predefined_cmap(n).unwrap_or_else(|| {
@@ -154,7 +158,7 @@ pub(crate) fn load_type0(file: &File, dict: &Dict, at: Location, diags: &mut Dia
     };
 
     let to_unicode = match dict.get(b"ToUnicode") {
-        Some(Object::Ref(r)) => embedded_cmap(file, *r, 0, diags),
+        Some(Object::Ref(r)) => embedded_cmap(file, shared, *r, &mut Vec::new(), diags),
         _ => None,
     };
     // §9.10.2 (b): the ordering of the font's CMap, then of the CIDFont.
@@ -172,19 +176,21 @@ pub(crate) fn load_type0(file: &File, dict: &Dict, at: Location, diags: &mut Dia
     let identity =
         cmap.registry.as_deref() == Some("Adobe") && cmap.ordering.as_deref() == Some("Identity");
     let truetype = match subtype {
-        Some(b"CIDFontType2") if identity => truetype::load(file, desc, at, diags).map(|tt| {
-            let map = match descendant.and_then(|d| d.get(b"CIDToGIDMap")) {
-                Some(Object::Ref(r)) => match file.resolve(*r) {
-                    Object::Stream(s) => Some(
-                        s.decode(Location::Stream { obj: *r, offset: 0 }, diags)
-                            .data,
-                    ),
+        Some(b"CIDFontType2") if identity => {
+            truetype::load(file, shared, desc, at, diags).map(|tt| {
+                let map = match descendant.and_then(|d| d.get(b"CIDToGIDMap")) {
+                    Some(Object::Ref(r)) => match file.resolve(*r) {
+                        Object::Stream(s) => Some(
+                            s.decode(Location::Stream { obj: *r, offset: 0 }, diags)
+                                .data,
+                        ),
+                        _ => None,
+                    },
                     _ => None,
-                },
-                _ => None,
-            };
-            (tt, map)
-        }),
+                };
+                (tt, map)
+            })
+        }
         _ => None,
     };
     let (ascent, descent) = metrics(file, FontKind::Type0, &GLYPH_SCALE, dict, desc);

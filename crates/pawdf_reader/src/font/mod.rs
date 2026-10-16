@@ -4,11 +4,12 @@ pub(crate) mod cid;
 pub(crate) mod encoding;
 pub(crate) mod truetype;
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use pawdf_core::{DiagnosticKind, Diagnostics, Dict, File, Location, Object, Origin, Ref};
 
-use crate::cmap::{CMap, Code, UseCMap};
+use crate::cmap::{CMap, Code, MAX_USECMAP_DEPTH, UseCMap};
 use crate::data::{BaseEncoding, encoding_names, predefined_cmap, std14_width};
 use crate::document::numbers;
 use crate::geom::Matrix;
@@ -24,6 +25,14 @@ pub(crate) const GLYPH_SCALE: Matrix = Matrix {
     e: 0.,
     f: 0.,
 };
+
+/// Parsed streams shared by the fonts of one document, keyed by stream object, so fonts
+/// that share a CMap or a font program parse it once.
+#[derive(Debug, Default)]
+pub(crate) struct Shared {
+    pub(crate) cmaps: Mutex<HashMap<Ref, Arc<CMap>>>,
+    pub(crate) programs: Mutex<HashMap<Ref, Option<Arc<truetype::TrueType>>>>,
+}
 
 /// A loaded font: per-code widths and Unicode, plus the metrics glyph boxes need.
 #[derive(Debug, Clone)]
@@ -139,14 +148,20 @@ fn glyph_width(std14: &str, name: Option<&str>) -> f64 {
 }
 
 /// Loads a simple font dictionary (§9.6). Problems become `BadFont` at `at`.
-pub(crate) fn load_font(file: &File, dict: &Dict, at: Location, diags: &mut Diagnostics) -> Font {
+pub(crate) fn load_font(
+    file: &File,
+    shared: &Shared,
+    dict: &Dict,
+    at: Location,
+    diags: &mut Diagnostics,
+) -> Font {
     let get = |k: &[u8]| dict.get(k).map(|o| file.deref(o));
     let kind = match get(b"Subtype").and_then(Object::as_name) {
         Some(b"Type1") => FontKind::Type1,
         Some(b"MMType1") => FontKind::MmType1,
         Some(b"TrueType") => FontKind::TrueType,
         Some(b"Type3") => FontKind::Type3,
-        Some(b"Type0") => return load_type0(file, dict, at, diags),
+        Some(b"Type0") => return load_type0(file, shared, dict, at, diags),
         _ => {
             diags.push(DiagnosticKind::BadFont, at);
             FontKind::Type1
@@ -258,12 +273,12 @@ pub(crate) fn load_font(file: &File, dict: &Dict, at: Location, diags: &mut Diag
         .collect();
 
     let to_unicode = match dict.get(b"ToUnicode") {
-        Some(Object::Ref(r)) => embedded_cmap(file, *r, 0, diags),
+        Some(Object::Ref(r)) => embedded_cmap(file, shared, *r, &mut Vec::new(), diags),
         _ => None,
     };
     // §9.6.5.4: without /Encoding, a TrueType font's own cmap selects the glyphs.
     let builtin_cmap = match (kind, dict.get(b"Encoding")) {
-        (FontKind::TrueType, None) => truetype::load(file, desc, at, diags),
+        (FontKind::TrueType, None) => truetype::load(file, shared, desc, at, diags),
         _ => None,
     };
     let unicode = (0..=255u8)
@@ -299,34 +314,50 @@ pub(crate) fn load_font(file: &File, dict: &Dict, at: Location, diags: &mut Diag
 }
 
 /// An embedded CMap stream, following `/UseCMap` and `usecmap` to other streams or
-/// predefined names. `None` if `r` is not a stream.
+/// predefined names. `None` if `r` is not a stream. `visiting` holds the streams of the
+/// chain being parsed, so a cycle is cut on its first repeat.
 pub(crate) fn embedded_cmap(
     file: &File,
+    shared: &Shared,
     r: Ref,
-    depth: usize,
+    visiting: &mut Vec<Ref>,
     diags: &mut Diagnostics,
-) -> Option<CMap> {
+) -> Option<Arc<CMap>> {
+    let lock = || shared.cmaps.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(m) = lock().get(&r) {
+        return Some(Arc::clone(m));
+    }
+    let at = Location::Stream { obj: r, offset: 0 };
+    if visiting.contains(&r) || visiting.len() > MAX_USECMAP_DEPTH {
+        diags.push(DiagnosticKind::RecursionLimit, at);
+        return None;
+    }
     let Object::Stream(s) = file.resolve(r) else {
         return None;
     };
-    let decoded = s.decode(Location::Stream { obj: r, offset: 0 }, diags);
+    let decoded = s.decode(at, diags);
     let base = match s.dict.get(b"UseCMap") {
         Some(Object::Ref(b)) => Some(UseCMap::Stream(*b)),
         Some(Object::Name(n)) => Some(UseCMap::Name(n.as_bytes())),
         _ => None,
     };
-    let mut resolve = |u: UseCMap, depth: usize, diags: &mut Diagnostics| match u {
-        UseCMap::Stream(b) => embedded_cmap(file, b, depth, diags).map(Arc::new),
+    let depth = visiting.len();
+    visiting.push(r);
+    let mut resolve = |u: UseCMap, _: usize, diags: &mut Diagnostics| match u {
+        UseCMap::Stream(b) => embedded_cmap(file, shared, b, visiting, diags),
         UseCMap::Name(n) => predefined_cmap(n),
     };
-    Some(CMap::parse_based(
+    let m = Arc::new(CMap::parse_based(
         &decoded.data,
         Origin::Stream(r),
         depth,
         base,
         &mut resolve,
         diags,
-    ))
+    ));
+    visiting.pop();
+    lock().insert(r, Arc::clone(&m));
+    Some(m)
 }
 
 fn apply_differences(names: &mut [Option<String>], diffs: &[Object], file: &File) {
@@ -428,13 +459,19 @@ mod tests {
 
     fn load(objects: &[(u32, &[u8])]) -> (Font, Vec<pawdf_core::DiagnosticKind>) {
         let f = file(objects);
+        let shared = Shared::default();
+        let (font, d) = load_with(&f, &shared);
+        (font, d)
+    }
+
+    fn load_with(f: &File, shared: &Shared) -> (Font, Vec<pawdf_core::DiagnosticKind>) {
         let r = Ref {
             num: 5,
             generation: 0,
         };
         let dict = f.resolve(r).as_dict().unwrap().clone();
         let mut d = Diagnostics::new();
-        let font = load_font(&f, &dict, Location::File(0), &mut d);
+        let font = load_font(f, shared, &dict, Location::File(0), &mut d);
         (font, d.as_slice().iter().map(|x| x.kind).collect())
     }
 
@@ -519,10 +556,10 @@ mod tests {
     }
 
     #[test]
-    fn tounicode_usecmap_cycle_is_cut() {
+    fn tounicode_usecmap_cycle_is_parsed_once() {
         let cmap = stream(
             "/UseCMap 6 0 R",
-            b"1 begincodespacerange <00> <FF> endcodespacerange 1 beginbfchar <41> <005A> endbfchar",
+            b"1 begincodespacerange <00> <FF> endcodespacerange 2 beginbfchar <41> <005A> <42> endbfchar",
         );
         let (f, d) = load(&[
             (
@@ -532,7 +569,30 @@ mod tests {
             (6, &cmap),
         ]);
         assert_eq!(text(&f, 65).as_deref(), Some("Z"));
-        assert_eq!(d, [pawdf_core::DiagnosticKind::RecursionLimit]);
+        use pawdf_core::DiagnosticKind::{BadCMap, RecursionLimit};
+        assert_eq!(d, [RecursionLimit, BadCMap, BadCMap]);
+    }
+
+    #[test]
+    fn shared_tounicode_is_parsed_once_per_document() {
+        let cmap = stream(
+            "",
+            b"1 beginbfchar <41> endbfchar 1 beginbfchar <42> <005A> endbfchar",
+        );
+        let f = file(&[
+            (
+                5,
+                b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /ToUnicode 6 0 R >>",
+            ),
+            (6, &cmap),
+        ]);
+        let shared = Shared::default();
+        let (a, d) = load_with(&f, &shared);
+        assert_eq!(d, [pawdf_core::DiagnosticKind::BadCMap]);
+        let (b, d) = load_with(&f, &shared);
+        assert!(d.is_empty(), "{d:?}");
+        assert_eq!(text(&a, 66), text(&b, 66));
+        assert_eq!(shared.cmaps.lock().unwrap().len(), 1);
     }
 
     #[test]

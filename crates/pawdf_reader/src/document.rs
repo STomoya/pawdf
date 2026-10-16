@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use pawdf_core::{Diagnostic, DiagnosticKind, Diagnostics, File, Location, Object, Ref};
 
 use crate::error::{Error, ErrorKind};
-use crate::font::{Font, load_font};
+use crate::font::{Font, Shared, load_font};
 use crate::geom::{Matrix, Rect, Rotation};
 
 const MAX_TREE_DEPTH: usize = 64;
@@ -29,6 +29,7 @@ pub(crate) struct Inner {
     pub tree_diags: Vec<Diagnostic>,
     /// Fonts by object, parsed once per document, with the diagnostics loading them gave.
     fonts: Mutex<HashMap<Ref, LoadedFont>>,
+    pub shared: Shared,
 }
 
 impl Inner {
@@ -41,7 +42,7 @@ impl Inner {
         }
         let mut diags = Diagnostics::new();
         let font = match self.file.resolve(r).as_dict() {
-            Some(dict) => load_font(&self.file, dict, at, &mut diags),
+            Some(dict) => load_font(&self.file, &self.shared, dict, at, &mut diags),
             None => {
                 diags.push(DiagnosticKind::BadFont, at);
                 Font::fallback()
@@ -75,6 +76,7 @@ impl Document {
             pages,
             tree_diags: diags.into_vec(),
             fonts: Mutex::new(HashMap::new()),
+            shared: Shared::default(),
         })))
     }
 

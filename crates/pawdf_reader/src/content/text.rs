@@ -179,7 +179,13 @@ impl<'a> Interp<'a> {
                 if let Some(f) = self.pass_fonts.get(&key) {
                     return (key, Arc::clone(f));
                 }
-                let font = Arc::new(load_font(self.file, d, at, &mut self.diags));
+                let font = Arc::new(load_font(
+                    self.file,
+                    &self.doc.shared,
+                    d,
+                    at,
+                    &mut self.diags,
+                ));
                 self.pass_fonts.insert(key, Arc::clone(&font));
                 (key, font)
             }
