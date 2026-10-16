@@ -1,0 +1,36 @@
+[package]
+name = "pawdf_fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+pawdf_core = { path = "../crates/pawdf_core" }
+
+# Keep this crate out of the main workspace; it builds only with nightly.
+[workspace]
+
+[[bin]]
+name = "lexer"
+path = "fuzz_targets/lexer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "file"
+path = "fuzz_targets/file.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "filters"
+path = "fuzz_targets/filters.rs"
+test = false
+doc = false
+bench = false
