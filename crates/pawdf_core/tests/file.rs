@@ -435,6 +435,39 @@ fn repair_scan_is_linear_for_unterminated_objects() {
     assert_fast("object spam", start);
 }
 
+/// An unterminated array must not swallow the objects and trailer after it during repair.
+#[test]
+fn repair_recovers_after_unterminated_array() {
+    let pdf = b"%PDF-1.4\n3 0 obj\n[ 1 2\nendobj\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n";
+    let file = File::from_bytes(pdf.to_vec()).unwrap();
+    assert_eq!(file.trailer().get(b"Root"), Some(&Object::Ref(r(1))));
+    assert_eq!(
+        file.resolve(r(3)),
+        &Object::Array(vec![Object::Int(1), Object::Int(2)])
+    );
+}
+
+fn many_keys(n: usize) -> String {
+    (0..n).map(|i| format!("/k{i} 1 ")).collect()
+}
+
+/// Merging a trailer with many keys must be linear, on both the xref and repair paths.
+#[test]
+fn trailer_with_many_keys_is_linear() {
+    let keys = many_keys(50_000);
+    let (pdf, _) = build_pdf(&[(1, CATALOG), (2, PAGES)], &format!("/Root 1 0 R {keys}"));
+    let start = std::time::Instant::now();
+    let file = File::from_bytes(pdf).unwrap();
+    assert_fast("xref trailer", start);
+    assert_eq!(file.trailer().len(), 50_002);
+
+    let pdf = format!("%PDF-1.4\n1 0 obj << /Type /Catalog >> endobj\ntrailer << {keys} >>\n");
+    let start = std::time::Instant::now();
+    let file = File::from_bytes(pdf.into_bytes()).unwrap();
+    assert_fast("repair trailer", start);
+    assert_eq!(file.trailer().len(), 50_001);
+}
+
 /// Review I1: two sections naming the same `/XRefStm` must read it only once.
 #[test]
 fn shared_xrefstm_is_read_once() {

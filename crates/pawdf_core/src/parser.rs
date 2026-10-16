@@ -6,13 +6,17 @@ use crate::object::{Dict, Name, Object, Ref, Stream};
 pub const MAX_DEPTH: usize = 256;
 
 /// Parses one object. Returns `None` only at end of input.
-pub fn parse_object(lex: &mut Lexer, origin: Origin, diags: &mut Diagnostics) -> Option<Object> {
+pub(crate) fn parse_object(
+    lex: &mut Lexer,
+    origin: Origin,
+    diags: &mut Diagnostics,
+) -> Option<Object> {
     let (start, tok) = lex.next_token()?;
     Some(parse_object_from(lex, start, tok, origin, diags))
 }
 
 /// Parses an object whose first token has already been read.
-pub fn parse_object_from(
+pub(crate) fn parse_object_from(
     lex: &mut Lexer,
     start: usize,
     tok: Token,
@@ -91,6 +95,12 @@ fn parse_array(lex: &mut Lexer, origin: Origin, diags: &mut Diagnostics, depth: 
             Token::ArrayClose => break,
             Token::DictClose => {
                 diags.push(DiagnosticKind::BadObject, origin.at(start));
+                break;
+            }
+            // A stray keyword such as `endobj` means the closing `]` is missing.
+            Token::Keyword(k) if k == b"endobj" || k == b"stream" => {
+                diags.push(DiagnosticKind::BadObject, origin.at(start));
+                lex.set_pos(start);
                 break;
             }
             tok => items.push(parse_with_depth(lex, start, tok, origin, diags, depth)),

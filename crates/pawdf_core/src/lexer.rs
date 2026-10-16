@@ -1,6 +1,6 @@
 /// A lexical token (ISO 32000-2 §7.2, §7.3).
 #[derive(Debug, Clone, PartialEq)]
-pub enum Token {
+pub(crate) enum Token {
     /// Integer.
     Int(i64),
     /// Real number.
@@ -43,7 +43,7 @@ pub fn is_regular(b: u8) -> bool {
 /// A tokenizer over a byte slice. It never fails: malformed input becomes the closest
 /// sensible token.
 #[derive(Debug, Clone)]
-pub struct Lexer<'a> {
+pub(crate) struct Lexer<'a> {
     data: &'a [u8],
     pos: usize,
 }

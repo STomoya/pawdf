@@ -42,20 +42,12 @@ fn merge(into: &mut Entries, from: Entries) {
     }
 }
 
-fn merge_trailer(into: &mut Dict, from: &Dict) {
-    for (k, v) in from.iter() {
-        if !into.contains_key(k.as_bytes()) {
-            into.insert(k.clone(), v.clone());
-        }
-    }
-}
-
 /// Loads the xref chain starting at `startxref`. Returns `None` if the first section is
 /// unreadable, so the caller can repair.
 pub(crate) fn load(data: &[u8], diags: &mut Diagnostics) -> Option<(Entries, Dict, usize)> {
     let start = find_startxref(data)?;
     let mut entries = Entries::new();
-    let mut trailer = Dict::new();
+    let mut trailers = Vec::new();
     let mut seen = HashSet::new();
     let mut next = Some(start);
     while let Some(offset) = next.take() {
@@ -81,9 +73,18 @@ pub(crate) fn load(data: &[u8], diags: &mut Diagnostics) -> Option<(Entries, Dic
                 }
             }
         }
-        merge_trailer(&mut trailer, &sec_trailer);
         next = sec_trailer.get(b"Prev").and_then(int_offset);
+        trailers.push(sec_trailer);
     }
+    // Merged once, newest section last so it wins: merging per section is quadratic in
+    // the number of trailer keys.
+    let trailer = Dict::from_entries(
+        trailers
+            .into_iter()
+            .rev()
+            .flat_map(Dict::into_entries)
+            .collect(),
+    );
     Some((entries, trailer, start))
 }
 
@@ -283,7 +284,10 @@ pub(crate) fn repair(data: &[u8]) -> (Entries, Dict) {
         .collect();
     hits.sort_unstable_by_key(|&(pos, _)| pos);
     let mut entries = Entries::new();
-    let mut trailer = Dict::new();
+    // `trailer` dictionaries beat xref-stream dictionaries; later trailers win, and the
+    // first xref stream wins. Collected and merged once to stay linear in the key count.
+    let mut trailer_parts = Vec::new();
+    let mut xref_dicts = Vec::new();
     let mut catalog = None;
     let mut quiet = Diagnostics::new();
     let mut consumed = 0;
@@ -294,9 +298,7 @@ pub(crate) fn repair(data: &[u8]) -> (Entries, Dict) {
         let Some(num) = num else {
             let mut lex = Lexer::at(data, pos + 7);
             if let Some(Object::Dict(d)) = parse_object(&mut lex, Origin::File, &mut quiet) {
-                for (k, v) in d.iter() {
-                    trailer.insert(k.clone(), v.clone());
-                }
+                trailer_parts.extend(d.into_entries());
             }
             consumed = lex.pos();
             continue;
@@ -316,7 +318,7 @@ pub(crate) fn repair(data: &[u8]) -> (Entries, Dict) {
             continue;
         };
         match s.dict.get(b"Type").and_then(|t| t.as_name()) {
-            Some(b"XRef") => merge_trailer(&mut trailer, &s.dict),
+            Some(b"XRef") => xref_dicts.push(s.dict.clone()),
             Some(b"ObjStm") => {
                 let origin = Origin::Stream(r);
                 let decoded = s.decode(origin.at(0), &mut quiet).data;
@@ -348,6 +350,13 @@ pub(crate) fn repair(data: &[u8]) -> (Entries, Dict) {
             _ => {}
         }
     }
+    let mut parts: Vec<_> = xref_dicts
+        .into_iter()
+        .rev()
+        .flat_map(Dict::into_entries)
+        .collect();
+    parts.extend(trailer_parts);
+    let mut trailer = Dict::from_entries(parts);
     if !trailer.contains_key(b"Root")
         && let Some(r) = catalog
     {
@@ -488,6 +497,24 @@ mod tests {
             Some(17)
         );
         assert_eq!(find_startxref(b"no marker"), None);
+    }
+
+    #[test]
+    fn repair_trailer_precedence() {
+        let mut data = b"trailer << /Root 1 0 R /A 1 >>\n".to_vec();
+        data.extend(xref_stream("/Root 2 0 R /A 2 /B 1 /Size 0 /W [1 0 0]", b""));
+        data.extend(xref_stream("/B 2 /Size 0 /W [1 0 0]", b""));
+        data.extend(b"trailer << /A 3 >>\n");
+        let (_, t) = repair(&data);
+        assert_eq!(
+            t.get(b"Root"),
+            Some(&Object::Ref(Ref {
+                num: 1,
+                generation: 0
+            }))
+        );
+        assert_eq!(t.get(b"A"), Some(&Object::Int(3)));
+        assert_eq!(t.get(b"B"), Some(&Object::Int(1)));
     }
 
     #[test]

@@ -185,6 +185,10 @@ impl Dict {
         }
     }
 
+    pub(crate) fn into_entries(self) -> Vec<(Name, Object)> {
+        self.0
+    }
+
     /// Entries in insertion order.
     pub fn iter(&self) -> impl Iterator<Item = (&Name, &Object)> {
         self.0.iter().map(|(k, v)| (k, v))
