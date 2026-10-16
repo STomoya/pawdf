@@ -226,3 +226,57 @@ fn vertical_w2_tc_and_tj() {
     at(&c.glyphs[1], 97.5, 687.);
     assert!(close(c.glyphs[0].advance, 4.));
 }
+
+fn identity_truetype(cid_to_gid: &str, program: &[u8], code: &[u8]) -> PageContent {
+    let (f, d) = type0(
+        "/Identity-H",
+        &format!("/CIDToGIDMap {cid_to_gid} /FontDescriptor 7 0 R"),
+    );
+    let desc = b"<< /Type /FontDescriptor /FontName /Foo /Flags 4 /FontFile2 8 0 R >>";
+    let ff = stream("", program);
+    let map = stream("", &[0, 0, 0, 3]);
+    let mut ops = b"BT /F1 1 Tf <".to_vec();
+    ops.extend(
+        code.iter()
+            .map(|b| format!("{b:02X}"))
+            .collect::<String>()
+            .bytes(),
+    );
+    ops.extend_from_slice(b"> Tj ET");
+    run(
+        &ops,
+        &[
+            (5, f.as_bytes()),
+            (6, d.as_bytes()),
+            (7, desc),
+            (8, &ff),
+            (9, &map),
+        ],
+    )
+}
+
+#[test]
+fn identity_truetype_uses_font_cmap() {
+    let program = common::sfnt(&[(3, 1, &[(0x65E5, 3)])]);
+    let c = identity_truetype("9 0 R", &program, &[0, 1]);
+    assert!(c.diagnostics.is_empty(), "{:?}", c.diagnostics);
+    assert_eq!(texts(&c), ["\u{65E5}"]);
+    assert!(c.fonts[0].embedded);
+    let c = identity_truetype("/Identity", &program, &[0, 3]);
+    assert_eq!(texts(&c), ["\u{65E5}"]);
+}
+
+#[test]
+fn short_cid_to_gid_map_and_garbage_program() {
+    let program = common::sfnt(&[(3, 1, &[(0x65E5, 3)])]);
+    let c = identity_truetype("9 0 R", &program, &[0, 5]);
+    assert_eq!(texts(&c), ["\u{FFFD}"]);
+    assert_eq!(kinds(&c), [DiagnosticKind::UnmappedGlyph]);
+    let c = identity_truetype("/Identity", b"garbage", &[0, 3]);
+    assert_eq!(texts(&c), ["\u{FFFD}"]);
+    assert!(
+        kinds(&c).contains(&DiagnosticKind::BadFont),
+        "{:?}",
+        kinds(&c)
+    );
+}

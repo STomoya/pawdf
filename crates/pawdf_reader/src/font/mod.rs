@@ -2,6 +2,7 @@
 
 pub(crate) mod cid;
 pub(crate) mod encoding;
+pub(crate) mod truetype;
 
 use std::sync::Arc;
 
@@ -259,12 +260,26 @@ pub(crate) fn load_font(file: &File, dict: &Dict, at: Location, diags: &mut Diag
         Some(Object::Ref(r)) => embedded_cmap(file, *r, 0, diags),
         _ => None,
     };
-    let unicode = (0..256u32)
+    // §9.6.5.4: without /Encoding, a TrueType font's own cmap selects the glyphs.
+    let builtin_cmap = match (kind, dict.get(b"Encoding")) {
+        (FontKind::TrueType, None) => truetype::load(file, desc, at, diags),
+        _ => None,
+    };
+    let unicode = (0..=255u8)
         .map(|code| {
             to_unicode
                 .as_ref()
-                .and_then(|t| t.lookup(&[code as u8]))
-                .or_else(|| names.get(code as usize)?.as_deref().and_then(glyph_unicode))
+                .and_then(|t| t.lookup(&[code]))
+                .or_else(|| {
+                    let tt = builtin_cmap.as_ref()?;
+                    tt.unicode(tt.simple_gid(code)?).map(str::to_owned)
+                })
+                .or_else(|| {
+                    names
+                        .get(usize::from(code))?
+                        .as_deref()
+                        .and_then(glyph_unicode)
+                })
         })
         .collect();
 

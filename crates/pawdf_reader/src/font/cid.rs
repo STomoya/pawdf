@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use pawdf_core::{DiagnosticKind, Diagnostics, Dict, File, Location, Object};
 
+use super::truetype::{self, TrueType};
 use super::{Font, GLYPH_SCALE, Glyphs, embedded_cmap, metrics};
 use crate::cmap::{CMap, Code};
 use crate::data::{predefined_cmap, ucs2};
@@ -32,6 +33,9 @@ pub(crate) struct Cid {
     w2: Vec<(u32, u32, [f64; 3])>,
     /// `/DW2`: `[vy, w1]`.
     dw2: [f64; 2],
+    /// For Identity-encoded CIDFontType2 fonts: the embedded program's cmap, and the
+    /// `/CIDToGIDMap` stream (`None` for `/Identity`).
+    truetype: Option<(TrueType, Option<Vec<u8>>)>,
 }
 
 /// The entry covering `cid` in ranges sorted by start.
@@ -58,7 +62,8 @@ impl Cid {
         }
     }
 
-    /// Unicode for `code` (spec §6.2): ToUnicode, then the character collection's UCS2 table.
+    /// Unicode for `code` (spec §6.2): ToUnicode, then the character collection's UCS2
+    /// table, then the embedded TrueType cmap through `/CIDToGIDMap`.
     pub fn unicode(&self, code: Code, cid: u32) -> Option<String> {
         if let Some(s) = self
             .to_unicode
@@ -68,7 +73,22 @@ impl Cid {
             return Some(s);
         }
         let cid = u16::try_from(cid).ok()?;
-        self.ucs2.as_ref()?.lookup(&cid.to_be_bytes())
+        if let Some(s) = self
+            .ucs2
+            .as_ref()
+            .and_then(|u| u.lookup(&cid.to_be_bytes()))
+        {
+            return Some(s);
+        }
+        let (tt, map) = self.truetype.as_ref()?;
+        let gid = match map {
+            None => cid,
+            Some(m) => {
+                let i = usize::from(cid) * 2;
+                u16::from_be_bytes([*m.get(i)?, *m.get(i + 1)?])
+            }
+        };
+        tt.unicode(gid).map(str::to_owned)
     }
 }
 
@@ -97,12 +117,10 @@ pub(crate) fn load_type0(file: &File, dict: &Dict, at: Location, diags: &mut Dia
         .and_then(Object::as_array)
         .and_then(|a| a.first())
         .and_then(|o| file.deref(o).as_dict());
-    if !matches!(
-        descendant
-            .and_then(|d| d.get(b"Subtype"))
-            .and_then(|o| file.deref(o).as_name()),
-        Some(b"CIDFontType0" | b"CIDFontType2")
-    ) {
+    let subtype = descendant
+        .and_then(|d| d.get(b"Subtype"))
+        .and_then(|o| file.deref(o).as_name());
+    if !matches!(subtype, Some(b"CIDFontType0" | b"CIDFontType2")) {
         diags.push(DiagnosticKind::BadFont, at);
     }
     let dget = |k: &[u8]| descendant.and_then(|d| d.get(k)).map(|o| file.deref(o));
@@ -151,6 +169,24 @@ pub(crate) fn load_type0(file: &File, dict: &Dict, at: Location, diags: &mut Dia
     }
     .or_else(|| ucs2(&info_str(b"Registry")?, &info_str(b"Ordering")?));
 
+    let identity =
+        cmap.registry.as_deref() == Some("Adobe") && cmap.ordering.as_deref() == Some("Identity");
+    let truetype = match subtype {
+        Some(b"CIDFontType2") if identity => truetype::load(file, desc, at, diags).map(|tt| {
+            let map = match descendant.and_then(|d| d.get(b"CIDToGIDMap")) {
+                Some(Object::Ref(r)) => match file.resolve(*r) {
+                    Object::Stream(s) => Some(
+                        s.decode(Location::Stream { obj: *r, offset: 0 }, diags)
+                            .data,
+                    ),
+                    _ => None,
+                },
+                _ => None,
+            };
+            (tt, map)
+        }),
+        _ => None,
+    };
     let (ascent, descent) = metrics(file, FontKind::Type0, &GLYPH_SCALE, dict, desc);
     Font {
         info: FontInfo {
@@ -172,6 +208,7 @@ pub(crate) fn load_type0(file: &File, dict: &Dict, at: Location, diags: &mut Dia
             dw,
             w2,
             dw2,
+            truetype,
         })),
     }
 }

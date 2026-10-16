@@ -6,3 +6,4 @@ edition.workspace = true
 [dependencies]
 pawdf_core = { workspace = true }
 miniz_oxide = { workspace = true }
+ttf-parser = { workspace = true }
