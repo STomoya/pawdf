@@ -163,8 +163,8 @@ pub(crate) fn load_font(file: &File, dict: &Dict, at: Location, diags: &mut Diag
             let base = e.get(b"BaseEncoding").map(|o| file.deref(o));
             let mut names = match base.and_then(Object::as_name).and_then(named) {
                 Some(b) => names_of(encoding_names(b)),
-                // §9.6.5.1: without /BaseEncoding, differences apply to the built-in
-                // encoding for symbolic fonts and to StandardEncoding otherwise.
+                // §9.6.5.1 says an embedded program's built-in encoding is the base, but
+                // pdfium uses StandardEncoding for every nonsymbolic font; we follow pdfium.
                 None if symbolic || matches!(std14, Some("Symbol" | "ZapfDingbats")) => {
                     builtin(diags)
                 }

@@ -51,7 +51,15 @@ pub(crate) fn type1_builtin(program: &[u8]) -> Option<Vec<Option<String>>> {
         None => clear,
     };
     let start = find(clear, b"/Encoding")?;
-    let words: Vec<&[u8]> = clear[start..]
+    // `/` is a PostScript delimiter, so compact programs write `dup 1/A put`.
+    let mut spaced = Vec::with_capacity(clear.len() - start);
+    for &b in &clear[start..] {
+        if b == b'/' {
+            spaced.push(b' ');
+        }
+        spaced.push(b);
+    }
+    let words: Vec<&[u8]> = spaced
         .split(|b| b.is_ascii_whitespace())
         .filter(|w| !w.is_empty())
         .collect();
@@ -106,5 +114,12 @@ mod tests {
         assert_eq!(t[66].as_deref(), Some("Beta"));
         assert_eq!(t[67], None);
         assert!(type1_builtin(b"/Encoding StandardEncoding def currentfile eexec").is_none());
+    }
+
+    #[test]
+    fn type1_builtin_compact_syntax() {
+        let src = b"/Encoding 256 array\n0 1 255{1 index exch/.notdef put}for\ndup 1/Euro.symbol put\nreadonly def";
+        let t = type1_builtin(src).unwrap();
+        assert_eq!(t[1].as_deref(), Some("Euro.symbol"));
     }
 }
