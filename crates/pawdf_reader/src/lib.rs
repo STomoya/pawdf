@@ -9,6 +9,7 @@ mod document;
 mod error;
 mod font;
 mod geom;
+mod image;
 mod model;
 #[cfg(test)]
 mod testutil;

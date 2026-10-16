@@ -8,18 +8,20 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use pawdf_core::{
-    DiagnosticKind, Diagnostics, Dict, File, Location, Object, Operation, Origin, Ref,
+    DiagnosticKind, Diagnostics, Dict, File, Location, Object, Operation, Origin, Ref, Stream,
     parse_content,
 };
 
-use crate::document::{Inner, Page};
+use crate::document::{Inner, Page, numbers};
 use crate::font::Font;
-use crate::geom::{Matrix, Point};
-use crate::model::{FillRule, PageContent, Path, Segment};
+use crate::geom::{Matrix, Point, Rect};
+use crate::image::{expand_inline, read_image};
+use crate::model::{FillRule, Image, PageContent, Path, Segment};
 use color::{Space, device_space, resolve_space};
 use state::{FontKey, GraphicsState, matrix, name, nums};
 
 const MAX_Q_DEPTH: usize = 256;
+const MAX_FORM_DEPTH: usize = 32;
 
 impl Page {
     /// Extracts glyphs, painted paths, and images. Never fails: problems become
@@ -88,6 +90,10 @@ pub(crate) struct Interp<'a> {
     pub font_index: HashMap<FontKey, usize>,
     pub unmapped_reported: HashSet<FontKey>,
     pub no_font_reported: bool,
+    /// Forms being drawn, innermost last, to cut cycles.
+    form_stack: Vec<Ref>,
+    /// `Q` cannot pop states saved outside the current form.
+    stack_floor: usize,
 }
 
 impl<'a> Interp<'a> {
@@ -112,6 +118,8 @@ impl<'a> Interp<'a> {
             font_index: HashMap::new(),
             unmapped_reported: HashSet::new(),
             no_font_reported: false,
+            form_stack: Vec::new(),
+            stack_floor: 0,
         }
     }
 
@@ -191,12 +199,32 @@ impl<'a> Interp<'a> {
                 true
             }
             b"Q" => {
-                match self.stack.pop() {
+                let saved = if self.stack.len() > self.stack_floor {
+                    self.stack.pop()
+                } else {
+                    None
+                };
+                match saved {
                     Some(gs) => self.gs = gs,
                     None => self.bad(DiagnosticKind::UnbalancedRestore, op),
                 }
                 true
             }
+            b"Do" => match name(args) {
+                Some(n) => {
+                    self.do_xobject(n, op);
+                    true
+                }
+                None => false,
+            },
+            b"BI" => match args {
+                [Object::Stream(s)] => {
+                    let s = Stream::new(expand_inline(&s.dict), s.raw().to_vec());
+                    self.place_image(&s, None, op.location);
+                    true
+                }
+                _ => false,
+            },
             b"cm" => nums::<6>(args)
                 .map(|m| self.gs.ctm = matrix(m).concat(&self.gs.ctm))
                 .is_some(),
@@ -304,6 +332,110 @@ impl<'a> Interp<'a> {
         if !ok {
             self.bad(DiagnosticKind::BadOperands, op);
         }
+    }
+
+    fn do_xobject(&mut self, key: &[u8], op: &Operation) {
+        let stream = match self.resource_entry(b"XObject", key) {
+            Some(Object::Ref(r)) => match self.file.resolve(*r) {
+                Object::Stream(s) => Some((*r, s)),
+                _ => None,
+            },
+            _ => None,
+        };
+        let Some((r, s)) = stream else {
+            self.bad(DiagnosticKind::MissingResource, op);
+            return;
+        };
+        match s.dict.get(b"Subtype").and_then(Object::as_name) {
+            Some(b"Image") => {
+                let name = String::from_utf8_lossy(key).into_owned();
+                self.place_image(s, Some(name), Location::Stream { obj: r, offset: 0 });
+            }
+            Some(b"Form") => self.run_form(r, s, op),
+            _ => {}
+        }
+    }
+
+    /// Emits one image placement. `name` is `None` for inline images.
+    fn place_image(&mut self, s: &Stream, name: Option<String>, at: Location) {
+        let file = self.file;
+        let mut diags = std::mem::take(&mut self.diags);
+        let mut space = |obj: &Object, diags: &mut Diagnostics| match file.deref(obj) {
+            Object::Name(n) => device_space(n.as_bytes()).or_else(|| {
+                let cs = self.resource(b"ColorSpace", n.as_bytes())?;
+                resolve_space(file, cs, diags)
+            }),
+            other => resolve_space(file, other, diags),
+        };
+        // ponytail: each placement decodes and owns its data; a per-page Arc cache keyed by
+        // Ref if memory matters.
+        let parts = read_image(file, s, at, &mut space, true, &mut diags);
+        self.diags = diags;
+        let Some(p) = parts else {
+            return;
+        };
+        let ctm = self.gs.ctm;
+        self.out.images.push(Image {
+            inline: name.is_none(),
+            name,
+            ctm,
+            bbox: ctm.transform_rect(Rect {
+                x0: 0.,
+                y0: 0.,
+                x1: 1.,
+                y1: 1.,
+            }),
+            width: p.width,
+            height: p.height,
+            bpc: p.bpc,
+            color_space: p.color_space,
+            image_mask: p.image_mask,
+            decode: p.decode,
+            data: p.data,
+            smask: p.smask,
+        });
+    }
+
+    /// Draws a Form XObject (§8.10) with its own `/Matrix` and resources.
+    fn run_form(&mut self, r: Ref, s: &'a Stream, op: &Operation) {
+        if self.form_stack.contains(&r) || self.form_stack.len() >= MAX_FORM_DEPTH {
+            self.bad(DiagnosticKind::RecursionLimit, op);
+            return;
+        }
+        let file = self.file;
+        let m = s
+            .dict
+            .get(b"Matrix")
+            .and_then(|m| numbers::<6>(file, m))
+            .map(matrix)
+            .unwrap_or(Matrix::IDENTITY);
+        let res = match s
+            .dict
+            .get(b"Resources")
+            .and_then(|o| file.deref(o).as_dict())
+        {
+            Some(d) => Some(d),
+            None => self.resources.last().copied().flatten(),
+        };
+        let Some(ops) = self.parse_stream(r) else {
+            return;
+        };
+        let saved = (
+            self.gs.clone(),
+            self.stack_floor,
+            self.in_text,
+            self.tm,
+            self.tlm,
+        );
+        self.stack_floor = self.stack.len();
+        self.gs.ctm = m.concat(&self.gs.ctm);
+        self.resources.push(res);
+        self.form_stack.push(r);
+        self.run(&ops);
+        self.form_stack.pop();
+        self.resources.pop();
+        self.stack.truncate(self.stack_floor);
+        (self.gs, self.stack_floor, self.in_text, self.tm, self.tlm) = saved;
     }
 
     fn curve(&mut self, kind: u8, args: &[Object]) -> bool {
