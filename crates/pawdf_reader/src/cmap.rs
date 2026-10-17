@@ -234,6 +234,9 @@ impl CMap {
         t.notdef.sort_by_key(|r| (r.len, r.lo));
         if let Some(p) = t.parent.clone() {
             let room = MAX_CODESPACE.saturating_sub(t.codespace.len());
+            if p.codespace.len() > room && !codespace_full {
+                diags.push(DiagnosticKind::BadCMap, origin.at(0));
+            }
             t.codespace.extend(p.codespace.iter().take(room).cloned());
             t.wmode = p.wmode;
             t.registry = t.registry.or_else(|| p.registry.clone());
@@ -618,6 +621,7 @@ mod tests {
             &mut d,
         );
         assert_eq!(child.codespace.len(), MAX_CODESPACE);
+        assert_eq!(d.as_slice()[0].kind, DiagnosticKind::BadCMap);
     }
 
     #[test]

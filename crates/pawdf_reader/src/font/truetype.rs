@@ -36,9 +36,11 @@ impl TrueType {
         let unicode = || table.subtables.into_iter().filter(|s| s.is_unicode());
         let picked = [unicode().find(full), unicode().find(|s| !full(s))];
         let mut by_gid = HashMap::new();
+        // GID 0 is `.notdef`: a code reaching it has no glyph, let alone a character.
+        let gid = |s: &cmap::Subtable, c: u32| s.glyph_index(c).filter(|g| g.0 != 0);
         for sub in picked.into_iter().flatten() {
             for cp in 0..=MAX_CODEPOINT {
-                if let (Some(g), Some(c)) = (sub.glyph_index(cp), char::from_u32(cp)) {
+                if let (Some(g), Some(c)) = (gid(&sub, cp), char::from_u32(cp)) {
                     by_gid.entry(g.0).or_insert_with(|| c.to_string());
                 }
             }
@@ -55,8 +57,8 @@ impl TrueType {
         for (code, slot) in (0u32..).zip(simple.iter_mut()) {
             // §9.6.5.4: a (3,0) subtable maps codes at 0xF000 + code, or at the code itself.
             *slot = symbol
-                .and_then(|s| s.glyph_index(0xF000 + code).or_else(|| s.glyph_index(code)))
-                .or_else(|| mac.and_then(|s| s.glyph_index(code)))
+                .and_then(|s| gid(&s, 0xF000 + code).or_else(|| gid(&s, code)))
+                .or_else(|| mac.and_then(|s| gid(&s, code)))
                 .map(|g| g.0);
         }
         Some(TrueType { by_gid, simple })
@@ -130,6 +132,14 @@ mod tests {
         assert_eq!((t.simple_gid(0x41), t.simple_gid(0x42)), (Some(7), Some(8)));
         let t = TrueType::parse(&sfnt(&[(1, 0, &[(0x43, 4)])])).unwrap();
         assert_eq!(t.simple_gid(0x43), Some(4));
+    }
+
+    #[test]
+    fn notdef_is_never_a_mapping() {
+        let t = TrueType::parse(&sfnt(&[(3, 1, &[(0x41, 0)])])).unwrap();
+        assert_eq!(t.unicode(0), None);
+        let t = TrueType::parse(&sfnt(&[(3, 0, &[(0xF041, 0), (0x41, 7)])])).unwrap();
+        assert_eq!(t.simple_gid(0x41), Some(7));
     }
 
     #[test]
