@@ -19,3 +19,7 @@ target/
 
 # Local scratch space
 local_scratch/
+
+# superpowers related
+superpowers/
+.superpowers/
