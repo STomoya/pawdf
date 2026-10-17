@@ -18,14 +18,17 @@ def _stream(data: bytes) -> bytes:
     return b'<< /Length %d >>\nstream\n' % len(data) + data + b'\nendstream'
 
 
-def _pdf(content: bytes, resources: bytes = b'<< >>', trailer_extra: bytes = b'') -> bytes:
-    """Build a one-page PDF with correct xref offsets; object 5 is Helvetica."""
+def _pdf(
+    content: bytes, resources: bytes = b'<< >>', trailer_extra: bytes = b'', extra: tuple[bytes, ...] = ()
+) -> bytes:
+    """Build a one-page PDF with correct xref offsets; object 5 is Helvetica, `extra` follows from 6."""
     objects = [
         b'<< /Type /Catalog /Pages 2 0 R >>',
         b'<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
         b'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources ' + resources + b' >>',
         _stream(content),
         HELV,
+        *extra,
     ]
     out = bytearray(b'%PDF-1.7\n')
     offsets = []
@@ -101,6 +104,20 @@ def test_glyphs() -> None:
     assert g.advance == pytest.approx(5.56)
     f = c.fonts[0]
     assert (f.base_font, f.kind, f.embedded, f.wmode) == ('Helvetica', 'type1', False, 'horizontal')
+
+
+def test_vertical_glyph() -> None:
+    """A Type0 font with Identity-V yields vertical glyphs."""
+    type0 = b'<< /Type /Font /Subtype /Type0 /BaseFont /Foo /Encoding /Identity-V /DescendantFonts [7 0 R] >>'
+    cid = (
+        b'<< /Type /Font /Subtype /CIDFontType2 /BaseFont /Foo '
+        b'/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> >>'
+    )
+    c = pawdf.Document(_pdf(b'BT /F1 10 Tf <0001> Tj ET', b'<< /Font << /F1 6 0 R >> >>', extra=(type0, cid)))[
+        0
+    ].content()
+    assert c.glyphs[0].wmode == 'vertical'
+    assert (c.fonts[0].kind, c.fonts[0].wmode) == ('type0', 'vertical')
 
 
 def test_paths() -> None:

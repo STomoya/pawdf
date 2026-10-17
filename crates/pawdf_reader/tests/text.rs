@@ -266,3 +266,21 @@ fn glyph_output_is_bounded() {
     assert_eq!(c.glyphs.len(), 1 << 20);
     assert_eq!(kinds(&c), [DiagnosticKind::RecursionLimit]);
 }
+
+#[test]
+fn simple_truetype_without_encoding_uses_cmap() {
+    let program = common::sfnt(&[(3, 1, &[(0x2713, 7)]), (3, 0, &[(0xF041, 7)])]);
+    let ff = stream("", &program);
+    let c = run(
+        b"BT /F1 10 Tf (AB) Tj ET",
+        "<< /Font << /F1 5 0 R >> >>",
+        &[
+            (5, b"<< /Type /Font /Subtype /TrueType /BaseFont /Foo /FirstChar 65 /LastChar 66 /Widths [500 500] /FontDescriptor 6 0 R >>"),
+            (6, b"<< /Type /FontDescriptor /FontName /Foo /Flags 4 /FontFile2 7 0 R >>"),
+            (7, &ff),
+        ],
+    );
+    assert_eq!(c.glyphs[0].text, "\u{2713}");
+    // Codes the font's cmap does not resolve keep the M2 result.
+    assert_eq!(c.glyphs[1].text, "B");
+}

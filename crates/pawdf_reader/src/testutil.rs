@@ -42,3 +42,71 @@ pub fn file(objects: &[(u32, &[u8])]) -> File {
     all.extend_from_slice(objects);
     File::from_bytes(build_pdf(&all)).expect("test file opens")
 }
+
+/// One `cmap` subtable: platform, encoding, and `(codepoint, gid)` pairs.
+pub type Subtable<'a> = (u16, u16, &'a [(u16, u16)]);
+
+/// An sfnt holding only a `cmap` table with one format 4 subtable per
+/// `(platform, encoding, [(codepoint, gid)])`, one segment per pair.
+pub fn sfnt(subtables: &[Subtable]) -> Vec<u8> {
+    let be16 = |v: &mut Vec<u8>, x: u16| v.extend_from_slice(&x.to_be_bytes());
+    let mut bodies = Vec::new();
+    for (_, _, pairs) in subtables {
+        let mut segs: Vec<(u16, u16)> = pairs.to_vec();
+        segs.sort();
+        segs.push((0xFFFF, 0));
+        let n = segs.len() as u16;
+        let mut b = Vec::new();
+        be16(&mut b, 4);
+        be16(&mut b, 16 + 8 * n);
+        be16(&mut b, 0);
+        be16(&mut b, 2 * n);
+        for _ in 0..3 {
+            be16(&mut b, 0);
+        }
+        for (cp, _) in &segs {
+            be16(&mut b, *cp);
+        }
+        be16(&mut b, 0);
+        for (cp, _) in &segs {
+            be16(&mut b, *cp);
+        }
+        for (cp, gid) in &segs {
+            let delta = if *cp == 0xFFFF {
+                1
+            } else {
+                gid.wrapping_sub(*cp)
+            };
+            be16(&mut b, delta);
+        }
+        for _ in &segs {
+            be16(&mut b, 0);
+        }
+        bodies.push(b);
+    }
+    let mut cmap = Vec::new();
+    be16(&mut cmap, 0);
+    be16(&mut cmap, subtables.len() as u16);
+    let mut offset = 4 + 8 * subtables.len();
+    for ((platform, encoding, _), body) in subtables.iter().zip(&bodies) {
+        be16(&mut cmap, *platform);
+        be16(&mut cmap, *encoding);
+        cmap.extend_from_slice(&(offset as u32).to_be_bytes());
+        offset += body.len();
+    }
+    for body in &bodies {
+        cmap.extend_from_slice(body);
+    }
+    let mut out = Vec::new();
+    out.extend_from_slice(&0x0001_0000u32.to_be_bytes());
+    be16(&mut out, 1);
+    for _ in 0..3 {
+        be16(&mut out, 0);
+    }
+    out.extend_from_slice(b"cmap");
+    out.extend_from_slice(&0u32.to_be_bytes());
+    out.extend_from_slice(&28u32.to_be_bytes());
+    out.extend_from_slice(&(cmap.len() as u32).to_be_bytes());
+    out.extend_from_slice(&cmap);
+    out
+}
