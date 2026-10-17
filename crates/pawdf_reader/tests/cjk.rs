@@ -297,3 +297,19 @@ fn encoding_cmap_without_codespace_falls_back_to_identity() {
         kinds(&c)
     );
 }
+
+#[test]
+fn encoding_cmap_without_codespace_keeps_its_wmode() {
+    let (f, d) = type0("7 0 R", "");
+    let cmap = stream("/Type /CMap", b"/WMode 1 def");
+    let c = run(
+        b"BT /F1 1 Tf <00410042> Tj ET",
+        &[(5, f.as_bytes()), (6, d.as_bytes()), (7, &cmap)],
+    );
+    assert_eq!(c.fonts[0].wmode, WritingMode::Vertical);
+    assert!(
+        kinds(&c).contains(&DiagnosticKind::BadCMap),
+        "{:?}",
+        kinds(&c)
+    );
+}

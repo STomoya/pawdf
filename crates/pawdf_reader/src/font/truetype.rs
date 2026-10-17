@@ -62,7 +62,8 @@ impl TrueType {
         Some(TrueType { by_gid, simple })
     }
 
-    /// The Unicode text the font's Unicode `cmap` gives `gid` (lowest codepoint wins).
+    /// The Unicode text the font's Unicode `cmap` gives `gid`. The full-repertoire subtable
+    /// wins over the other Unicode one; within a subtable the lowest codepoint wins.
     pub fn unicode(&self, gid: u16) -> Option<&str> {
         self.by_gid.get(&gid).map(String::as_str)
     }

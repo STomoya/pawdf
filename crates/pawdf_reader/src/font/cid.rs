@@ -105,11 +105,12 @@ pub(crate) fn load_type0(
     let cmap = match dict.get(b"Encoding") {
         Some(Object::Ref(r)) if matches!(file.resolve(*r), Object::Stream(_)) => {
             // Without codespace ranges every byte would become a code mapped to CID 0.
-            match embedded_cmap(file, shared, *r, &mut Vec::new(), diags) {
+            match embedded_cmap(file, shared, *r, diags) {
                 Some(m) if m.has_codespace() => m,
-                _ => {
+                m => {
                     diags.push(DiagnosticKind::BadCMap, at);
-                    identity()
+                    let wmode = m.map_or(WritingMode::Horizontal, |m| m.wmode);
+                    Arc::new(CMap::identity(wmode))
                 }
             }
         }
@@ -165,7 +166,7 @@ pub(crate) fn load_type0(
     };
 
     let to_unicode = match dict.get(b"ToUnicode") {
-        Some(Object::Ref(r)) => embedded_cmap(file, shared, *r, &mut Vec::new(), diags),
+        Some(Object::Ref(r)) => embedded_cmap(file, shared, *r, diags),
         _ => None,
     };
     // §9.10.2 (b): the ordering of the font's CMap, then of the CIDFont.

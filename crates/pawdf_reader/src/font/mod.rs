@@ -273,7 +273,7 @@ pub(crate) fn load_font(
         .collect();
 
     let to_unicode = match dict.get(b"ToUnicode") {
-        Some(Object::Ref(r)) => embedded_cmap(file, shared, *r, &mut Vec::new(), diags),
+        Some(Object::Ref(r)) => embedded_cmap(file, shared, *r, diags),
         _ => None,
     };
     // §9.6.5.4: without /Encoding, a TrueType font's own cmap selects the glyphs.
@@ -314,13 +314,25 @@ pub(crate) fn load_font(
 }
 
 /// An embedded CMap stream, following `/UseCMap` and `usecmap` to other streams or
-/// predefined names. `None` if `r` is not a stream. `visiting` holds the streams of the
-/// chain being parsed, so a cycle is cut on its first repeat.
+/// predefined names. `None` if `r` is not a stream. A `usecmap` cycle is cut on its
+/// first repeat, and chains deeper than `MAX_USECMAP_DEPTH` are cut.
 pub(crate) fn embedded_cmap(
     file: &File,
     shared: &Shared,
     r: Ref,
+    diags: &mut Diagnostics,
+) -> Option<Arc<CMap>> {
+    embedded_cmap_in(file, shared, r, &mut Vec::new(), &mut false, diags)
+}
+
+/// `visiting` holds the streams of the chain being parsed. `cut` is set when a cycle or
+/// the depth limit truncated the chain below `r`.
+fn embedded_cmap_in(
+    file: &File,
+    shared: &Shared,
+    r: Ref,
     visiting: &mut Vec<Ref>,
+    cut: &mut bool,
     diags: &mut Diagnostics,
 ) -> Option<Arc<CMap>> {
     let lock = || shared.cmaps.lock().unwrap_or_else(|e| e.into_inner());
@@ -330,6 +342,7 @@ pub(crate) fn embedded_cmap(
     let at = Location::Stream { obj: r, offset: 0 };
     if visiting.contains(&r) || visiting.len() > MAX_USECMAP_DEPTH {
         diags.push(DiagnosticKind::RecursionLimit, at);
+        *cut = true;
         return None;
     }
     let Object::Stream(s) = file.resolve(r) else {
@@ -344,7 +357,7 @@ pub(crate) fn embedded_cmap(
     let depth = visiting.len();
     visiting.push(r);
     let mut resolve = |u: UseCMap, _: usize, diags: &mut Diagnostics| match u {
-        UseCMap::Stream(b) => embedded_cmap(file, shared, b, visiting, diags),
+        UseCMap::Stream(b) => embedded_cmap_in(file, shared, b, visiting, cut, diags),
         UseCMap::Name(n) => predefined_cmap(n),
     };
     let m = Arc::new(CMap::parse_based(
@@ -356,7 +369,11 @@ pub(crate) fn embedded_cmap(
         diags,
     ));
     visiting.pop();
-    lock().insert(r, Arc::clone(&m));
+    // A map built with its parent cut depends on where the chain was entered, so caching
+    // it would hand a truncated map to a font that points at it directly.
+    if !*cut {
+        lock().insert(r, Arc::clone(&m));
+    }
     Some(m)
 }
 
@@ -465,10 +482,11 @@ mod tests {
     }
 
     fn load_with(f: &File, shared: &Shared) -> (Font, Vec<pawdf_core::DiagnosticKind>) {
-        let r = Ref {
-            num: 5,
-            generation: 0,
-        };
+        load_num(f, shared, 5)
+    }
+
+    fn load_num(f: &File, shared: &Shared, num: u32) -> (Font, Vec<pawdf_core::DiagnosticKind>) {
+        let r = Ref { num, generation: 0 };
         let dict = f.resolve(r).as_dict().unwrap().clone();
         let mut d = Diagnostics::new();
         let font = load_font(f, shared, &dict, Location::File(0), &mut d);
@@ -571,6 +589,36 @@ mod tests {
         assert_eq!(text(&f, 65).as_deref(), Some("Z"));
         use pawdf_core::DiagnosticKind::{BadCMap, RecursionLimit};
         assert_eq!(d, [RecursionLimit, BadCMap, BadCMap]);
+    }
+
+    #[test]
+    fn usecmap_cycle_member_is_not_cached_truncated() {
+        let a = stream(
+            "/UseCMap 7 0 R",
+            b"1 begincodespacerange <00> <FF> endcodespacerange 1 beginbfchar <41> <0058> endbfchar",
+        );
+        let b = stream(
+            "/UseCMap 6 0 R",
+            b"1 begincodespacerange <00> <FF> endcodespacerange 1 beginbfchar <42> <0059> endbfchar",
+        );
+        let f = file(&[
+            (
+                5,
+                b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /ToUnicode 6 0 R >>",
+            ),
+            (6, &a),
+            (7, &b),
+            (
+                8,
+                b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /ToUnicode 7 0 R >>",
+            ),
+        ]);
+        let (fresh, _) = load_num(&f, &Shared::default(), 8);
+        let shared = Shared::default();
+        load_num(&f, &shared, 5);
+        let (after, _) = load_num(&f, &shared, 8);
+        assert_eq!(text(&fresh, 0x41).as_deref(), Some("X"));
+        assert_eq!(text(&after, 0x41), text(&fresh, 0x41));
     }
 
     #[test]
