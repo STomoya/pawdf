@@ -133,6 +133,10 @@ pub(crate) struct Interp<'a> {
     /// Open sequences reporting `/ActualText`, across forms.
     actual_open: usize,
     marked_limit_reported: bool,
+    /// `W` or `W*` seen; the path is intersected into the clip when it is painted.
+    pending_clip: bool,
+    /// Union of the glyph boxes shown in a clip render mode in the current text object.
+    pub text_clip: Option<Rect>,
 }
 
 impl<'a> Interp<'a> {
@@ -171,6 +175,8 @@ impl<'a> Interp<'a> {
             marked: marked::Stack::default(),
             actual_open: 0,
             marked_limit_reported: false,
+            pending_clip: false,
+            text_clip: None,
         }
     }
 
@@ -380,8 +386,9 @@ impl<'a> Interp<'a> {
             b"B*" => self.paint(false, true, Some(FillRule::EvenOdd)),
             b"b" => self.paint(true, true, Some(FillRule::NonZero)),
             b"b*" => self.paint(true, true, Some(FillRule::EvenOdd)),
-            b"n" => {
-                self.clear_path();
+            b"n" => self.paint(false, false, None),
+            b"W" | b"W*" => {
+                self.pending_clip = true;
                 true
             }
             b"BX" => {
@@ -392,9 +399,10 @@ impl<'a> Interp<'a> {
                 self.compat = self.compat.saturating_sub(1);
                 true
             }
-            // Clipping (not tracked), marked-content points, shading, and line style are ignored.
-            b"W" | b"W*" | b"sh" | b"MP" | b"DP" | b"d" | b"i" | b"j" | b"J" | b"M" | b"ri"
-            | b"d0" | b"d1" => true,
+            // Marked-content points, shading, and line style are ignored.
+            b"sh" | b"MP" | b"DP" | b"d" | b"i" | b"j" | b"J" | b"M" | b"ri" | b"d0" | b"d1" => {
+                true
+            }
             _ => {
                 if self.compat == 0 {
                     self.bad(DiagnosticKind::UnknownOperator, op);
@@ -480,6 +488,7 @@ impl<'a> Interp<'a> {
         let p = ImageParts::clone(&p);
         let ctm = self.gs.ctm;
         self.out.images.push(Image {
+            clip: self.gs.clip,
             inline: name.is_none(),
             name,
             ctm,
@@ -532,9 +541,19 @@ impl<'a> Interp<'a> {
             self.tlm,
             self.compat,
             std::mem::take(&mut self.marked),
+            std::mem::take(&mut self.pending_clip),
+            self.text_clip.take(),
         );
         self.stack_floor = self.stack.len();
         self.gs.ctm = m.concat(&self.gs.ctm);
+        // §8.10.1: the form's bounding box clips its content.
+        if let Some([x0, y0, x1, y1]) = s.dict.get(b"BBox").and_then(|b| numbers::<4>(file, b)) {
+            self.clip_to(
+                self.gs
+                    .ctm
+                    .transform_rect(Rect::from_corners(x0, y0, x1, y1)),
+            );
+        }
         self.resources.push(res);
         self.form_stack.push(r);
         self.in_text = false;
@@ -555,6 +574,8 @@ impl<'a> Interp<'a> {
             self.tlm,
             self.compat,
             self.marked,
+            self.pending_clip,
+            self.text_clip,
         ) = saved;
     }
 
@@ -588,20 +609,27 @@ impl<'a> Interp<'a> {
         if close && self.path.last().is_some_and(|s| *s != Segment::Close) {
             self.path.push(Segment::Close);
         }
-        if !self.path.is_empty() {
-            let ctm = self.gs.ctm;
-            let t = |p: Point| ctm.apply(p);
-            let segments = self
-                .path
-                .iter()
-                .map(|s| match *s {
-                    Segment::MoveTo(p) => Segment::MoveTo(t(p)),
-                    Segment::LineTo(p) => Segment::LineTo(t(p)),
-                    Segment::CurveTo(a, b, c) => Segment::CurveTo(t(a), t(b), t(c)),
-                    Segment::Close => Segment::Close,
-                })
-                .collect();
+        let ctm = self.gs.ctm;
+        let t = |p: Point| ctm.apply(p);
+        let segments: Vec<Segment> = self
+            .path
+            .iter()
+            .map(|s| match *s {
+                Segment::MoveTo(p) => Segment::MoveTo(t(p)),
+                Segment::LineTo(p) => Segment::LineTo(t(p)),
+                Segment::CurveTo(a, b, c) => Segment::CurveTo(t(a), t(b), t(c)),
+                Segment::Close => Segment::Close,
+            })
+            .collect();
+        // §8.5.4: the clip changes after painting, so this path is not clipped by its own W.
+        let new_clip = if std::mem::take(&mut self.pending_clip) {
+            bound(&segments)
+        } else {
+            None
+        };
+        if !segments.is_empty() && (stroke || fill.is_some()) {
             self.out.paths.push(Path {
+                clip: self.gs.clip,
                 segments,
                 stroke,
                 fill,
@@ -613,8 +641,23 @@ impl<'a> Interp<'a> {
                 stroke_alpha: self.gs.stroke_alpha,
             });
         }
+        if let Some(r) = new_clip {
+            self.clip_to(r);
+        }
         self.clear_path();
         true
+    }
+
+    /// Intersects `r` into the clip. A bound with a NaN coordinate (from a degenerate CTM)
+    /// says nothing and is ignored.
+    pub(crate) fn clip_to(&mut self, r: Rect) {
+        if [r.x0, r.y0, r.x1, r.y1].iter().any(|v| v.is_nan()) {
+            return;
+        }
+        self.gs.clip = Some(match self.gs.clip {
+            Some(c) => c.intersect(&r),
+            None => r,
+        });
     }
 
     fn ext_gstate(&mut self, key: &[u8], op: &Operation) {
@@ -692,4 +735,19 @@ impl<'a> Interp<'a> {
             self.gs.fill = color;
         }
     }
+}
+
+/// Bound of every point of `segments`, curve control points included; `None` when empty.
+/// pdfium's CPDF_StreamContentParser::AddPathObject likewise drops a clip with no points.
+fn bound(segments: &[Segment]) -> Option<Rect> {
+    let mut points = segments.iter().flat_map(|s| match *s {
+        Segment::MoveTo(p) | Segment::LineTo(p) => vec![p],
+        Segment::CurveTo(a, b, c) => vec![a, b, c],
+        Segment::Close => vec![],
+    });
+    let first = points.next()?;
+    let start = Rect::from_corners(first.x, first.y, first.x, first.y);
+    Some(points.fold(start, |r, p| {
+        r.union(&Rect::from_corners(p.x, p.y, p.x, p.y))
+    }))
 }

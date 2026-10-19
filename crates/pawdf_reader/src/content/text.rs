@@ -30,6 +30,7 @@ impl<'a> Interp<'a> {
                         .push(DiagnosticKind::MisplacedOperator, op.location);
                 }
                 self.in_text = true;
+                self.text_clip = None;
                 self.tm = Matrix::IDENTITY;
                 self.tlm = Matrix::IDENTITY;
                 true
@@ -40,6 +41,10 @@ impl<'a> Interp<'a> {
                         .push(DiagnosticKind::UnbalancedRestore, op.location);
                 }
                 self.in_text = false;
+                // §9.3.6: the accumulated glyphs become the clip at the end of the text object.
+                if let Some(r) = self.text_clip.take() {
+                    self.clip_to(r);
+                }
                 true
             }
             b"Tc" => nums::<1>(args)
@@ -317,6 +322,22 @@ impl<'a> Interp<'a> {
                     char::REPLACEMENT_CHARACTER.to_string()
                 }
             };
+            let bbox = matrix.transform_rect(bbox);
+            // §9.3.6: glyphs without outlines, such as spaces, add nothing to a text clip.
+            // ponytail: glyph boxes stand in for outlines; carry /FontBBox to bound overhangs.
+            if matches!(
+                ts.render_mode,
+                RenderMode::FillClip
+                    | RenderMode::StrokeClip
+                    | RenderMode::FillStrokeClip
+                    | RenderMode::Clip
+            ) && !text.chars().all(char::is_whitespace)
+            {
+                self.text_clip = Some(match self.text_clip {
+                    Some(u) => u.union(&bbox),
+                    None => bbox,
+                });
+            }
             self.out.glyphs.push(Glyph {
                 text,
                 code: code.value,
@@ -325,13 +346,14 @@ impl<'a> Interp<'a> {
                 matrix,
                 origin: matrix.apply(Point { x: 0., y: 0. }),
                 advance,
-                bbox: matrix.transform_rect(bbox),
+                bbox,
                 wmode: font.info.wmode,
                 render_mode: ts.render_mode,
                 fill: self.gs.fill.clone(),
                 stroke: self.gs.stroke.clone(),
                 fill_alpha: self.gs.fill_alpha,
                 stroke_alpha: self.gs.stroke_alpha,
+                clip: self.gs.clip,
             });
             self.tm = shift.concat(&self.tm);
         }

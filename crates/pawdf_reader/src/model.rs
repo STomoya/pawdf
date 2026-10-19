@@ -78,6 +78,11 @@ pub struct Glyph {
     pub fill_alpha: f64,
     /// Stroke alpha (`CA`).
     pub stroke_alpha: f64,
+    /// Axis-aligned bound of the clipping region in effect, in default user space; `None`
+    /// when nothing clips. A zero-area rectangle means fully clipped. Content outside it is
+    /// certainly clipped; content inside may still be. Under a text clip (§9.3.6) the bound
+    /// uses glyph boxes, which real outlines can exceed, so it is approximate.
+    pub clip: Option<Rect>,
 }
 
 /// Writing mode (§9.7.4.3).
@@ -143,6 +148,11 @@ pub enum FontKind {
 pub struct Path {
     /// Segments in user space.
     pub segments: Vec<Segment>,
+    /// Axis-aligned bound of the clipping region in effect, in default user space; `None`
+    /// when nothing clips. A zero-area rectangle means fully clipped. Content outside it is
+    /// certainly clipped; content inside may still be. Under a text clip (§9.3.6) the bound
+    /// uses glyph boxes, which real outlines can exceed, so it is approximate.
+    pub clip: Option<Rect>,
     /// Whether it is stroked.
     pub stroke: bool,
     /// The fill rule, if filled.
@@ -227,6 +237,11 @@ pub enum ColorSpaceFamily {
 pub struct Image {
     /// XObject resource name; `None` for inline images.
     pub name: Option<String>,
+    /// Axis-aligned bound of the clipping region in effect, in default user space; `None`
+    /// when nothing clips. A zero-area rectangle means fully clipped. Content outside it is
+    /// certainly clipped; content inside may still be. Under a text clip (§9.3.6) the bound
+    /// uses glyph boxes, which real outlines can exceed, so it is approximate.
+    pub clip: Option<Rect>,
     /// Whether this is an inline image (`BI ID EI`).
     pub inline: bool,
     /// Maps the unit square to user space.
