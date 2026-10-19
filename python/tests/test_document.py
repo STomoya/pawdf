@@ -167,3 +167,32 @@ def test_reprs() -> None:
     assert repr(c).startswith('PageContent(')
     for obj in (c.glyphs[0], c.paths[0], c.fonts[0], c.diagnostics[0], c.glyphs[0].fill):
         assert repr(obj).startswith(type(obj).__name__ + '(')
+
+
+def test_clip() -> None:
+    """Glyphs and paths carry the clip bound in effect."""
+    c = pawdf.Document(_pdf(b'0 0 10 10 re W n BT /F1 10 Tf (a) Tj ET 0 0 1 1 re f', FONT_RES))[0].content()
+    assert c.glyphs[0].clip == c.paths[0].clip == (0.0, 0.0, 10.0, 10.0)
+    c = pawdf.Document(_pdf(b'0 0 1 1 re f'))[0].content()
+    assert c.paths[0].clip is None
+
+
+def test_marked_contents() -> None:
+    """Marked-content spans expose their properties and index ranges."""
+    ops = b'/Span << /ActualText (fi) /MCID 2 >> BDC BT /F1 10 Tf (ab) Tj ET EMC'
+    c = pawdf.Document(_pdf(ops, FONT_RES))[0].content()
+    m = c.marked_contents[0]
+    assert (m.tag, m.mcid, m.actual_text) == ('Span', 2, 'fi')
+    assert m.glyphs == range(2)
+    assert m.paths == range(0)
+    assert m.images == range(0)
+    assert m.artifact_type is None
+    assert m.artifact_subtype is None
+    assert repr(m).startswith('MarkedContent(')
+    assert 'marked_contents=1' in repr(c)
+
+
+def test_unbalanced_marked_content() -> None:
+    """A stray EMC is reported."""
+    c = pawdf.Document(_pdf(b'EMC'))[0].content()
+    assert c.diagnostics[0].kind == 'unbalanced_marked_content'
