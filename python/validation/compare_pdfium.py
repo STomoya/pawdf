@@ -109,6 +109,7 @@ def pdfium_objects(page: pdfium.PdfPage) -> tuple[list[int], list[tuple[int, int
     w, h = ctypes.c_uint(), ctypes.c_uint()
     bounds = [ctypes.c_float() for _ in range(4)]
     for obj in page.get_objects(max_depth=MAX_FORM_DEPTH):
+        # pyrefly: ignore[missing-attribute] -- .type is a lazy assigned object.
         if obj.type == pdfium_c.FPDF_PAGEOBJ_TEXT:
             pdfium_c.FPDFPageObj_GetBounds(obj.raw, *map(ctypes.byref, bounds))
             left, bottom, right, _ = (b.value for b in bounds)
