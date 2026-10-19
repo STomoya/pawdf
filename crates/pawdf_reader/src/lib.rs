@@ -11,6 +11,7 @@ mod font;
 mod geom;
 mod image;
 mod model;
+mod ranges;
 #[cfg(test)]
 mod testutil;
 
