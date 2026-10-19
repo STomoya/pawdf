@@ -1,6 +1,7 @@
 mod common;
 
 use common::{one_page, stream};
+use pawdf_core::DiagnosticKind;
 use pawdf_reader::{Document, PageContent, Rect};
 
 const HELV: &[u8] = b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
@@ -19,6 +20,10 @@ fn content(ops: &str) -> PageContent {
 
 fn r(x0: f64, y0: f64, x1: f64, y1: f64) -> Option<Rect> {
     Some(Rect { x0, y0, x1, y1 })
+}
+
+fn kinds(c: &PageContent) -> Vec<DiagnosticKind> {
+    c.diagnostics.iter().map(|d| d.kind).collect()
 }
 
 fn form(dict: &str, body: &str) -> Vec<u8> {
@@ -80,6 +85,13 @@ fn pending_until_paint() {
 }
 
 #[test]
+fn unpainted_clip_does_not_reach_later_path() {
+    let c = content("q 0 0 10 10 re W Q 0 0 1 1 re f 0 0 1 1 re f");
+    assert_eq!(c.paths[1].clip, None);
+    assert_eq!(kinds(&c), [DiagnosticKind::MisplacedOperator]);
+}
+
+#[test]
 fn empty_path_clip_ignored() {
     // pdfium's CPDF_StreamContentParser::AddPathObject drops a pending clip with no points.
     let c = content("W n 0 0 1 1 re f");
@@ -92,12 +104,14 @@ fn degenerate_ctm_clip() {
     let big = format!("1{}", "0".repeat(300));
     let huge = format!("{big} 0 0 {big} 0 0 cm {big} 0 0 {big} 0 0 cm");
     let c = content(&format!("q {huge} 0 0 1 1 re W n 0 0 1 1 re f Q"));
-    assert!(c.diagnostics.is_empty());
+    assert_eq!(kinds(&c), [DiagnosticKind::BadOperands]);
     assert_eq!(c.paths[0].clip, None);
     let f = form("/BBox [0 0 1 1]", "0 0 1 1 re f");
     let c = run(&format!("q 1 -1 1 1 0 0 cm {huge} /Fm0 Do Q"), &[(6, &f)]);
+    assert_eq!(kinds(&c), [DiagnosticKind::BadOperands]);
     assert_eq!(c.paths[0].clip, None);
     let c = content("q 0 0 0 0 0 0 cm 0 0 1 1 re W n 1 0 0 1 0 0 cm 0 0 1 1 re f Q");
+    assert!(c.diagnostics.is_empty());
     assert_eq!(c.paths[0].clip, r(0., 0., 0., 0.));
 }
 
@@ -132,6 +146,31 @@ fn text_clip() {
 fn text_clip_spaces_only() {
     // §9.3.6: no clipping occurs when the only glyphs shown have no outlines.
     let c = content("BT 7 Tr /F1 10 Tf 100 100 Td ( ) Tj ET 0 0 1 1 re f");
+    assert_eq!(c.paths[0].clip, None);
+}
+
+#[test]
+fn nested_bt_keeps_text_clip() {
+    let c = content("BT 7 Tr /F1 10 Tf 100 100 Td (A) Tj BT ET 0 0 1 1 re f");
+    assert_eq!(c.paths[0].clip, Some(c.glyphs[0].bbox));
+    assert_eq!(kinds(&c), [DiagnosticKind::MisplacedOperator]);
+}
+
+#[test]
+fn text_clip_past_glyph_budget_is_dropped() {
+    // 255 forms of 4096 glyphs leave 4096 of the 2^20 budget, so the clip text runs out.
+    let f = form(
+        "/BBox [0 0 1 1]",
+        &format!("BT /F1 1 Tf ({}) Tj ET", "A".repeat(4096)),
+    );
+    let ops = format!(
+        "{}BT 7 Tr /F1 10 Tf ({}) Tj ET 0 0 1 1 re f",
+        "/Fm0 Do ".repeat(255),
+        "A".repeat(4097)
+    );
+    let c = run(&ops, &[(6, &f)]);
+    assert_eq!(c.glyphs.len(), 1 << 20);
+    assert_eq!(kinds(&c), [DiagnosticKind::RecursionLimit]);
     assert_eq!(c.paths[0].clip, None);
 }
 

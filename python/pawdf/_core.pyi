@@ -247,7 +247,10 @@ class MarkedContent:
         """``/MCID``, linking the content to the structure tree."""
     @property
     def actual_text(self) -> str | None:
-        """``/ActualText``; None on sequences nested in one that has it."""
+        """``/ActualText``; None on sequences nested in one that has it.
+
+        Also None once the page's marked-content text limit is spent.
+        """
     @property
     def artifact_type(self) -> str | None:
         """``/Type`` of an ``Artifact`` sequence, for example ``'Pagination'``."""
@@ -282,7 +285,11 @@ class PageContent:
         """Fonts referenced by ``Glyph.font``."""
     @property
     def marked_contents(self) -> list[MarkedContent]:
-        """Marked-content sequences, ordered by where they open; a parent precedes its children."""
+        """Marked-content sequences, ordered by where they open; a parent precedes its children.
+
+        Sequences nested deeper than 256 or past 2**20 per page are omitted, their content
+        counted in the enclosing sequence, and reported as a ``recursion_limit`` diagnostic.
+        """
     @property
     def diagnostics(self) -> list[Diagnostic]:
         """Recoveries made during this extraction."""

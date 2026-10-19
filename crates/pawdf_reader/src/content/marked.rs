@@ -187,7 +187,7 @@ impl Interp<'_> {
         }
     }
 
-    /// Closes every sequence still open at the end of a content stream.
+    /// Closes every sequence still open at the end of the page's content or of a form XObject.
     pub(super) fn close_marked(&mut self, at: Location) {
         if self.marked.open.is_empty() && self.marked.dropped == 0 {
             return;

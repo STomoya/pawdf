@@ -19,7 +19,8 @@ pub struct PageContent {
     /// Fonts referenced by [`Glyph::font`].
     pub fonts: Vec<FontInfo>,
     /// Marked-content sequences (§14.6), ordered by where they open; a parent precedes its
-    /// children.
+    /// children. Sequences nested deeper than 256 or past 2^20 per page are omitted, their
+    /// content counted in the enclosing sequence, and reported as a `RecursionLimit` diagnostic.
     pub marked_contents: Vec<MarkedContent>,
     /// Recoveries made during this pass only.
     pub diagnostics: Vec<Diagnostic>,
@@ -35,7 +36,8 @@ pub struct MarkedContent {
     /// `/MCID` (§14.7.5).
     pub mcid: Option<u32>,
     /// `/ActualText` (§14.9.4). `None` on sequences nested in one that has it, so
-    /// replacement texts never overlap.
+    /// replacement texts never overlap, and once the marked-content text limit is spent (see
+    /// [`MarkedContent::tag`]).
     pub actual_text: Option<String>,
     /// `/Type` of an `Artifact` sequence (§14.8.2.2); `None` for other tags.
     pub artifact_type: Option<String>,

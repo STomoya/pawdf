@@ -256,6 +256,35 @@ impl<'a> Interp<'a> {
     }
 
     fn op(&mut self, op: &Operation) {
+        // §8.5.4: `W`/`W*` go between a path's construction and its painting operator. More
+        // construction is tolerated; anything else drops the clip so it cannot reach a later,
+        // unrelated path.
+        if self.pending_clip
+            && !matches!(
+                op.operator.as_slice(),
+                b"m" | b"l"
+                    | b"c"
+                    | b"v"
+                    | b"y"
+                    | b"h"
+                    | b"re"
+                    | b"W"
+                    | b"W*"
+                    | b"S"
+                    | b"s"
+                    | b"f"
+                    | b"F"
+                    | b"f*"
+                    | b"B"
+                    | b"B*"
+                    | b"b"
+                    | b"b*"
+                    | b"n"
+            )
+        {
+            self.pending_clip = false;
+            self.bad(DiagnosticKind::MisplacedOperator, op);
+        }
         if let Some(ok) = self.text_op(op) {
             if !ok {
                 self.bad(DiagnosticKind::BadOperands, op);
@@ -380,15 +409,15 @@ impl<'a> Interp<'a> {
                     self.subpath_start = Some(p(x, y));
                 })
                 .is_some(),
-            b"S" => self.paint(false, true, None),
-            b"s" => self.paint(true, true, None),
-            b"f" | b"F" => self.paint(false, false, Some(FillRule::NonZero)),
-            b"f*" => self.paint(false, false, Some(FillRule::EvenOdd)),
-            b"B" => self.paint(false, true, Some(FillRule::NonZero)),
-            b"B*" => self.paint(false, true, Some(FillRule::EvenOdd)),
-            b"b" => self.paint(true, true, Some(FillRule::NonZero)),
-            b"b*" => self.paint(true, true, Some(FillRule::EvenOdd)),
-            b"n" => self.paint(false, false, None),
+            b"S" => self.paint(op.location, false, true, None),
+            b"s" => self.paint(op.location, true, true, None),
+            b"f" | b"F" => self.paint(op.location, false, false, Some(FillRule::NonZero)),
+            b"f*" => self.paint(op.location, false, false, Some(FillRule::EvenOdd)),
+            b"B" => self.paint(op.location, false, true, Some(FillRule::NonZero)),
+            b"B*" => self.paint(op.location, false, true, Some(FillRule::EvenOdd)),
+            b"b" => self.paint(op.location, true, true, Some(FillRule::NonZero)),
+            b"b*" => self.paint(op.location, true, true, Some(FillRule::EvenOdd)),
+            b"n" => self.paint(op.location, false, false, None),
             b"W" | b"W*" => {
                 self.pending_clip = true;
                 true
@@ -554,6 +583,7 @@ impl<'a> Interp<'a> {
                 self.gs
                     .ctm
                     .transform_rect(Rect::from_corners(x0, y0, x1, y1)),
+                op.location,
             );
         }
         self.resources.push(res);
@@ -607,7 +637,7 @@ impl<'a> Interp<'a> {
         self.subpath_start = None;
     }
 
-    fn paint(&mut self, close: bool, stroke: bool, fill: Option<FillRule>) -> bool {
+    fn paint(&mut self, at: Location, close: bool, stroke: bool, fill: Option<FillRule>) -> bool {
         if close && self.path.last().is_some_and(|s| *s != Segment::Close) {
             self.path.push(Segment::Close);
         }
@@ -644,16 +674,18 @@ impl<'a> Interp<'a> {
             });
         }
         if let Some(r) = new_clip {
-            self.clip_to(r);
+            self.clip_to(r, at);
         }
         self.clear_path();
         true
     }
 
     /// Intersects `r` into the clip. A bound that is not finite or is inverted (from an
-    /// overflowing CTM, where min/max skip NaN points) says nothing and is ignored.
-    pub(crate) fn clip_to(&mut self, r: Rect) {
+    /// overflowing CTM, where min/max skip NaN points) says nothing and is ignored, reported
+    /// as `BadOperands` at `at`.
+    pub(crate) fn clip_to(&mut self, r: Rect, at: Location) {
         if ![r.x0, r.y0, r.x1, r.y1].iter().all(|v| v.is_finite()) || r.x0 > r.x1 || r.y0 > r.y1 {
+            self.diags.push(DiagnosticKind::BadOperands, at);
             return;
         }
         self.gs.clip = Some(match self.gs.clip {

@@ -25,12 +25,16 @@ impl<'a> Interp<'a> {
         let args = op.operands.as_slice();
         let ok = match op.operator.as_slice() {
             b"BT" => {
+                let open_clip = self.text_clip.take();
                 if self.in_text {
                     self.diags
                         .push(DiagnosticKind::MisplacedOperator, op.location);
+                    // Recover as if `ET` had ended the open text object, so its clip is kept.
+                    if let Some(r) = open_clip {
+                        self.clip_to(r, op.location);
+                    }
                 }
                 self.in_text = true;
-                self.text_clip = None;
                 self.tm = Matrix::IDENTITY;
                 self.tlm = Matrix::IDENTITY;
                 true
@@ -43,7 +47,7 @@ impl<'a> Interp<'a> {
                 self.in_text = false;
                 // §9.3.6: the accumulated glyphs become the clip at the end of the text object.
                 if let Some(r) = self.text_clip.take() {
-                    self.clip_to(r);
+                    self.clip_to(r, op.location);
                 }
                 true
             }
@@ -256,6 +260,11 @@ impl<'a> Interp<'a> {
                     self.glyph_budget_reported = true;
                     self.diags.push(DiagnosticKind::RecursionLimit, at);
                 }
+                // Glyphs past the budget are never measured, so a partial text clip would be
+                // too small; no clip keeps "content outside the clip is certainly clipped".
+                if is_clip(ts.render_mode) {
+                    self.text_clip = None;
+                }
                 return;
             }
             self.glyphs_left -= 1;
@@ -326,13 +335,8 @@ impl<'a> Interp<'a> {
             // §9.3.6: glyphs without outlines, such as spaces, and Type 3 glyphs add nothing
             // to a text clip.
             // ponytail: glyph boxes stand in for outlines; carry /FontBBox to bound overhangs.
-            if matches!(
-                ts.render_mode,
-                RenderMode::FillClip
-                    | RenderMode::StrokeClip
-                    | RenderMode::FillStrokeClip
-                    | RenderMode::Clip
-            ) && font.info.kind != FontKind::Type3
+            if is_clip(ts.render_mode)
+                && font.info.kind != FontKind::Type3
                 && !text.chars().all(char::is_whitespace)
             {
                 self.text_clip = Some(match self.text_clip {
@@ -360,6 +364,16 @@ impl<'a> Interp<'a> {
             self.tm = shift.concat(&self.tm);
         }
     }
+}
+
+fn is_clip(mode: RenderMode) -> bool {
+    matches!(
+        mode,
+        RenderMode::FillClip
+            | RenderMode::StrokeClip
+            | RenderMode::FillStrokeClip
+            | RenderMode::Clip
+    )
 }
 
 fn render_mode(n: i64) -> Option<RenderMode> {
