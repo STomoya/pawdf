@@ -156,6 +156,13 @@ rules = { unresolved-import = "ignore" }
 [tool.ty.terminal]
 output-format = "concise"
 
+# ------------------------- pyrefly -------------------------
+
+[tool.pyrefly]
+project-includes = ["python"]
+# The heuristics exclude `python/` because it is on the import path (editable install).
+disable-project-excludes-heuristics = true
+
 # ------------------------- pytest -------------------------
 
 [tool.pytest]
