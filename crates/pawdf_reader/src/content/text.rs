@@ -8,7 +8,7 @@ use crate::content::Interp;
 use crate::content::state::{FontKey, matrix, nums};
 use crate::font::{Font, load_font};
 use crate::geom::{Matrix, Point, Rect};
-use crate::model::{Glyph, RenderMode, WritingMode};
+use crate::model::{FontKind, Glyph, RenderMode, WritingMode};
 
 fn translate(tx: f64, ty: f64) -> Matrix {
     Matrix {
@@ -323,7 +323,8 @@ impl<'a> Interp<'a> {
                 }
             };
             let bbox = matrix.transform_rect(bbox);
-            // §9.3.6: glyphs without outlines, such as spaces, add nothing to a text clip.
+            // §9.3.6: glyphs without outlines, such as spaces, and Type 3 glyphs add nothing
+            // to a text clip.
             // ponytail: glyph boxes stand in for outlines; carry /FontBBox to bound overhangs.
             if matches!(
                 ts.render_mode,
@@ -331,7 +332,8 @@ impl<'a> Interp<'a> {
                     | RenderMode::StrokeClip
                     | RenderMode::FillStrokeClip
                     | RenderMode::Clip
-            ) && !text.chars().all(char::is_whitespace)
+            ) && font.info.kind != FontKind::Type3
+                && !text.chars().all(char::is_whitespace)
             {
                 self.text_clip = Some(match self.text_clip {
                     Some(u) => u.union(&bbox),

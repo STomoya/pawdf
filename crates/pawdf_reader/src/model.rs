@@ -28,7 +28,9 @@ pub struct PageContent {
 /// One marked-content sequence and the content it covers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MarkedContent {
-    /// The tag operand of `BMC`/`BDC`, e.g. `Span`, `P`, `Artifact`; empty when malformed.
+    /// The tag operand of `BMC`/`BDC`, e.g. `Span`, `P`, `Artifact`. Empty when malformed,
+    /// and, like the other strings (left `None`), once the page's marked-content text exceeds
+    /// a limit, which is reported as a `RecursionLimit` diagnostic.
     pub tag: String,
     /// `/MCID` (§14.7.5).
     pub mcid: Option<u32>,

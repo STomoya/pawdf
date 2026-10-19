@@ -133,6 +133,7 @@ pub(crate) struct Interp<'a> {
     /// Open sequences reporting `/ActualText`, across forms.
     actual_open: usize,
     marked_limit_reported: bool,
+    marked_text_left: usize,
     /// `W` or `W*` seen; the path is intersected into the clip when it is painted.
     pending_clip: bool,
     /// Union of the glyph boxes shown in a clip render mode in the current text object.
@@ -175,6 +176,7 @@ impl<'a> Interp<'a> {
             marked: marked::Stack::default(),
             actual_open: 0,
             marked_limit_reported: false,
+            marked_text_left: marked::MAX_MARKED_TEXT,
             pending_clip: false,
             text_clip: None,
         }
@@ -648,10 +650,10 @@ impl<'a> Interp<'a> {
         true
     }
 
-    /// Intersects `r` into the clip. A bound with a NaN coordinate (from a degenerate CTM)
-    /// says nothing and is ignored.
+    /// Intersects `r` into the clip. A bound that is not finite or is inverted (from an
+    /// overflowing CTM, where min/max skip NaN points) says nothing and is ignored.
     pub(crate) fn clip_to(&mut self, r: Rect) {
-        if [r.x0, r.y0, r.x1, r.y1].iter().any(|v| v.is_nan()) {
+        if ![r.x0, r.y0, r.x1, r.y1].iter().all(|v| v.is_finite()) || r.x0 > r.x1 || r.y0 > r.y1 {
             return;
         }
         self.gs.clip = Some(match self.gs.clip {

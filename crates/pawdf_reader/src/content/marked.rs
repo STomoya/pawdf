@@ -9,6 +9,10 @@ const MAX_MARKED_DEPTH: usize = 256;
 /// Sequences returned per pass; a form of `BMC EMC` pairs drawn many times would otherwise
 /// ask for unbounded memory.
 const MAX_MARKED_CONTENTS: usize = 1 << 20;
+/// Bytes of tags, `/ActualText` and artifact names returned per pass. Each span owns its
+/// strings, so one long indirect `/ActualText` reused by many spans would otherwise ask for
+/// unbounded memory.
+pub(super) const MAX_MARKED_TEXT: usize = 1 << 24;
 
 struct Open {
     /// Index into `PageContent::marked_contents`.
@@ -54,11 +58,73 @@ impl Interp<'_> {
             || self.out.marked_contents.len() >= MAX_MARKED_CONTENTS
         {
             self.marked.dropped += 1;
-            if !self.marked_limit_reported {
-                self.marked_limit_reported = true;
-                self.diags.push(DiagnosticKind::RecursionLimit, at);
-            }
+            self.marked_limit(at);
             return;
+        }
+        let mut span = self.read_span(tag, props, at);
+        let cost = span.tag.len()
+            + [
+                &span.actual_text,
+                &span.artifact_type,
+                &span.artifact_subtype,
+            ]
+            .iter()
+            .map(|s| s.as_ref().map_or(0, String::len))
+            .sum::<usize>();
+        match self.marked_text_left.checked_sub(cost) {
+            Some(left) => self.marked_text_left = left,
+            None => {
+                self.marked_text_left = 0;
+                span.tag.clear();
+                span.actual_text = None;
+                span.artifact_type = None;
+                span.artifact_subtype = None;
+                self.marked_limit(at);
+            }
+        }
+        // The outermost /ActualText replaces everything inside it.
+        if self.actual_open > 0 {
+            span.actual_text = None;
+        }
+        let actual = span.actual_text.is_some();
+        self.actual_open += usize::from(actual);
+        self.marked.open.push(Open {
+            slot: self.out.marked_contents.len(),
+            actual,
+        });
+        self.out.marked_contents.push(span);
+    }
+
+    fn marked_limit(&mut self, at: Location) {
+        if !self.marked_limit_reported {
+            self.marked_limit_reported = true;
+            self.diags.push(DiagnosticKind::RecursionLimit, at);
+        }
+    }
+
+    /// The span for `BMC`/`BDC`, with empty ranges at the current counts. Its strings are
+    /// left out once the text budget is spent, so that they are not even decoded.
+    fn read_span(
+        &mut self,
+        tag: Option<&[u8]>,
+        props: Option<&Object>,
+        at: Location,
+    ) -> MarkedContent {
+        let (g, p, i) = self.counts();
+        let mut span = MarkedContent {
+            tag: String::new(),
+            mcid: None,
+            actual_text: None,
+            artifact_type: None,
+            artifact_subtype: None,
+            glyphs: g..g,
+            paths: p..p,
+            images: i..i,
+        };
+        if self.marked_text_left > 0 {
+            span.tag = tag
+                .map(|t| String::from_utf8_lossy(t).into_owned())
+                .unwrap_or_default();
         }
         let file = self.file;
         let dict: Option<&Dict> = match props.map(|p| file.deref(p)) {
@@ -79,15 +145,16 @@ impl Interp<'_> {
             }
         };
         let get = |k: &[u8]| dict.and_then(|d| d.get(k)).map(|o| file.deref(o));
-        let mut actual_text = match get(b"ActualText") {
-            Some(Object::String(s)) => Some(decode_text_string(s)),
+        let text = self.marked_text_left > 0;
+        span.actual_text = match get(b"ActualText") {
+            Some(Object::String(s)) => text.then(|| decode_text_string(s)),
             Some(_) => {
                 self.diags.push(DiagnosticKind::BadOperands, at);
                 None
             }
             None => None,
         };
-        let mcid = match get(b"MCID") {
+        span.mcid = match get(b"MCID") {
             Some(o) => {
                 let id = o.as_int().and_then(|n| u32::try_from(n).ok());
                 if id.is_none() {
@@ -97,36 +164,16 @@ impl Interp<'_> {
             }
             None => None,
         };
-        let artifact = tag == Some(b"Artifact");
+        let artifact = text && tag == Some(b"Artifact");
         let artifact_name = |k: &[u8]| {
             get(k)
                 .filter(|_| artifact)
                 .and_then(Object::as_name)
                 .map(|n| String::from_utf8_lossy(n).into_owned())
         };
-        // The outermost /ActualText replaces everything inside it.
-        if self.actual_open > 0 {
-            actual_text = None;
-        }
-        let actual = actual_text.is_some();
-        self.actual_open += usize::from(actual);
-        let (g, p, i) = self.counts();
-        self.marked.open.push(Open {
-            slot: self.out.marked_contents.len(),
-            actual,
-        });
-        self.out.marked_contents.push(MarkedContent {
-            tag: tag
-                .map(|t| String::from_utf8_lossy(t).into_owned())
-                .unwrap_or_default(),
-            mcid,
-            actual_text,
-            artifact_type: artifact_name(b"Type"),
-            artifact_subtype: artifact_name(b"Subtype"),
-            glyphs: g..g,
-            paths: p..p,
-            images: i..i,
-        });
+        span.artifact_type = artifact_name(b"Type");
+        span.artifact_subtype = artifact_name(b"Subtype");
+        span
     }
 
     fn end_marked(&mut self, at: Location) {

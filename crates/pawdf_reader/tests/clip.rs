@@ -88,16 +88,30 @@ fn empty_path_clip_ignored() {
 
 #[test]
 fn degenerate_ctm_clip() {
-    let c =
-        content("q 1e300 0 0 1e300 0 0 cm 1e300 0 0 1e300 0 0 cm 0 0 1 1 re W n Q 0 0 1 1 re f");
-    let nan =
-        |r: Option<Rect>| r.is_some_and(|r| [r.x0, r.y0, r.x1, r.y1].iter().any(|v| v.is_nan()));
-    assert!(c.paths.iter().all(|p| !nan(p.clip)));
-    let c =
-        content("q 1e300 0 0 1e300 0 0 cm 1e300 0 0 1e300 0 0 cm 0 0 1 1 re W n 0 0 1 1 re f Q");
-    assert!(c.paths.iter().all(|p| !nan(p.clip)));
+    // PDF numbers have no exponent (§7.3.3), so 1e300 is written out.
+    let big = format!("1{}", "0".repeat(300));
+    let huge = format!("{big} 0 0 {big} 0 0 cm {big} 0 0 {big} 0 0 cm");
+    let c = content(&format!("q {huge} 0 0 1 1 re W n 0 0 1 1 re f Q"));
+    assert!(c.diagnostics.is_empty());
+    assert_eq!(c.paths[0].clip, None);
+    let f = form("/BBox [0 0 1 1]", "0 0 1 1 re f");
+    let c = run(&format!("q 1 -1 1 1 0 0 cm {huge} /Fm0 Do Q"), &[(6, &f)]);
+    assert_eq!(c.paths[0].clip, None);
     let c = content("q 0 0 0 0 0 0 cm 0 0 1 1 re W n 1 0 0 1 0 0 cm 0 0 1 1 re f Q");
     assert_eq!(c.paths[0].clip, r(0., 0., 0., 0.));
+}
+
+#[test]
+fn type3_text_does_not_clip() {
+    // §9.3.6: Type 3 glyphs in a clip mode add nothing to the clipping path.
+    let t3 = b"<< /Type /Font /Subtype /Type3 /FontMatrix [0.001 0 0 0.001 0 0] /FontBBox [0 0 1000 1000] /FirstChar 65 /Widths [1000] /Encoding << /Differences [65 /A] >> /CharProcs << >> >>";
+    let doc = Document::from_bytes(one_page(
+        b"BT /T3 10 Tf 7 Tr 100 100 Td (A) Tj ET 0 0 1 1 re f",
+        "<< /Font << /T3 5 0 R >> >>",
+        &[(5, t3)],
+    ))
+    .unwrap();
+    assert_eq!(doc.page(0).unwrap().content().paths[0].clip, None);
 }
 
 #[test]

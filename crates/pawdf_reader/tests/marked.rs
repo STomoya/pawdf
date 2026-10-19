@@ -253,6 +253,27 @@ fn depth_cap() {
 }
 
 #[test]
+fn marked_text_budget() {
+    // One indirect /ActualText decoded per span would let a small file allocate gigabytes.
+    let props = format!("<< /ActualText ({}) >>", "x".repeat(1 << 14));
+    let f = stream(
+        "/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Resources << /Properties << /P0 7 0 R >> >>",
+        "/Span /P0 BDC EMC ".repeat(1100).as_bytes(),
+    );
+    let c = run(b"/Fm0 Do", FORM_RES, &[(6, &f), (7, props.as_bytes())]);
+    assert_eq!(c.marked_contents.len(), 1100);
+    let text: usize = c
+        .marked_contents
+        .iter()
+        .map(|m| m.tag.len() + m.actual_text.as_ref().map_or(0, String::len))
+        .sum();
+    assert!(text <= 1 << 24, "{text}");
+    assert!(c.marked_contents[0].actual_text.is_some());
+    assert_eq!(c.marked_contents[1099].actual_text, None);
+    assert_eq!(kinds(&c), [DiagnosticKind::RecursionLimit]);
+}
+
+#[test]
 fn marked_content_budget() {
     let f = form(&"/A BMC EMC ".repeat(1024));
     let c = run("/Fm0 Do ".repeat(1025).as_bytes(), FORM_RES, &[(6, &f)]);
