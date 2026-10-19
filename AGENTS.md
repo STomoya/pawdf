@@ -27,7 +27,11 @@ Makefile  # Contains commands for the Rust toolchain. See the Commands section.
 uvx ruff check --fix
 # format
 uvx ruff format
-# type check
+# type check with pyrefly (primary)
+uvx pyrefly check
+# type hint coverage
+uvx pyrefly coverage check
+# type check with ty
 uvx ty check --fix
 # test
 uv run pytest
