@@ -10,6 +10,7 @@ mod filter;
 mod lexer;
 mod object;
 mod parser;
+mod text;
 mod xref;
 
 pub use content::{Operation, parse_content};
@@ -20,3 +21,4 @@ pub use filter::{Codec, Decoded, MAX_DECODED_LEN};
 pub use lexer::{hex_value, is_delimiter, is_regular, is_whitespace};
 pub use object::{Dict, Name, Object, Ref, Stream};
 pub use parser::{MAX_DEPTH, parse_indirect};
+pub use text::decode_text_string;
