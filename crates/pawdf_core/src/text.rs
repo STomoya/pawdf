@@ -27,7 +27,11 @@ pub fn decode_text_string(bytes: &[u8]) -> String {
         return bytes.iter().map(|&b| pdf_doc_char(b)).collect();
     };
     // An unterminated escape swallows the rest of the string.
-    unicode.split('\u{1B}').step_by(2).collect::<String>()
+    if unicode.contains('\u{1B}') {
+        unicode.split('\u{1B}').step_by(2).collect()
+    } else {
+        unicode
+    }
 }
 
 fn pdf_doc_char(b: u8) -> char {

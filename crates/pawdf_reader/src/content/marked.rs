@@ -82,10 +82,6 @@ impl Interp<'_> {
                 self.marked_limit(at);
             }
         }
-        // The outermost /ActualText replaces everything inside it.
-        if self.actual_open > 0 {
-            span.actual_text = None;
-        }
         let actual = span.actual_text.is_some();
         self.actual_open += usize::from(actual);
         self.marked.open.push(Open {
@@ -147,7 +143,10 @@ impl Interp<'_> {
         let get = |k: &[u8]| dict.and_then(|d| d.get(k)).map(|o| file.deref(o));
         let text = self.marked_text_left > 0;
         span.actual_text = match get(b"ActualText") {
-            Some(Object::String(s)) => text.then(|| decode_text_string(s)),
+            // The outermost /ActualText replaces everything inside it.
+            Some(Object::String(s)) => {
+                (text && self.actual_open == 0).then(|| decode_text_string(s))
+            }
             Some(_) => {
                 self.diags.push(DiagnosticKind::BadOperands, at);
                 None

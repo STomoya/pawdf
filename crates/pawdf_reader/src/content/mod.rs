@@ -641,6 +641,10 @@ impl<'a> Interp<'a> {
         if close && self.path.last().is_some_and(|s| *s != Segment::Close) {
             self.path.push(Segment::Close);
         }
+        if !stroke && fill.is_none() && !self.pending_clip {
+            self.clear_path();
+            return true;
+        }
         let ctm = self.gs.ctm;
         let t = |p: Point| ctm.apply(p);
         let segments: Vec<Segment> = self
@@ -774,11 +778,14 @@ impl<'a> Interp<'a> {
 /// Bound of every point of `segments`, curve control points included; `None` when empty.
 /// pdfium's CPDF_StreamContentParser::AddPathObject likewise drops a clip with no points.
 fn bound(segments: &[Segment]) -> Option<Rect> {
-    let mut points = segments.iter().flat_map(|s| match *s {
-        Segment::MoveTo(p) | Segment::LineTo(p) => vec![p],
-        Segment::CurveTo(a, b, c) => vec![a, b, c],
-        Segment::Close => vec![],
-    });
+    let mut points = segments
+        .iter()
+        .flat_map(|s| match *s {
+            Segment::MoveTo(p) | Segment::LineTo(p) => [Some(p), None, None],
+            Segment::CurveTo(a, b, c) => [Some(a), Some(b), Some(c)],
+            Segment::Close => [None, None, None],
+        })
+        .flatten();
     let first = points.next()?;
     let start = Rect::from_corners(first.x, first.y, first.x, first.y);
     Some(points.fold(start, |r, p| {

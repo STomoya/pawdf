@@ -28,8 +28,7 @@ pub(crate) fn last_wins<T: Copy>(
         {
             map.insert(hi + 1, (e, shift(w, hi + 1 - s)));
         }
-        let covered: Vec<u32> = map.range(lo..=hi).map(|(&k, _)| k).collect();
-        for k in covered {
+        while let Some((&k, _)) = map.range(lo..=hi).next() {
             map.remove(&k);
         }
         map.insert(lo, (hi, v));
