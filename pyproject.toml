@@ -156,6 +156,22 @@ rules = { unresolved-import = "ignore" }
 [tool.ty.terminal]
 output-format = "concise"
 
+# ------------------------- pyrefly -------------------------
+
+[tool.pyrefly]
+project-includes = [
+  "python/**/*.py*",
+  "python/**/*.pyi",
+  "python/**/*.ipynb",
+]
+# pyrefly excludes `python` folder by heuristics.
+# disable and re-add valid paths.
+disable-project-excludes-heuristics = true
+project-excludes = [
+  "**/__pycache__",
+  ".venv/lib/python3.11/site-packages",
+]
+
 # ------------------------- pytest -------------------------
 
 [tool.pytest]
