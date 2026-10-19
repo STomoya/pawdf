@@ -1,6 +1,8 @@
 //! What one extraction pass over a page returns. All coordinates are in default user
 //! space (bottom-left origin, y up, `/Rotate` not applied).
 
+use std::ops::Range;
+
 use pawdf_core::Diagnostic;
 
 use crate::geom::{Matrix, Point, Rect};
@@ -16,8 +18,33 @@ pub struct PageContent {
     pub images: Vec<Image>,
     /// Fonts referenced by [`Glyph::font`].
     pub fonts: Vec<FontInfo>,
+    /// Marked-content sequences (§14.6), ordered by where they open; a parent precedes its
+    /// children.
+    pub marked_contents: Vec<MarkedContent>,
     /// Recoveries made during this pass only.
     pub diagnostics: Vec<Diagnostic>,
+}
+
+/// One marked-content sequence and the content it covers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarkedContent {
+    /// The tag operand of `BMC`/`BDC`, e.g. `Span`, `P`, `Artifact`; empty when malformed.
+    pub tag: String,
+    /// `/MCID` (§14.7.5).
+    pub mcid: Option<u32>,
+    /// `/ActualText` (§14.9.4). `None` on sequences nested in one that has it, so
+    /// replacement texts never overlap.
+    pub actual_text: Option<String>,
+    /// `/Type` of an `Artifact` sequence (§14.8.2.2); `None` for other tags.
+    pub artifact_type: Option<String>,
+    /// `/Subtype` of an `Artifact` sequence (§14.8.2.2); `None` for other tags.
+    pub artifact_subtype: Option<String>,
+    /// Indices into [`PageContent::glyphs`]; may be empty.
+    pub glyphs: Range<usize>,
+    /// Indices into [`PageContent::paths`]; may be empty.
+    pub paths: Range<usize>,
+    /// Indices into [`PageContent::images`]; may be empty.
+    pub images: Range<usize>,
 }
 
 /// One shown character code.

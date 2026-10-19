@@ -38,6 +38,9 @@ pub enum DiagnosticKind {
     MisplacedOperator,
     /// `Q` with an empty state stack, or `ET` without `BT`.
     UnbalancedRestore,
+    /// `EMC` without an open marked-content sequence, or a sequence still open at the end of
+    /// a content stream.
+    UnbalancedMarkedContent,
     /// A named font, XObject, color space, or ExtGState was not in the resources.
     MissingResource,
     /// A font dictionary was unusable; fallback metrics were used.
@@ -71,6 +74,7 @@ impl DiagnosticKind {
             DiagnosticKind::UnknownOperator => "unknown_operator",
             DiagnosticKind::MisplacedOperator => "misplaced_operator",
             DiagnosticKind::UnbalancedRestore => "unbalanced_restore",
+            DiagnosticKind::UnbalancedMarkedContent => "unbalanced_marked_content",
             DiagnosticKind::MissingResource => "missing_resource",
             DiagnosticKind::BadFont => "bad_font",
             DiagnosticKind::UnmappedGlyph => "unmapped_glyph",

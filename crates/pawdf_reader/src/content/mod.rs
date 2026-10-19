@@ -1,6 +1,7 @@
 //! The content-stream interpreter (§8, §9).
 
 pub(crate) mod color;
+mod marked;
 pub(crate) mod state;
 pub(crate) mod text;
 
@@ -41,6 +42,9 @@ impl Page {
         let resources = self.info.resources.as_deref().and_then(Object::as_dict);
         let mut interp = Interp::new(&self.doc, resources);
         let streams = content_streams(file, self.info.obj);
+        let end = streams
+            .last()
+            .map(|&obj| Location::Stream { obj, offset: 0 });
         let mut carry: Vec<Object> = Vec::new();
         for r in streams {
             let Some(parsed) = interp.parse_stream(r) else {
@@ -63,6 +67,9 @@ impl Page {
                 carry = last.operands;
             }
             interp.run(&ops);
+        }
+        if let Some(at) = end {
+            interp.close_marked(at);
         }
         interp.finish()
     }
@@ -121,6 +128,11 @@ pub(crate) struct Interp<'a> {
     image_budget_reported: bool,
     pub glyphs_left: usize,
     pub glyph_budget_reported: bool,
+    /// Marked content open in the current content stream.
+    marked: marked::Stack,
+    /// Open sequences reporting `/ActualText`, across forms.
+    actual_open: usize,
+    marked_limit_reported: bool,
 }
 
 impl<'a> Interp<'a> {
@@ -156,6 +168,9 @@ impl<'a> Interp<'a> {
             image_budget_reported: false,
             glyphs_left: MAX_GLYPHS,
             glyph_budget_reported: false,
+            marked: marked::Stack::default(),
+            actual_open: 0,
+            marked_limit_reported: false,
         }
     }
 
@@ -234,6 +249,12 @@ impl<'a> Interp<'a> {
 
     fn op(&mut self, op: &Operation) {
         if let Some(ok) = self.text_op(op) {
+            if !ok {
+                self.bad(DiagnosticKind::BadOperands, op);
+            }
+            return;
+        }
+        if let Some(ok) = self.marked_op(op) {
             if !ok {
                 self.bad(DiagnosticKind::BadOperands, op);
             }
@@ -371,9 +392,9 @@ impl<'a> Interp<'a> {
                 self.compat = self.compat.saturating_sub(1);
                 true
             }
-            // Clipping (not tracked), marked content, shading, and line style are ignored.
-            b"W" | b"W*" | b"sh" | b"BMC" | b"BDC" | b"EMC" | b"MP" | b"DP" | b"d" | b"i"
-            | b"j" | b"J" | b"M" | b"ri" | b"d0" | b"d1" => true,
+            // Clipping (not tracked), marked-content points, shading, and line style are ignored.
+            b"W" | b"W*" | b"sh" | b"MP" | b"DP" | b"d" | b"i" | b"j" | b"J" | b"M" | b"ri"
+            | b"d0" | b"d1" => true,
             _ => {
                 if self.compat == 0 {
                     self.bad(DiagnosticKind::UnknownOperator, op);
@@ -510,6 +531,7 @@ impl<'a> Interp<'a> {
             self.tm,
             self.tlm,
             self.compat,
+            std::mem::take(&mut self.marked),
         );
         self.stack_floor = self.stack.len();
         self.gs.ctm = m.concat(&self.gs.ctm);
@@ -520,6 +542,8 @@ impl<'a> Interp<'a> {
         self.tlm = Matrix::IDENTITY;
         self.compat = 0;
         self.run(&ops);
+        // §14.6: marked content does not cross a form's boundary.
+        self.close_marked(op.location);
         self.form_stack.pop();
         self.resources.pop();
         self.stack.truncate(self.stack_floor);
@@ -530,6 +554,7 @@ impl<'a> Interp<'a> {
             self.tm,
             self.tlm,
             self.compat,
+            self.marked,
         ) = saved;
     }
 
