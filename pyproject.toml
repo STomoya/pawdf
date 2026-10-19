@@ -159,18 +159,9 @@ output-format = "concise"
 # ------------------------- pyrefly -------------------------
 
 [tool.pyrefly]
-project-includes = [
-  "python/**/*.py*",
-  "python/**/*.pyi",
-  "python/**/*.ipynb",
-]
-# pyrefly excludes `python` folder by heuristics.
-# disable and re-add valid paths.
+project-includes = ["python"]
+# The heuristics exclude `python/` because it is on the import path (editable install).
 disable-project-excludes-heuristics = true
-project-excludes = [
-  "**/__pycache__",
-  ".venv/lib/python3.11/site-packages",
-]
 
 # ------------------------- pytest -------------------------
 
