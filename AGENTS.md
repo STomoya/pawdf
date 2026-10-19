@@ -78,7 +78,7 @@ make clippy
 
 ## Python Rules
 
-- Maintain hand-written `.pyi` stubs and `py.typed` for `pawdf._core`. Update the stubs with every binding change, and `uvx ty check` must pass.
+- Maintain hand-written `.pyi` stubs and `py.typed` for `pawdf._core`. Update the stubs with every binding change, and `uvx pyrefly check` and `uvx ty check` must pass. `pyrefly` is the primary source. Use `ty` as secondary and reporting status on PRs is not required.
 - Write docstrings on public Python API.
 
 ## Testing
