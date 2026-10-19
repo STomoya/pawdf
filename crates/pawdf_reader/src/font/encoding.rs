@@ -83,6 +83,29 @@ pub(crate) fn type1_builtin(program: &[u8]) -> Option<Vec<Option<String>>> {
     found.then_some(table)
 }
 
+/// Glyph names of a bare CFF program's built-in encoding, or of the `CFF ` table of an
+/// OpenType program. `None` when the program does not parse or is CID-keyed.
+pub(crate) fn cff_builtin(program: &[u8], opentype: bool) -> Option<Vec<Option<String>>> {
+    let data = if opentype {
+        ttf_parser::RawFace::parse(program, 0)
+            .ok()?
+            .table(ttf_parser::Tag::from_bytes(b"CFF "))?
+    } else {
+        program
+    };
+    let table = ttf_parser::cff::Table::parse(data)?;
+    // ponytail: ttf-parser's glyph_index falls back to StandardEncoding for codes a custom
+    // encoding omits. Those codes draw .notdef, so only their text is affected; read the
+    // encoding ourselves if that matters.
+    let names: Vec<Option<String>> = (0..=255u8)
+        .map(|code| {
+            let gid = table.glyph_index(code).filter(|g| g.0 != 0)?;
+            table.glyph_name(gid).map(str::to_owned)
+        })
+        .collect();
+    names.iter().any(Option::is_some).then_some(names)
+}
+
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }

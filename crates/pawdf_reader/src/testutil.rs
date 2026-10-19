@@ -110,3 +110,76 @@ pub fn sfnt(subtables: &[Subtable]) -> Vec<u8> {
     out.extend_from_slice(&cmap);
     out
 }
+
+/// A CFF INDEX with 2-byte offsets.
+fn cff_index(items: &[&[u8]]) -> Vec<u8> {
+    if items.is_empty() {
+        return vec![0, 0];
+    }
+    let mut out = (items.len() as u16).to_be_bytes().to_vec();
+    out.push(2);
+    let mut off = 1u16;
+    out.extend_from_slice(&off.to_be_bytes());
+    for item in items {
+        off += item.len() as u16;
+        out.extend_from_slice(&off.to_be_bytes());
+    }
+    for item in items {
+        out.extend_from_slice(item);
+    }
+    out
+}
+
+/// A bare CFF font: `.notdef` plus one empty glyph per `(code, name)`, with custom glyph
+/// names and a format 0 encoding mapping each code to its glyph.
+pub fn cff(glyphs: &[(u8, &str)]) -> Vec<u8> {
+    let names: Vec<&[u8]> = glyphs.iter().map(|(_, n)| n.as_bytes()).collect();
+    let mut head = vec![1, 0, 4, 1];
+    head.extend(cff_index(&[b"Test"]));
+    let top_len = cff_index(&[&[0; 18]]).len();
+    let strings = cff_index(&names);
+    let charset_at = head.len() + top_len + strings.len() + 2;
+    let mut charset = vec![0];
+    for i in 0..glyphs.len() {
+        charset.extend_from_slice(&(391 + i as u16).to_be_bytes());
+    }
+    let encoding_at = charset_at + charset.len();
+    let mut encoding = vec![0, glyphs.len() as u8];
+    encoding.extend(glyphs.iter().map(|(c, _)| *c));
+    let char_strings_at = encoding_at + encoding.len();
+    let mut top = Vec::new();
+    for (value, op) in [(charset_at, 15), (encoding_at, 16), (char_strings_at, 17)] {
+        top.push(0x1d);
+        top.extend_from_slice(&(value as i32).to_be_bytes());
+        top.push(op);
+    }
+    let endchar: &[u8] = &[0x0e];
+    let mut out = head;
+    out.extend(cff_index(&[&top]));
+    out.extend(strings);
+    out.extend([0, 0]);
+    out.extend(charset);
+    out.extend(encoding);
+    out.extend(cff_index(&vec![endchar; glyphs.len() + 1]));
+    out
+}
+
+/// An sfnt holding the given tables.
+pub fn sfnt_tables(tables: &[([u8; 4], &[u8])]) -> Vec<u8> {
+    let mut out = b"OTTO".to_vec();
+    out.extend_from_slice(&(tables.len() as u16).to_be_bytes());
+    out.extend_from_slice(&[0; 6]);
+    let mut offset = 12 + 16 * tables.len();
+    for (tag, data) in tables {
+        out.extend_from_slice(tag);
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(&(offset as u32).to_be_bytes());
+        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        offset += data.len().next_multiple_of(4);
+    }
+    for (_, data) in tables {
+        out.extend_from_slice(data);
+        out.resize(out.len().next_multiple_of(4), 0);
+    }
+    out
+}
