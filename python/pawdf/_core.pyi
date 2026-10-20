@@ -379,6 +379,45 @@ class Page:
         """Extract glyphs, painted paths, and images. Releases the GIL while parsing."""
 
 @final
+class Destination:
+    """A position in this document."""
+
+    @property
+    def page(self) -> int:
+        """0-based page index."""
+    @property
+    def left(self) -> float | None:
+        """Left edge in default user space, when the destination gives one."""
+    @property
+    def top(self) -> float | None:
+        """Top edge in default user space, when the destination gives one."""
+
+@final
+class OutlineItem:
+    """One outline item."""
+
+    @property
+    def title(self) -> str:
+        """The decoded title; empty when missing."""
+    @property
+    def dest(self) -> Destination | None:
+        """Where the item points, or ``None`` for other actions or unresolvable destinations."""
+    @property
+    def children(self) -> list[OutlineItem]:
+        """Child items, in order."""
+
+@final
+class Outline:
+    """The document outline (bookmarks)."""
+
+    @property
+    def items(self) -> list[OutlineItem]:
+        """Top-level items, in order."""
+    @property
+    def diagnostics(self) -> list[Diagnostic]:
+        """Recoveries made while reading the outline."""
+
+@final
 class Document:
     """An open PDF document."""
 
@@ -404,3 +443,5 @@ class Document:
     @property
     def encryption(self) -> Encryption | None:
         """How the file was decrypted, or ``None`` if it is not encrypted."""
+    def outline(self) -> Outline:
+        """The document outline (bookmarks). Read on every call. Releases the GIL while parsing."""
