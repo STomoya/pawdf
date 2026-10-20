@@ -325,6 +325,52 @@ fn root_in_missing_object_stream_is_repaired() {
     assert!(kinds(&file).contains(&DiagnosticKind::XrefRepaired));
 }
 
+/// The failed /Root check must not leave object 9 marked missing for the rebuilt table.
+#[test]
+fn root_in_unlisted_object_stream_is_repaired() {
+    let mut pdf = b"%PDF-1.7\n".to_vec();
+    let members = b"1 0 << /Type /Catalog >>";
+    pdf.extend_from_slice(
+        format!(
+            "9 0 obj << /Type /ObjStm /N 1 /First 4 /Length {} >>\nstream\n",
+            members.len()
+        )
+        .as_bytes(),
+    );
+    pdf.extend_from_slice(members);
+    pdf.extend_from_slice(b"\nendstream\nendobj\n");
+    let xref_at = pdf.len();
+    // Object 1 lives in object stream 9, which the xref does not list.
+    let data: Vec<u8> = [[0u8, 0, 0, 0], [2, 0, 9, 0]].concat();
+    pdf.extend_from_slice(
+        format!(
+            "8 0 obj\n<< /Type /XRef /Size 2 /W [1 2 1] /Root 1 0 R /Length {} >>\nstream\n",
+            data.len()
+        )
+        .as_bytes(),
+    );
+    pdf.extend_from_slice(&data);
+    pdf.extend_from_slice(format!("\nendstream\nendobj\nstartxref\n{xref_at}\n%%EOF\n").as_bytes());
+    let file = File::from_bytes(pdf).unwrap();
+    let root = file
+        .trailer()
+        .get(b"Root")
+        .and_then(Object::as_ref)
+        .unwrap();
+    assert_eq!(
+        file.resolve(root)
+            .as_dict()
+            .and_then(|d| d.get(b"Type"))
+            .and_then(Object::as_name),
+        Some(&b"Catalog"[..])
+    );
+    let repairs = kinds(&file)
+        .iter()
+        .filter(|&&k| k == DiagnosticKind::XrefRepaired)
+        .count();
+    assert_eq!(repairs, 1);
+}
+
 #[test]
 fn junk_before_header_is_repaired() {
     let (pdf, _) = build_pdf(&[(1, CATALOG), (2, PAGES), (3, b"7")], "/Root 1 0 R");

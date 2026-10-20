@@ -152,7 +152,9 @@ impl File {
             .and_then(Object::as_dict)
             .is_none()
         {
-            file.report(DiagnosticKind::XrefRepaired, Location::File(0));
+            if file.repaired.get().is_none() {
+                file.report(DiagnosticKind::XrefRepaired, Location::File(0));
+            }
             let crypt = file.crypt.as_ref().map(|c| (c, &file.table.entries));
             let (entries, trailer) = xref::repair(&file.data, crypt);
             if !matches!(trailer.get(b"Root"), Some(Object::Ref(r)) if entries.contains_key(&r.num))
@@ -161,7 +163,11 @@ impl File {
             }
             file.table = Table::new(entries);
             file.trailer = trailer;
-            let _ = file.repaired.set(Table::new(Entries::new()));
+            // The failed check may have marked objects missing or failed against the old
+            // table, or built a fallback table from it.
+            file.repaired = OnceLock::from(Table::new(Entries::new()));
+            lock(&file.failed).clear();
+            lock(&file.missing).clear();
         }
         Ok(file)
     }
