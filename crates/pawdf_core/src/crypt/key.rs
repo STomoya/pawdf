@@ -359,7 +359,6 @@ mod tests {
     fn handler(kat: &Kat) -> SecurityHandler {
         let m = method(kat);
         SecurityHandler {
-            v: kat.v,
             r: kat.r,
             key_len: if kat.v == 1 { 5 } else { kat.length / 8 },
             o: hex(kat.o),

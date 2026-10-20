@@ -22,7 +22,6 @@ pub(crate) enum CryptFilter {
 
 /// The parsed encryption dictionary of the standard security handler (Tables 20 and 21).
 pub(crate) struct SecurityHandler {
-    pub(crate) v: u8,
     pub(crate) r: u8,
     /// File key length in bytes: 5..=16 for V1–4, 32 for V5.
     pub(crate) key_len: usize,
@@ -89,7 +88,6 @@ impl SecurityHandler {
             _ => Vec::new(),
         };
         let mut h = SecurityHandler {
-            v: v as u8,
             r: r as u8,
             key_len,
             o: string(dict, b"O"),
