@@ -130,6 +130,89 @@ impl SecurityHandler {
     }
 }
 
+/// The method used to encrypt a file's strings and streams.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Method {
+    /// Nothing is encrypted (`StmF` and `StrF` are `Identity`).
+    Identity,
+    /// RC4 (V1–V4, crypt filter method `V2`).
+    Rc4,
+    /// AES-128 (`AESV2`).
+    Aes128,
+    /// AES-256 (`AESV3`).
+    Aes256,
+}
+
+/// The user access permissions `/P` (§7.6.4.2, Table 22). Reported, never enforced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Permissions(u32);
+
+impl Permissions {
+    /// The raw `/P` value, as an unsigned 32-bit integer.
+    pub fn bits(self) -> u32 {
+        self.0
+    }
+
+    fn bit(self, n: u32) -> bool {
+        self.0 & (1 << (n - 1)) != 0
+    }
+
+    /// Bit 3: print (at low quality unless [`Permissions::print_high_quality`]).
+    pub fn print(self) -> bool {
+        self.bit(3)
+    }
+
+    /// Bit 4: modify the contents.
+    pub fn modify(self) -> bool {
+        self.bit(4)
+    }
+
+    /// Bit 5: copy or extract text and graphics.
+    pub fn copy(self) -> bool {
+        self.bit(5)
+    }
+
+    /// Bit 6: add or modify annotations and fill forms.
+    pub fn annotate(self) -> bool {
+        self.bit(6)
+    }
+
+    /// Bit 9: fill in form fields, even when [`Permissions::annotate`] is not set.
+    pub fn fill_forms(self) -> bool {
+        self.bit(9)
+    }
+
+    /// Bit 10: extract text and graphics for accessibility.
+    pub fn extract_for_accessibility(self) -> bool {
+        self.bit(10)
+    }
+
+    /// Bit 11: assemble the document (insert, rotate, delete pages, bookmarks).
+    pub fn assemble(self) -> bool {
+        self.bit(11)
+    }
+
+    /// Bit 12: print at full quality.
+    pub fn print_high_quality(self) -> bool {
+        self.bit(12)
+    }
+}
+
+/// How an encrypted file was opened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Encryption {
+    /// The standard security handler revision `/R` (2–6).
+    pub revision: u8,
+    /// The first method of `/StmF`, `/StrF` and `/EFF` that is not `Identity`.
+    pub method: Method,
+    /// The file key length in bits.
+    pub key_bits: u16,
+    /// The permission flags.
+    pub permissions: Permissions,
+    /// Which password matched.
+    pub authenticated_as: PasswordKind,
+}
+
 /// An authenticated security handler: decrypts objects as they are loaded.
 pub(crate) struct Crypt {
     pub(crate) handler: SecurityHandler,
@@ -151,6 +234,26 @@ impl Crypt {
             key,
             kind,
             encrypt_ref,
+        }
+    }
+
+    pub(crate) fn info(&self) -> Encryption {
+        let h = &self.handler;
+        let method = [h.stm_f, h.str_f, h.eff]
+            .into_iter()
+            .find_map(|f| match f {
+                CryptFilter::Rc4 => Some(Method::Rc4),
+                CryptFilter::AesV2 => Some(Method::Aes128),
+                CryptFilter::AesV3 => Some(Method::Aes256),
+                CryptFilter::Identity | CryptFilter::Unknown => None,
+            })
+            .unwrap_or(Method::Identity);
+        Encryption {
+            revision: h.r,
+            method,
+            key_bits: (h.key_len * 8) as u16,
+            permissions: Permissions(h.p),
+            authenticated_as: self.kind,
         }
     }
 

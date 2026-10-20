@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 use std::thread::ThreadId;
 
-use crate::crypt::{Crypt, SecurityHandler, authenticate};
+use crate::crypt::{Crypt, Encryption, SecurityHandler, authenticate};
 use crate::diag::{Diagnostic, DiagnosticKind, Diagnostics, Location, Origin};
 use crate::error::{Error, ErrorKind};
 use crate::lexer::Lexer;
@@ -148,6 +148,11 @@ impl File {
             let _ = file.repaired.set(t);
         }
         Ok(file)
+    }
+
+    /// How the file was decrypted, or `None` if it is not encrypted.
+    pub fn encryption(&self) -> Option<Encryption> {
+        self.crypt.as_ref().map(Crypt::info)
     }
 
     /// The (merged) trailer dictionary.

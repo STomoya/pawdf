@@ -23,5 +23,6 @@ pub use model::{
     ImageData, MarkedContent, PageContent, Path, RenderMode, Segment, SoftMask, WritingMode,
 };
 pub use pawdf_core::{
-    Diagnostic, DiagnosticKind, Error as CoreError, ErrorKind as CoreErrorKind, Location, Ref,
+    Diagnostic, DiagnosticKind, Encryption, Error as CoreError, ErrorKind as CoreErrorKind,
+    Location, Method, PasswordKind, Permissions, Ref,
 };

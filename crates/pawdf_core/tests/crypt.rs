@@ -3,7 +3,9 @@ mod common;
 use common::crypt::{Cfm, Enc, raw_stream};
 use common::{CATALOG, PAGES, build_pdf};
 use miniz_oxide::deflate::compress_to_vec_zlib;
-use pawdf_core::{DiagnosticKind, Diagnostics, ErrorKind, File, Location, Object, Ref};
+use pawdf_core::{
+    DiagnosticKind, Diagnostics, ErrorKind, File, Location, Method, Object, PasswordKind, Ref,
+};
 
 fn r(num: u32) -> Ref {
     Ref { num, generation: 0 }
@@ -469,4 +471,57 @@ fn broken_xref_with_encrypted_object_streams() {
     let catalog = file.resolve(r(1)).as_dict().unwrap();
     assert_eq!(catalog.get(b"Pages"), Some(&Object::Ref(r(2))));
     assert!(count(&file, DiagnosticKind::XrefRepaired) > 0);
+}
+
+#[test]
+fn encryption_info() {
+    let enc = Enc::new(4, "u", "o");
+    let pdf = encrypted(&enc);
+    let info = File::from_bytes_with_password(pdf.clone(), "u")
+        .unwrap()
+        .encryption()
+        .unwrap();
+    assert_eq!(info.revision, 4);
+    assert_eq!(info.method, Method::Aes128);
+    assert_eq!(info.key_bits, 128);
+    assert_eq!(info.authenticated_as, PasswordKind::User);
+    let p = info.permissions;
+    assert_eq!(p.bits(), 0xFFFFF0C0);
+    assert!(!p.print() && !p.modify() && !p.copy() && !p.annotate());
+    assert!(!p.fill_forms() && !p.extract_for_accessibility());
+    assert!(!p.assemble() && !p.print_high_quality());
+
+    let owner = File::from_bytes_with_password(pdf, "o")
+        .unwrap()
+        .encryption()
+        .unwrap();
+    assert_eq!(owner.authenticated_as, PasswordKind::Owner);
+    assert_eq!(owner.permissions.bits(), 0xFFFFF0C0);
+
+    let mut all = Enc::new(4, "u", "o");
+    all.p = -4;
+    let p = File::from_bytes_with_password(encrypted(&all), "u")
+        .unwrap()
+        .encryption()
+        .unwrap()
+        .permissions;
+    assert!(p.print() && p.modify() && p.copy() && p.annotate());
+    assert!(p.fill_forms() && p.extract_for_accessibility());
+    assert!(p.assemble() && p.print_high_quality());
+
+    for (rev, method, bits) in [(2, Method::Rc4, 40), (6, Method::Aes256, 256)] {
+        let info = File::from_bytes_with_password(encrypted(&Enc::new(rev, "u", "o")), "u")
+            .unwrap()
+            .encryption()
+            .unwrap();
+        assert_eq!(
+            (info.revision, info.method, info.key_bits),
+            (rev, method, bits)
+        );
+    }
+
+    let (plain, _) = build_pdf(&[(1, CATALOG), (2, PAGES)], "/Root 1 0 R");
+    assert_eq!(File::from_bytes(plain).unwrap().encryption(), None);
+    let (null, _) = build_pdf(&[(1, CATALOG), (2, PAGES)], "/Root 1 0 R /Encrypt null");
+    assert_eq!(File::from_bytes(null).unwrap().encryption(), None);
 }

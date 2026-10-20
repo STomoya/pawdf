@@ -1,7 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-use pawdf_core::{Diagnostic, DiagnosticKind, Diagnostics, File, Location, Object, Ref};
+use pawdf_core::{
+    Diagnostic, DiagnosticKind, Diagnostics, Encryption, File, Location, Object, Ref,
+};
 
 use crate::error::{Error, ErrorKind};
 use crate::font::{Font, Shared, load_font};
@@ -64,20 +66,38 @@ pub(crate) struct PageInfo {
 }
 
 impl Document {
-    /// Opens a document from its bytes and walks the page tree.
+    /// Opens a document from its bytes and walks the page tree. An encrypted file is
+    /// opened with the empty user password.
     ///
-    /// Fails only when `pawdf_core` cannot open the file (encrypted, or no catalog).
+    /// Fails only when `pawdf_core` cannot open the file (wrong password, unsupported
+    /// encryption, or no catalog).
     pub fn from_bytes(data: Vec<u8>) -> Result<Document, Error> {
-        let file = File::from_bytes(data)?;
+        Ok(Self::from_file(File::from_bytes(data)?))
+    }
+
+    /// Like [`Document::from_bytes`], trying `password` as the user, then the owner
+    /// password, then the empty user password.
+    pub fn from_bytes_with_password(data: Vec<u8>, password: &str) -> Result<Document, Error> {
+        Ok(Self::from_file(File::from_bytes_with_password(
+            data, password,
+        )?))
+    }
+
+    fn from_file(file: File) -> Document {
         let mut diags = Diagnostics::new();
         let pages = walk_pages(&file, &mut diags);
-        Ok(Document(Arc::new(Inner {
+        Document(Arc::new(Inner {
             file,
             pages,
             tree_diags: diags.into_vec(),
             fonts: Mutex::new(HashMap::new()),
             shared: Shared::default(),
-        })))
+        }))
+    }
+
+    /// How the file was decrypted, or `None` if it is not encrypted.
+    pub fn encryption(&self) -> Option<Encryption> {
+        self.0.file.encryption()
     }
 
     /// The number of pages.

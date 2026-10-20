@@ -2,7 +2,7 @@ mod common;
 
 use common::{CATALOG, build_pdf};
 use pawdf_core::DiagnosticKind;
-use pawdf_reader::{Document, ErrorKind, Page, Point, Rect, Rotation};
+use pawdf_reader::{Document, ErrorKind, Method, Page, Point, Rect, Rotation};
 
 fn open(objects: &[(u32, &[u8])]) -> Document {
     let (pdf, _) = build_pdf(objects, "/Root 1 0 R");
@@ -224,4 +224,31 @@ fn errors_display() {
     );
     assert!(std::error::Error::source(&err).is_some());
     assert!(format!("{doc:?}").starts_with("Document"));
+}
+
+/// SHA-256(b"" ‖ 8 × 0x01) ‖ 8 × 0x01 ‖ 8 × 0x02: an R5 `/U` for the empty user password.
+const R5_EMPTY_U: &str = "04abc8821a06e5a30937967d11ad10221cb5ac3b5273e434f1284ee87129a06101010101010101010202020202020202";
+
+#[test]
+fn opens_encrypted_document() {
+    let dict = format!(
+        "<< /Filter /Standard /V 5 /R 5 /Length 256 /P -3904 /O <{0}> /U <{0}> /OE <{1}> /UE <{1}> \
+         /CF << /StdCF << /CFM /AESV3 >> >> /StmF /Identity /StrF /Identity >>",
+        R5_EMPTY_U,
+        "00".repeat(32)
+    );
+    let (pdf, _) = build_pdf(
+        &[
+            (1, CATALOG),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+            (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] >>"),
+            (4, dict.as_bytes()),
+        ],
+        "/Root 1 0 R /Encrypt 4 0 R",
+    );
+    let doc = Document::from_bytes(pdf.clone()).unwrap();
+    assert_eq!(doc.page_count(), 1);
+    let enc = doc.encryption().unwrap();
+    assert_eq!((enc.method, enc.revision), (Method::Identity, 5));
+    assert!(Document::from_bytes_with_password(pdf, "anything").is_ok());
 }
