@@ -24,6 +24,7 @@ fuzz_target!(|data: &[u8]| {
         return;
     };
     let _ = doc.diagnostics();
+    let _ = doc.outline();
     if doc.page_count() <= MAX_PAGES {
         for i in 0..doc.page_count() {
             if let Ok(page) = doc.page(i) {
