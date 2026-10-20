@@ -286,7 +286,7 @@ pub(crate) fn header_matches(data: &[u8], offset: usize, num: u32) -> bool {
 /// Rebuilds the cross-reference by scanning for `N G obj` and `trailer` (what mature readers
 /// do with broken files). Later definitions win. Objects inside object streams are added
 /// when no direct definition exists. If no trailer names a `/Root` the scan found, the
-/// first `/Type /Catalog` object is used.
+/// last `/Type /Catalog` object is used, since an incremental update may add a new one.
 ///
 /// The scan is a single forward pass: candidates inside an object or trailer already
 /// parsed are skipped, so crafted files cannot make it quadratic.
@@ -329,7 +329,7 @@ pub(crate) fn repair(data: &[u8], crypt: Option<&Crypt>) -> (Entries, Dict) {
         }
         entries.insert(num, Entry::InFile { offset: pos });
         let Object::Stream(s) = &obj else {
-            if catalog.is_none() && is_catalog(&obj) {
+            if is_catalog(&obj) {
                 catalog = Some(r);
             }
             continue;
@@ -358,10 +358,8 @@ pub(crate) fn repair(data: &[u8], crypt: Option<&Crypt>) -> (Entries, Dict) {
                         continue;
                     }
                     let index = u32::try_from(index).unwrap_or(u32::MAX);
-                    entries
-                        .entry(member)
-                        .or_insert(Entry::InStream { stream: num, index });
-                    if catalog.is_none() {
+                    let entry = Entry::InStream { stream: num, index };
+                    if *entries.entry(member).or_insert(entry) == entry {
                         let mut lex = Lexer::at(&decoded, first.saturating_add(off));
                         if parse_object(&mut lex, origin, &mut quiet)
                             .is_some_and(|o| is_catalog(&o))

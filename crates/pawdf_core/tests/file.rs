@@ -121,6 +121,15 @@ fn repair_finds_catalog_without_trailer() {
     assert_eq!(file.trailer().get(b"Root"), Some(&Object::Ref(r(1))));
 }
 
+/// An incremental update that adds a new catalog object supersedes the original one.
+#[test]
+fn repair_uses_latest_catalog() {
+    let pdf =
+        b"%PDF-1.4\n1 0 obj << /Type /Catalog >> endobj\n5 0 obj << /Type /Catalog >> endobj\n";
+    let file = File::from_bytes(pdf.to_vec()).unwrap();
+    assert_eq!(file.trailer().get(b"Root"), Some(&Object::Ref(r(5))));
+}
+
 #[test]
 fn no_catalog_is_unrecoverable() {
     let err = File::from_bytes(b"%PDF-1.4\nnothing here".to_vec())
