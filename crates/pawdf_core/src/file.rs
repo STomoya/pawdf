@@ -1,3 +1,4 @@
+use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 use std::thread::ThreadId;
@@ -106,17 +107,12 @@ impl File {
             .map_err(|name| fail(ErrorKind::UnsupportedEncryption(name)))?
         {
             None => None,
-            Some((handler, encrypt_ref)) => {
-                let id = trailer
-                    .get(b"ID")
-                    .and_then(Object::as_array)
-                    .and_then(|a| a.first())
-                    .and_then(Object::as_string);
+            Some((handler, encrypt_ref, id)) => {
                 // §7.6.4.3.2 Algorithm 2 step (e): R5/R6 do not use /ID.
                 if id.is_none() && handler.r <= 4 {
                     diags.push(DiagnosticKind::BadEncryption, Location::File(0));
                 }
-                let id = id.unwrap_or_default().to_vec();
+                let id = id.unwrap_or_default();
                 let Some((key, kind)) = authenticate(&handler, &id, password, &mut diags) else {
                     return Err(fail(ErrorKind::IncorrectPassword {
                         password_given: password.is_some(),
@@ -288,7 +284,9 @@ impl File {
         // §7.6.2: the key comes from the `N G obj` header, since references' generations
         // are not checked.
         let crypt = self.crypt.as_ref().filter(|c| !c.is_encrypt_dict(num));
-        if let Some(c) = crypt {
+        // §7.5.8.2: a cross-reference stream's dictionary is not encrypted either.
+        let is_xref = matches!(&obj, Object::Stream(s) if s.dict.get(b"Type").and_then(Object::as_name) == Some(b"XRef"));
+        if let Some(c) = crypt.filter(|_| !is_xref) {
             c.decrypt_strings(header, &mut obj, at, &mut diags);
         }
         self.lock_diags().append(diags);
@@ -390,41 +388,91 @@ impl File {
     }
 }
 
-/// The trailer's `/Encrypt` dictionary, parsed without decryption, and its reference when
-/// indirect. It is never in an object stream (§7.5.7), so one hop through the main table,
-/// then a repair scan, finds it. A value that is not a dictionary is diagnosed and the file
-/// read as unencrypted. `Err` names an unsupported handler.
+/// Loads objects without decryption, for the encryption dictionary and `/ID`, which are
+/// read before the key exists. They are never in object streams (§7.5.7), so one hop
+/// through the main table, then a repair scan, finds them.
+struct RawObjects<'a> {
+    data: &'a [u8],
+    entries: &'a Entries,
+    repaired: OnceCell<Entries>,
+}
+
+impl RawObjects<'_> {
+    fn get(&self, num: u32) -> Option<Object> {
+        let at = |entries: &Entries| match entries.get(&num) {
+            Some(Entry::InFile { offset }) => {
+                parse_indirect(self.data, *offset, &|_| None, &mut Diagnostics::new())
+                    .filter(|(found, _)| found.num == num)
+                    .map(|(_, o)| o)
+            }
+            _ => None,
+        };
+        at(self.entries).or_else(|| {
+            at(self
+                .repaired
+                .get_or_init(|| xref::repair(self.data, None).0))
+        })
+    }
+
+    /// `obj`, or the object it references (null if missing).
+    fn deref(&self, obj: &Object) -> Object {
+        match obj {
+            Object::Ref(r) => self.get(r.num).unwrap_or(Object::Null),
+            o => o.clone(),
+        }
+    }
+}
+
+/// The parsed handler, the encryption dictionary's reference, and the first `/ID` string.
+type EncryptInfo = (SecurityHandler, Option<Ref>, Option<Vec<u8>>);
+
+/// The trailer's `/Encrypt` dictionary, parsed without decryption, its reference when
+/// indirect, and the first `/ID` string. Indirect values in the dictionary, its crypt
+/// filters and `/ID` are followed one level, as mature readers do. A value that is not a
+/// dictionary is diagnosed and the file read as unencrypted. `Err` names an unsupported
+/// handler.
 fn crypt_handler(
     data: &[u8],
     entries: &Entries,
     trailer: &Dict,
     diags: &mut Diagnostics,
-) -> Result<Option<(SecurityHandler, Option<Ref>)>, String> {
+) -> Result<Option<EncryptInfo>, String> {
     let Some(value) = trailer.get(b"Encrypt") else {
         return Ok(None);
     };
-    let (obj, encrypt_ref) = match value {
-        Object::Ref(r) => {
-            let at = |entries: &Entries| match entries.get(&r.num) {
-                Some(Entry::InFile { offset }) => {
-                    parse_indirect(data, *offset, &|_| None, &mut Diagnostics::new())
-                        .filter(|(found, _)| found.num == r.num)
-                        .map(|(_, o)| o)
-                }
-                _ => None,
-            };
-            let obj = at(entries)
-                .or_else(|| at(&xref::repair(data, None).0))
-                .unwrap_or(Object::Null);
-            (obj, Some(*r))
-        }
-        o => (o.clone(), None),
+    let raw = RawObjects {
+        data,
+        entries,
+        repaired: OnceCell::new(),
     };
-    let Object::Dict(dict) = obj else {
+    let Object::Dict(mut dict) = raw.deref(value) else {
         diags.push(DiagnosticKind::BadEncryption, Location::File(0));
         return Ok(None);
     };
-    Ok(Some((SecurityHandler::parse(&dict, diags)?, encrypt_ref)))
+    for (_, v) in dict.iter_mut() {
+        *v = raw.deref(v);
+    }
+    if let Some(Object::Dict(cf)) = dict.get_mut(b"CF") {
+        for (_, filter) in cf.iter_mut() {
+            *filter = raw.deref(filter);
+            if let Object::Dict(f) = filter {
+                for (_, v) in f.iter_mut() {
+                    *v = raw.deref(v);
+                }
+            }
+        }
+    }
+    let id = trailer
+        .get(b"ID")
+        .map(|id| raw.deref(id))
+        .and_then(|id| {
+            id.as_array()
+                .and_then(|a| a.first())
+                .map(|first| raw.deref(first))
+        })
+        .and_then(|first| first.as_string().map(<[u8]>::to_vec));
+    let handler = SecurityHandler::parse(&dict, diags)?;
+    Ok(Some((handler, value.as_ref(), id)))
 }
 
 /// The trailer's `/Root` exists and its xref entry points at a real object.

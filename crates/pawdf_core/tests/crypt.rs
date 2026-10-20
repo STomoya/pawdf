@@ -395,9 +395,12 @@ fn xref_stream_left_alone() {
         &format!("/Root 1 0 R {}", enc.trailer(5)),
     );
     let file = File::from_bytes_with_password(pdf, "u").unwrap();
-    let raw = stream(&file, 6).raw();
-    assert_eq!(raw.len(), 7 * 7);
-    assert_eq!(&raw[..8], &[0, 0, 0, 0, 0, 0, 0, 1]);
+    let xref = stream(&file, 6);
+    assert_eq!(xref.raw().len(), 7 * 7);
+    assert_eq!(&xref.raw()[..8], &[0, 0, 0, 0, 0, 0, 0, 1]);
+    let id = xref.dict.get(b"ID").unwrap().as_array().unwrap();
+    assert_eq!(id[0].as_string(), Some(&enc.id[..]));
+    assert_eq!(count(&file, DiagnosticKind::BadEncryption), 0);
 }
 
 #[test]
@@ -571,4 +574,40 @@ fn crypt_filter_removed_from_longer_chain() {
         s.decode(Location::File(0), &mut Diagnostics::new()).data,
         PLAIN
     );
+}
+
+/// pdfium and pdf.js follow references inside the encryption dictionary and `/ID`.
+#[test]
+fn indirect_values_in_encrypt_dict() {
+    let enc = Enc::new(4, "u", "o");
+    let dict = enc.dict();
+    let cf_at = dict.find(" /CF << ").unwrap();
+    let cf_end = dict[cf_at..].find(">> >>").unwrap() + cf_at + 5;
+    let cf = dict[cf_at + 5..cf_end].to_string();
+    let o = format!("<{}>", common::crypt::hex(&enc.o()));
+    let dict = format!("{} /CF 7 0 R{}", &dict[..cf_at], &dict[cf_end..])
+        .replace(&format!("/O {o}"), "/O 8 0 R");
+    let id = format!("[<{0}> <{0}>]", common::crypt::hex(&enc.id));
+    let obj3 = format!(
+        "<< /S {} /A [ {} ] >>",
+        enc.string(3, b"secret"),
+        enc.string(3, b"nested")
+    );
+    let obj4 = enc.stream(4, "", b"BT (x) Tj ET");
+    let (pdf, _) = build_pdf(
+        &[
+            (1, CATALOG),
+            (2, PAGES),
+            (3, obj3.as_bytes()),
+            (4, &obj4),
+            (5, dict.as_bytes()),
+            (7, cf.as_bytes()),
+            (8, o.as_bytes()),
+            (9, id.as_bytes()),
+        ],
+        "/Root 1 0 R /Encrypt 5 0 R /ID 9 0 R",
+    );
+    let file = File::from_bytes_with_password(pdf, "u").unwrap();
+    assert_plaintext(&file);
+    assert_eq!(count(&file, DiagnosticKind::BadEncryption), 0);
 }
