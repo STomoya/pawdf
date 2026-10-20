@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 use std::thread::ThreadId;
 
-use crate::crypt::SecurityHandler;
+use crate::crypt::{Crypt, SecurityHandler, authenticate};
 use crate::diag::{Diagnostic, DiagnosticKind, Diagnostics, Location, Origin};
 use crate::error::{Error, ErrorKind};
 use crate::lexer::Lexer;
@@ -63,14 +63,26 @@ pub struct File {
     /// Loading the xref reported problems, so an absent object may have been lost with a
     /// damaged section and is worth looking for in the repaired table.
     xref_damaged: bool,
+    crypt: Option<Crypt>,
 }
 
 impl File {
-    /// Parses the header, cross-reference data, and trailer.
+    /// Parses the header, cross-reference data, and trailer. An encrypted file is opened
+    /// with the empty user password.
     ///
-    /// Fails only if the file is encrypted and cannot be decrypted, or no document catalog can be found even after
-    /// a full repair scan.
+    /// Fails only if the file is encrypted and cannot be decrypted, or no document catalog
+    /// can be found even after a full repair scan.
     pub fn from_bytes(data: Vec<u8>) -> Result<File, Error> {
+        Self::open(data, None)
+    }
+
+    /// Like [`File::from_bytes`], for an encrypted file: tries `password` as the user, then
+    /// the owner password, then the empty user password.
+    pub fn from_bytes_with_password(data: Vec<u8>, password: &str) -> Result<File, Error> {
+        Self::open(data, Some(password))
+    }
+
+    fn open(data: Vec<u8>, password: Option<&str>) -> Result<File, Error> {
         let mut diags = Diagnostics::new();
         let header_window = &data[..data.len().min(1024)];
         if find(header_window, b"%PDF-").is_none() {
@@ -89,14 +101,30 @@ impl File {
                 (entries, trailer, 0, Some(Table::new(Entries::new())))
             }
         };
-        if let Some((_handler, _encrypt_ref)) = crypt_handler(&data, &entries, &trailer, &mut diags)
-            .map_err(|name| Error::new(ErrorKind::UnsupportedEncryption(name), offset as u64))?
+        let fail = |kind| Error::new(kind, offset as u64);
+        let crypt = match crypt_handler(&data, &entries, &trailer, &mut diags)
+            .map_err(|name| fail(ErrorKind::UnsupportedEncryption(name)))?
         {
-            return Err(Error::new(
-                ErrorKind::UnsupportedEncryption("Standard".into()),
-                offset as u64,
-            ));
-        }
+            None => None,
+            Some((handler, encrypt_ref)) => {
+                let id = trailer
+                    .get(b"ID")
+                    .and_then(Object::as_array)
+                    .and_then(|a| a.first())
+                    .and_then(Object::as_string);
+                // §7.6.4.3.2 Algorithm 2 step (e): R5/R6 do not use /ID.
+                if id.is_none() && handler.r <= 4 {
+                    diags.push(DiagnosticKind::BadEncryption, Location::File(0));
+                }
+                let id = id.unwrap_or_default().to_vec();
+                let Some((key, kind)) = authenticate(&handler, &id, password, &mut diags) else {
+                    return Err(fail(ErrorKind::IncorrectPassword {
+                        password_given: password.is_some(),
+                    }));
+                };
+                Some(Crypt::new(handler, key, kind, encrypt_ref))
+            }
+        };
         if !matches!(trailer.get(b"Root"), Some(Object::Ref(r)) if entries.contains_key(&r.num)) {
             return Err(Error::new(ErrorKind::Unrecoverable, offset as u64));
         }
@@ -109,6 +137,7 @@ impl File {
             failed: Mutex::new(HashSet::new()),
             missing: Mutex::new(HashSet::new()),
             xref_damaged,
+            crypt,
         };
         if let Some(t) = repaired {
             let _ = file.repaired.set(t);
@@ -244,10 +273,22 @@ impl File {
         }
         let mut diags = Diagnostics::new();
         let length_of = |len_ref: Ref| self.length_of(len_ref);
-        let (_, mut obj) = parse_indirect(&self.data, offset, &length_of, &mut diags)?;
+        let (header, mut obj) = parse_indirect(&self.data, offset, &length_of, &mut diags)?;
+        let at = Location::File(offset as u64);
+        // §7.6.2: the key comes from the `N G obj` header, since references' generations
+        // are not checked.
+        let crypt = self.crypt.as_ref().filter(|c| !c.is_encrypt_dict(num));
+        if let Some(c) = crypt {
+            c.decrypt_strings(header, &mut obj, at, &mut diags);
+        }
         self.lock_diags().append(diags);
         if let Object::Stream(s) = &mut obj {
             self.resolve_filter_values(&mut s.dict, depth);
+            if let Some(c) = crypt {
+                let mut diags = Diagnostics::new();
+                c.decrypt_stream(header, s, at, &mut diags);
+                self.lock_diags().append(diags);
+            }
         }
         Some(obj)
     }

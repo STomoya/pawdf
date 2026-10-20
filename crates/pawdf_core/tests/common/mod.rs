@@ -1,5 +1,8 @@
 //! Test-only helper that assembles small PDFs with correct xref offsets.
 
+#[allow(dead_code)]
+pub mod crypt;
+
 /// Builds a PDF with the given objects (generation 0), a classic xref table, and a trailer
 /// containing `/Size` plus `trailer_extra`. Returns the bytes and each object's offset.
 pub fn build_pdf(objects: &[(u32, &[u8])], trailer_extra: &str) -> (Vec<u8>, Vec<(u32, usize)>) {

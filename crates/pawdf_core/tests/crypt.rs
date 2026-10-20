@@ -1,0 +1,297 @@
+mod common;
+
+use common::crypt::{Enc, raw_stream};
+use common::{CATALOG, PAGES, build_pdf};
+use miniz_oxide::deflate::compress_to_vec_zlib;
+use pawdf_core::{DiagnosticKind, ErrorKind, File, Location, Ref};
+
+fn r(num: u32) -> Ref {
+    Ref { num, generation: 0 }
+}
+
+fn count(file: &File, kind: DiagnosticKind) -> usize {
+    file.diagnostics().iter().filter(|d| d.kind == kind).count()
+}
+
+fn xref_offset(pdf: &[u8]) -> usize {
+    let s = String::from_utf8_lossy(pdf);
+    let tail = &s[s.rfind("startxref").unwrap() + 9..];
+    tail.split_whitespace().next().unwrap().parse().unwrap()
+}
+
+/// Objects 1–2 catalog and pages, 3 a dict with an encrypted string nested in an array,
+/// 4 an encrypted stream, 5 the encryption dictionary.
+fn encrypted(enc: &Enc) -> Vec<u8> {
+    let obj3 = format!(
+        "<< /S {} /A [ {} ] >>",
+        enc.string(3, b"secret"),
+        enc.string(3, b"nested")
+    );
+    let obj4 = enc.stream(4, "", b"BT (x) Tj ET");
+    let dict = enc.dict();
+    build_pdf(
+        &[
+            (1, CATALOG),
+            (2, PAGES),
+            (3, obj3.as_bytes()),
+            (4, &obj4),
+            (5, dict.as_bytes()),
+        ],
+        &format!("/Root 1 0 R {}", enc.trailer(5)),
+    )
+    .0
+}
+
+fn assert_plaintext(file: &File) {
+    let d = file.resolve(r(3)).as_dict().unwrap();
+    assert_eq!(d.get(b"S").unwrap().as_string(), Some(&b"secret"[..]));
+    let a = d.get(b"A").unwrap().as_array().unwrap();
+    assert_eq!(a[0].as_string(), Some(&b"nested"[..]));
+    assert_eq!(
+        file.resolve(r(4)).as_stream().unwrap().raw(),
+        b"BT (x) Tj ET"
+    );
+}
+
+#[test]
+fn every_revision_and_password() {
+    for rev in [2, 3, 4, 5, 6] {
+        let pdf = encrypted(&Enc::new(rev, "u", "o"));
+        let xref = xref_offset(&pdf);
+        let err = File::from_bytes(pdf.clone()).err().unwrap();
+        assert_eq!(
+            err.kind,
+            ErrorKind::IncorrectPassword {
+                password_given: false
+            },
+            "R{rev}"
+        );
+        assert_eq!(
+            err.to_string(),
+            format!("a password is required (at byte {xref})")
+        );
+        for pw in ["u", "o"] {
+            let file = File::from_bytes_with_password(pdf.clone(), pw).unwrap();
+            assert_plaintext(&file);
+            assert!(
+                file.diagnostics().is_empty(),
+                "R{rev} {pw}: {:?}",
+                file.diagnostics()
+            );
+        }
+        let err = File::from_bytes_with_password(pdf, "x").err().unwrap();
+        assert_eq!(
+            err.kind,
+            ErrorKind::IncorrectPassword {
+                password_given: true
+            },
+            "R{rev}"
+        );
+
+        let pdf = encrypted(&Enc::new(rev, "", "o"));
+        assert_plaintext(&File::from_bytes(pdf.clone()).unwrap());
+        assert_plaintext(&File::from_bytes_with_password(pdf, "x").unwrap());
+    }
+}
+
+/// pikepdf output (see `src/crypt/key.rs`): the info string as object 2's `/T` and the
+/// content stream as object 5, keeping their object numbers since R4 keys depend on them.
+#[test]
+fn known_answer_file_opens() {
+    let r4 = (
+        "/V 4 /R 4 /Length 128 /P -1028 /CF << /StdCF << /CFM /AESV2 /Length 16 >> >> /StmF /StdCF /StrF /StdCF",
+        "2a2f0a1990192c60114730bdcd39f37828a53c89a340dd473c85299dc5258e1c",
+        "a09e2aa09050292242ca44e3ea530b0e0021446990b9e4114071a4d9104984c1",
+        "",
+        "91129a4b973c0fc9429654415580045b9a29fc9d544693e52cccbc0a98c3abda",
+        "63be1f01a45e6bb7142f23396cebb6ea221f51bff0fb8cd7d3effeed5f378ff3737a6de833e7ff78145e6cd7ff4a59b3",
+    );
+    let r6 = (
+        "/V 5 /R 6 /Length 256 /P -1028 /CF << /StdCF << /CFM /AESV3 /Length 32 >> >> /StmF /StdCF /StrF /StdCF",
+        "032d448327f132a5de8700ae8fc5dcdce728f71bcf5e006f58369a833ef654c5c236fb4847c6c457f62d17dd48160adf",
+        "aa7e624e63c80251c24affcc1c68f17dd89a77d6219a2b2728abe0c6c010345c1a1ccbc623e8097c103c4072d8c70094",
+        "/OE <a15024c8210101a9b6ac57bab9ed8c68725052ff912b02c7aa4ea8a0f8cd40a8> /UE <32dbec132621ec00d7cb6682b41f78ae402db7ba0a438457cf6b9ef543fd1a62> /Perms <06aa5f81d15e9c3295fb1e203ef2140e>",
+        "d5f7506bb5f859c4051dc1b7f0d6d7314b3e016991e403b36cabc4870bb91f08",
+        "070967b33263f268b72c85dc1bf8740676b5d57a1f72e9a6bdfa24e6f7bf42f4d45abbcbc281b3b7add93944b1571122",
+    );
+    for (entries, o, u, extra, string, stream) in [r4, r6] {
+        let pages = format!("<< /Type /Pages /Kids [] /Count 0 /T <{string}> >>");
+        let content = raw_stream("", &unhex(stream));
+        let dict = format!("<< /Filter /Standard {entries} /O <{o}> /U <{u}> {extra} >>");
+        let (pdf, _) = build_pdf(
+            &[
+                (1, CATALOG),
+                (2, pages.as_bytes()),
+                (5, &content),
+                (6, dict.as_bytes()),
+            ],
+            "/Root 1 0 R /Encrypt 6 0 R /ID [<31415926535897932384626433832795> <00>]",
+        );
+        for pw in ["u", "o"] {
+            let file = File::from_bytes_with_password(pdf.clone(), pw).unwrap();
+            let pages = file.resolve(r(2)).as_dict().unwrap();
+            assert_eq!(
+                pages.get(b"T").unwrap().as_string(),
+                Some(&b"Hello KAT"[..])
+            );
+            let s = file.resolve(r(5)).as_stream().unwrap();
+            assert_eq!(s.raw(), b"BT /F1 12 Tf (KAT) Tj ET");
+            assert!(file.diagnostics().is_empty(), "{:?}", file.diagnostics());
+        }
+    }
+}
+
+fn unhex(s: &str) -> Vec<u8> {
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+        .collect()
+}
+
+#[test]
+fn encrypt_dict_and_trailer_id_left_alone() {
+    let enc = Enc::new(4, "u", "o");
+    let file = File::from_bytes_with_password(encrypted(&enc), "u").unwrap();
+    let d = file.resolve(r(5)).as_dict().unwrap();
+    assert_eq!(d.get(b"O").unwrap().as_string(), Some(&enc.o()[..]));
+    let id = file.trailer().get(b"ID").unwrap().as_array().unwrap();
+    assert_eq!(id[0].as_string(), Some(&enc.id[..]));
+}
+
+#[test]
+fn missing_id_is_diagnostic() {
+    for (rev, diags) in [(4, 1), (6, 0)] {
+        let mut enc = Enc::new(rev, "", "o");
+        enc.id = Vec::new();
+        let file = File::from_bytes(encrypted(&enc)).unwrap();
+        assert_plaintext(&file);
+        assert_eq!(count(&file, DiagnosticKind::BadEncryption), diags, "R{rev}");
+    }
+}
+
+/// A file with an xref stream: `direct` objects in the file, `compressed` as
+/// (number, object stream, index), and the trailer entries in the xref stream dictionary.
+fn xref_stream_pdf(direct: &[(u32, &[u8])], compressed: &[(u32, u32)], trailer: &str) -> Vec<u8> {
+    let mut pdf = b"%PDF-1.7\n".to_vec();
+    let mut rows: Vec<(u32, [u8; 7])> = Vec::new();
+    for (num, body) in direct {
+        let off = pdf.len() as u32;
+        let o = off.to_be_bytes();
+        rows.push((*num, [1, o[0], o[1], o[2], o[3], 0, 0]));
+        pdf.extend_from_slice(format!("{num} 0 obj\n").as_bytes());
+        pdf.extend_from_slice(body);
+        pdf.extend_from_slice(b"\nendobj\n");
+    }
+    for (index, (num, stream)) in compressed.iter().enumerate() {
+        let s = stream.to_be_bytes();
+        rows.push((*num, [2, s[0], s[1], s[2], s[3], 0, index as u8]));
+    }
+    let xref_num = rows.iter().map(|(n, _)| n + 1).max().unwrap_or(1);
+    let xref_at = pdf.len() as u32;
+    let o = xref_at.to_be_bytes();
+    rows.push((xref_num, [1, o[0], o[1], o[2], o[3], 0, 0]));
+    let size = xref_num + 1;
+    let mut data = Vec::new();
+    for n in 0..size {
+        match rows.iter().find(|(m, _)| *m == n) {
+            Some((_, row)) => data.extend_from_slice(row),
+            None => data.extend_from_slice(&[0; 7]),
+        }
+    }
+    pdf.extend_from_slice(
+        format!(
+            "{xref_num} 0 obj\n<< /Type /XRef /Size {size} /W [1 4 2] {trailer} /Length {} >>\nstream\n",
+            data.len()
+        )
+        .as_bytes(),
+    );
+    pdf.extend_from_slice(&data);
+    pdf.extend_from_slice(format!("\nendstream\nendobj\nstartxref\n{xref_at}\n%%EOF\n").as_bytes());
+    pdf
+}
+
+#[test]
+fn object_stream_members_decrypted_once() {
+    let enc = Enc::new(4, "u", "o");
+    let member = "<< /S (secret) >>";
+    let header = "3 0 ";
+    let packed = compress_to_vec_zlib(format!("{header}{member}").as_bytes(), 6);
+    let objstm = enc.stream(
+        6,
+        &format!(
+            "/Type /ObjStm /N 1 /First {} /Filter /FlateDecode",
+            header.len()
+        ),
+        &packed,
+    );
+    let dict = enc.dict();
+    let pdf = xref_stream_pdf(
+        &[(1, CATALOG), (2, PAGES), (5, dict.as_bytes()), (6, &objstm)],
+        &[(3, 6)],
+        &format!("/Root 1 0 R {}", enc.trailer(5)),
+    );
+    let file = File::from_bytes_with_password(pdf, "u").unwrap();
+    let d = file.resolve(r(3)).as_dict().unwrap();
+    assert_eq!(d.get(b"S").unwrap().as_string(), Some(&b"secret"[..]));
+    assert!(file.diagnostics().is_empty(), "{:?}", file.diagnostics());
+}
+
+#[test]
+fn bad_aes_padding_keeps_partial_data() {
+    let enc = Enc::new(4, "u", "o");
+    let mut ct = enc.encrypt(4, b"BT (x) Tj ET");
+    *ct.last_mut().unwrap() ^= 0xFF;
+    let obj4 = raw_stream("", &ct);
+    let dict = enc.dict();
+    let (pdf, offsets) = build_pdf(
+        &[(1, CATALOG), (2, PAGES), (4, &obj4), (5, dict.as_bytes())],
+        &format!("/Root 1 0 R {}", enc.trailer(5)),
+    );
+    let file = File::from_bytes_with_password(pdf, "u").unwrap();
+    let raw = file.resolve(r(4)).as_stream().unwrap().raw().to_vec();
+    assert_eq!(raw.len(), 16);
+    let at = offsets.iter().find(|(n, _)| *n == 4).unwrap().1 as u64;
+    let bad: Vec<_> = file
+        .diagnostics()
+        .into_iter()
+        .filter(|d| d.kind == DiagnosticKind::BadEncryption)
+        .collect();
+    assert_eq!(bad.len(), 1);
+    assert_eq!(bad[0].location, Location::File(at));
+}
+
+#[test]
+fn sasl_prep_password() {
+    let mut enc = Enc::new(6, "", "o");
+    enc.user = b"password".to_vec();
+    let file = File::from_bytes_with_password(encrypted(&enc), "pass\u{AD}word").unwrap();
+    assert_plaintext(&file);
+}
+
+#[test]
+fn raw_utf8_password_on_r4() {
+    let enc = Enc::new(4, "日本", "o");
+    let file = File::from_bytes_with_password(encrypted(&enc), "日本").unwrap();
+    assert_plaintext(&file);
+}
+
+#[test]
+fn crypt_filter_length_bits_or_bytes() {
+    let enc = Enc::new(4, "u", "o");
+    for len in ["/Length 16", "/Length 128"] {
+        let dict = enc
+            .dict()
+            .replace("/CFM /AESV2 /Length 16", &format!("/CFM /AESV2 {len}"));
+        let obj4 = enc.stream(4, "", b"BT (x) Tj ET");
+        let (pdf, _) = build_pdf(
+            &[(1, CATALOG), (2, PAGES), (4, &obj4), (5, dict.as_bytes())],
+            &format!("/Root 1 0 R {}", enc.trailer(5)),
+        );
+        let file = File::from_bytes_with_password(pdf, "u").unwrap();
+        assert_eq!(
+            file.resolve(r(4)).as_stream().unwrap().raw(),
+            b"BT (x) Tj ET",
+            "{len}"
+        );
+    }
+}

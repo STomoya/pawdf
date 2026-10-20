@@ -5,9 +5,10 @@ mod cipher;
 mod key;
 
 pub use key::PasswordKind;
+pub(crate) use key::authenticate;
 
 use crate::diag::{DiagnosticKind, Diagnostics, Location};
-use crate::object::{Dict, Object};
+use crate::object::{Dict, Object, Ref, Stream};
 
 /// How one crypt filter decrypts (§7.6.6 Table 25 `/CFM`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,6 +127,90 @@ impl SecurityHandler {
             .iter()
             .find(|(n, _)| n == name)
             .map_or(CryptFilter::Unknown, |&(_, f)| f)
+    }
+}
+
+/// An authenticated security handler: decrypts objects as they are loaded.
+pub(crate) struct Crypt {
+    pub(crate) handler: SecurityHandler,
+    key: Vec<u8>,
+    pub(crate) kind: PasswordKind,
+    /// The encryption dictionary's own object, whose strings are not encrypted (§7.6.2).
+    encrypt_ref: Option<Ref>,
+}
+
+impl Crypt {
+    pub(crate) fn new(
+        handler: SecurityHandler,
+        key: Vec<u8>,
+        kind: PasswordKind,
+        encrypt_ref: Option<Ref>,
+    ) -> Crypt {
+        Crypt {
+            handler,
+            key,
+            kind,
+            encrypt_ref,
+        }
+    }
+
+    /// Whether object `num` is the encryption dictionary.
+    pub(crate) fn is_encrypt_dict(&self, num: u32) -> bool {
+        self.encrypt_ref.is_some_and(|r| r.num == num)
+    }
+
+    /// Decrypts every string in `obj` (recursively, a stream's dictionary included) with
+    /// `/StrF`. `r` is the object's own `N G obj` header.
+    pub(crate) fn decrypt_strings(
+        &self,
+        r: Ref,
+        obj: &mut Object,
+        at: Location,
+        diags: &mut Diagnostics,
+    ) {
+        match obj {
+            Object::String(s) => {
+                *s = match cipher::decrypt(&self.key, self.handler.str_f, r, s) {
+                    Ok(plain) => plain,
+                    Err(partial) => {
+                        diags.push(DiagnosticKind::BadEncryption, at);
+                        partial
+                    }
+                };
+            }
+            Object::Array(items) => {
+                for item in items {
+                    self.decrypt_strings(r, item, at, diags);
+                }
+            }
+            Object::Dict(d) => self.decrypt_dict_strings(r, d, at, diags),
+            Object::Stream(s) => self.decrypt_dict_strings(r, &mut s.dict, at, diags),
+            _ => {}
+        }
+    }
+
+    fn decrypt_dict_strings(&self, r: Ref, d: &mut Dict, at: Location, diags: &mut Diagnostics) {
+        for (_, v) in d.iter_mut() {
+            self.decrypt_strings(r, v, at, diags);
+        }
+    }
+
+    /// Decrypts a stream's raw bytes with `/StmF`.
+    pub(crate) fn decrypt_stream(
+        &self,
+        r: Ref,
+        s: &mut Stream,
+        at: Location,
+        diags: &mut Diagnostics,
+    ) {
+        let method = self.handler.stm_f;
+        s.raw = match cipher::decrypt(&self.key, method, r, &s.raw) {
+            Ok(plain) => plain,
+            Err(partial) => {
+                diags.push(DiagnosticKind::BadEncryption, at);
+                partial
+            }
+        };
     }
 }
 
