@@ -1,6 +1,7 @@
 //! The content-stream interpreter (§8, §9).
 
 pub(crate) mod color;
+mod marked;
 pub(crate) mod state;
 pub(crate) mod text;
 
@@ -41,6 +42,9 @@ impl Page {
         let resources = self.info.resources.as_deref().and_then(Object::as_dict);
         let mut interp = Interp::new(&self.doc, resources);
         let streams = content_streams(file, self.info.obj);
+        let end = streams
+            .last()
+            .map(|&obj| Location::Stream { obj, offset: 0 });
         let mut carry: Vec<Object> = Vec::new();
         for r in streams {
             let Some(parsed) = interp.parse_stream(r) else {
@@ -63,6 +67,9 @@ impl Page {
                 carry = last.operands;
             }
             interp.run(&ops);
+        }
+        if let Some(at) = end {
+            interp.close_marked(at);
         }
         interp.finish()
     }
@@ -121,6 +128,16 @@ pub(crate) struct Interp<'a> {
     image_budget_reported: bool,
     pub glyphs_left: usize,
     pub glyph_budget_reported: bool,
+    /// Marked content open in the current content stream.
+    marked: marked::Stack,
+    /// Open sequences reporting `/ActualText`, across forms.
+    actual_open: usize,
+    marked_limit_reported: bool,
+    marked_text_left: usize,
+    /// `W` or `W*` seen; the path is intersected into the clip when it is painted.
+    pending_clip: bool,
+    /// Union of the glyph boxes shown in a clip render mode in the current text object.
+    pub text_clip: Option<Rect>,
 }
 
 impl<'a> Interp<'a> {
@@ -156,6 +173,12 @@ impl<'a> Interp<'a> {
             image_budget_reported: false,
             glyphs_left: MAX_GLYPHS,
             glyph_budget_reported: false,
+            marked: marked::Stack::default(),
+            actual_open: 0,
+            marked_limit_reported: false,
+            marked_text_left: marked::MAX_MARKED_TEXT,
+            pending_clip: false,
+            text_clip: None,
         }
     }
 
@@ -233,7 +256,42 @@ impl<'a> Interp<'a> {
     }
 
     fn op(&mut self, op: &Operation) {
+        // §8.5.4: `W`/`W*` go between a path's construction and its painting operator. More
+        // construction is tolerated; anything else drops the clip so it cannot reach a later,
+        // unrelated path.
+        if self.pending_clip
+            && !matches!(
+                op.operator.as_slice(),
+                b"m" | b"l"
+                    | b"c"
+                    | b"v"
+                    | b"y"
+                    | b"h"
+                    | b"re"
+                    | b"W"
+                    | b"W*"
+                    | b"S"
+                    | b"s"
+                    | b"f"
+                    | b"F"
+                    | b"f*"
+                    | b"B"
+                    | b"B*"
+                    | b"b"
+                    | b"b*"
+                    | b"n"
+            )
+        {
+            self.pending_clip = false;
+            self.bad(DiagnosticKind::MisplacedOperator, op);
+        }
         if let Some(ok) = self.text_op(op) {
+            if !ok {
+                self.bad(DiagnosticKind::BadOperands, op);
+            }
+            return;
+        }
+        if let Some(ok) = self.marked_op(op) {
             if !ok {
                 self.bad(DiagnosticKind::BadOperands, op);
             }
@@ -351,16 +409,17 @@ impl<'a> Interp<'a> {
                     self.subpath_start = Some(p(x, y));
                 })
                 .is_some(),
-            b"S" => self.paint(false, true, None),
-            b"s" => self.paint(true, true, None),
-            b"f" | b"F" => self.paint(false, false, Some(FillRule::NonZero)),
-            b"f*" => self.paint(false, false, Some(FillRule::EvenOdd)),
-            b"B" => self.paint(false, true, Some(FillRule::NonZero)),
-            b"B*" => self.paint(false, true, Some(FillRule::EvenOdd)),
-            b"b" => self.paint(true, true, Some(FillRule::NonZero)),
-            b"b*" => self.paint(true, true, Some(FillRule::EvenOdd)),
-            b"n" => {
-                self.clear_path();
+            b"S" => self.paint(op.location, false, true, None),
+            b"s" => self.paint(op.location, true, true, None),
+            b"f" | b"F" => self.paint(op.location, false, false, Some(FillRule::NonZero)),
+            b"f*" => self.paint(op.location, false, false, Some(FillRule::EvenOdd)),
+            b"B" => self.paint(op.location, false, true, Some(FillRule::NonZero)),
+            b"B*" => self.paint(op.location, false, true, Some(FillRule::EvenOdd)),
+            b"b" => self.paint(op.location, true, true, Some(FillRule::NonZero)),
+            b"b*" => self.paint(op.location, true, true, Some(FillRule::EvenOdd)),
+            b"n" => self.paint(op.location, false, false, None),
+            b"W" | b"W*" => {
+                self.pending_clip = true;
                 true
             }
             b"BX" => {
@@ -371,9 +430,10 @@ impl<'a> Interp<'a> {
                 self.compat = self.compat.saturating_sub(1);
                 true
             }
-            // Clipping (not tracked), marked content, shading, and line style are ignored.
-            b"W" | b"W*" | b"sh" | b"BMC" | b"BDC" | b"EMC" | b"MP" | b"DP" | b"d" | b"i"
-            | b"j" | b"J" | b"M" | b"ri" | b"d0" | b"d1" => true,
+            // Marked-content points, shading, and line style are ignored.
+            b"sh" | b"MP" | b"DP" | b"d" | b"i" | b"j" | b"J" | b"M" | b"ri" | b"d0" | b"d1" => {
+                true
+            }
             _ => {
                 if self.compat == 0 {
                     self.bad(DiagnosticKind::UnknownOperator, op);
@@ -459,6 +519,7 @@ impl<'a> Interp<'a> {
         let p = ImageParts::clone(&p);
         let ctm = self.gs.ctm;
         self.out.images.push(Image {
+            clip: self.gs.clip,
             inline: name.is_none(),
             name,
             ctm,
@@ -510,9 +571,21 @@ impl<'a> Interp<'a> {
             self.tm,
             self.tlm,
             self.compat,
+            std::mem::take(&mut self.marked),
+            std::mem::take(&mut self.pending_clip),
+            self.text_clip.take(),
         );
         self.stack_floor = self.stack.len();
         self.gs.ctm = m.concat(&self.gs.ctm);
+        // §8.10.1: the form's bounding box clips its content.
+        if let Some([x0, y0, x1, y1]) = s.dict.get(b"BBox").and_then(|b| numbers::<4>(file, b)) {
+            self.clip_to(
+                self.gs
+                    .ctm
+                    .transform_rect(Rect::from_corners(x0, y0, x1, y1)),
+                op.location,
+            );
+        }
         self.resources.push(res);
         self.form_stack.push(r);
         self.in_text = false;
@@ -520,6 +593,8 @@ impl<'a> Interp<'a> {
         self.tlm = Matrix::IDENTITY;
         self.compat = 0;
         self.run(&ops);
+        // §14.6: marked content does not cross a form's boundary.
+        self.close_marked(op.location);
         self.form_stack.pop();
         self.resources.pop();
         self.stack.truncate(self.stack_floor);
@@ -530,6 +605,9 @@ impl<'a> Interp<'a> {
             self.tm,
             self.tlm,
             self.compat,
+            self.marked,
+            self.pending_clip,
+            self.text_clip,
         ) = saved;
     }
 
@@ -559,24 +637,35 @@ impl<'a> Interp<'a> {
         self.subpath_start = None;
     }
 
-    fn paint(&mut self, close: bool, stroke: bool, fill: Option<FillRule>) -> bool {
+    fn paint(&mut self, at: Location, close: bool, stroke: bool, fill: Option<FillRule>) -> bool {
         if close && self.path.last().is_some_and(|s| *s != Segment::Close) {
             self.path.push(Segment::Close);
         }
-        if !self.path.is_empty() {
-            let ctm = self.gs.ctm;
-            let t = |p: Point| ctm.apply(p);
-            let segments = self
-                .path
-                .iter()
-                .map(|s| match *s {
-                    Segment::MoveTo(p) => Segment::MoveTo(t(p)),
-                    Segment::LineTo(p) => Segment::LineTo(t(p)),
-                    Segment::CurveTo(a, b, c) => Segment::CurveTo(t(a), t(b), t(c)),
-                    Segment::Close => Segment::Close,
-                })
-                .collect();
+        if !stroke && fill.is_none() && !self.pending_clip {
+            self.clear_path();
+            return true;
+        }
+        let ctm = self.gs.ctm;
+        let t = |p: Point| ctm.apply(p);
+        let segments: Vec<Segment> = self
+            .path
+            .iter()
+            .map(|s| match *s {
+                Segment::MoveTo(p) => Segment::MoveTo(t(p)),
+                Segment::LineTo(p) => Segment::LineTo(t(p)),
+                Segment::CurveTo(a, b, c) => Segment::CurveTo(t(a), t(b), t(c)),
+                Segment::Close => Segment::Close,
+            })
+            .collect();
+        // §8.5.4: the clip changes after painting, so this path is not clipped by its own W.
+        let new_clip = if std::mem::take(&mut self.pending_clip) {
+            bound(&segments)
+        } else {
+            None
+        };
+        if !segments.is_empty() && (stroke || fill.is_some()) {
             self.out.paths.push(Path {
+                clip: self.gs.clip,
                 segments,
                 stroke,
                 fill,
@@ -588,8 +677,25 @@ impl<'a> Interp<'a> {
                 stroke_alpha: self.gs.stroke_alpha,
             });
         }
+        if let Some(r) = new_clip {
+            self.clip_to(r, at);
+        }
         self.clear_path();
         true
+    }
+
+    /// Intersects `r` into the clip. A bound that is not finite or is inverted (from an
+    /// overflowing CTM, where min/max skip NaN points) says nothing and is ignored, reported
+    /// as `BadOperands` at `at`.
+    pub(crate) fn clip_to(&mut self, r: Rect, at: Location) {
+        if ![r.x0, r.y0, r.x1, r.y1].iter().all(|v| v.is_finite()) || r.x0 > r.x1 || r.y0 > r.y1 {
+            self.diags.push(DiagnosticKind::BadOperands, at);
+            return;
+        }
+        self.gs.clip = Some(match self.gs.clip {
+            Some(c) => c.intersect(&r),
+            None => r,
+        });
     }
 
     fn ext_gstate(&mut self, key: &[u8], op: &Operation) {
@@ -667,4 +773,22 @@ impl<'a> Interp<'a> {
             self.gs.fill = color;
         }
     }
+}
+
+/// Bound of every point of `segments`, curve control points included; `None` when empty.
+/// pdfium's CPDF_StreamContentParser::AddPathObject likewise drops a clip with no points.
+fn bound(segments: &[Segment]) -> Option<Rect> {
+    let mut points = segments
+        .iter()
+        .flat_map(|s| match *s {
+            Segment::MoveTo(p) | Segment::LineTo(p) => [Some(p), None, None],
+            Segment::CurveTo(a, b, c) => [Some(a), Some(b), Some(c)],
+            Segment::Close => [None, None, None],
+        })
+        .flatten();
+    let first = points.next()?;
+    let start = Rect::from_corners(first.x, first.y, first.x, first.y);
+    Some(points.fold(start, |r, p| {
+        r.union(&Rect::from_corners(p.x, p.y, p.x, p.y))
+    }))
 }

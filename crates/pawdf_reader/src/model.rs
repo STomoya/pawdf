@@ -1,6 +1,8 @@
 //! What one extraction pass over a page returns. All coordinates are in default user
 //! space (bottom-left origin, y up, `/Rotate` not applied).
 
+use std::ops::Range;
+
 use pawdf_core::Diagnostic;
 
 use crate::geom::{Matrix, Point, Rect};
@@ -16,8 +18,37 @@ pub struct PageContent {
     pub images: Vec<Image>,
     /// Fonts referenced by [`Glyph::font`].
     pub fonts: Vec<FontInfo>,
+    /// Marked-content sequences (§14.6), ordered by where they open; a parent precedes its
+    /// children. Sequences nested deeper than 256 or past 2^20 per page are omitted, their
+    /// content counted in the enclosing sequence, and reported as a `RecursionLimit` diagnostic.
+    pub marked_contents: Vec<MarkedContent>,
     /// Recoveries made during this pass only.
     pub diagnostics: Vec<Diagnostic>,
+}
+
+/// One marked-content sequence and the content it covers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarkedContent {
+    /// The tag operand of `BMC`/`BDC`, e.g. `Span`, `P`, `Artifact`. Empty when malformed,
+    /// and, like the other strings (left `None`), once the page's marked-content text exceeds
+    /// a limit, which is reported as a `RecursionLimit` diagnostic.
+    pub tag: String,
+    /// `/MCID` (§14.7.5).
+    pub mcid: Option<u32>,
+    /// `/ActualText` (§14.9.4). `None` on sequences nested in one that has it, so
+    /// replacement texts never overlap, and once the marked-content text limit is spent (see
+    /// [`MarkedContent::tag`]).
+    pub actual_text: Option<String>,
+    /// `/Type` of an `Artifact` sequence (§14.8.2.2); `None` for other tags.
+    pub artifact_type: Option<String>,
+    /// `/Subtype` of an `Artifact` sequence (§14.8.2.2); `None` for other tags.
+    pub artifact_subtype: Option<String>,
+    /// Indices into [`PageContent::glyphs`]; may be empty.
+    pub glyphs: Range<usize>,
+    /// Indices into [`PageContent::paths`]; may be empty.
+    pub paths: Range<usize>,
+    /// Indices into [`PageContent::images`]; may be empty.
+    pub images: Range<usize>,
 }
 
 /// One shown character code.
@@ -51,6 +82,11 @@ pub struct Glyph {
     pub fill_alpha: f64,
     /// Stroke alpha (`CA`).
     pub stroke_alpha: f64,
+    /// Axis-aligned bound of the clipping region in effect, in default user space; `None`
+    /// when nothing clips. A zero-area rectangle means fully clipped. Content outside it is
+    /// certainly clipped; content inside may still be. Under a text clip (§9.3.6) the bound
+    /// uses glyph boxes, which real outlines can exceed, so it is approximate.
+    pub clip: Option<Rect>,
 }
 
 /// Writing mode (§9.7.4.3).
@@ -116,6 +152,11 @@ pub enum FontKind {
 pub struct Path {
     /// Segments in user space.
     pub segments: Vec<Segment>,
+    /// Axis-aligned bound of the clipping region in effect, in default user space; `None`
+    /// when nothing clips. A zero-area rectangle means fully clipped. Content outside it is
+    /// certainly clipped; content inside may still be. Under a text clip (§9.3.6) the bound
+    /// uses glyph boxes, which real outlines can exceed, so it is approximate.
+    pub clip: Option<Rect>,
     /// Whether it is stroked.
     pub stroke: bool,
     /// The fill rule, if filled.
@@ -200,6 +241,11 @@ pub enum ColorSpaceFamily {
 pub struct Image {
     /// XObject resource name; `None` for inline images.
     pub name: Option<String>,
+    /// Axis-aligned bound of the clipping region in effect, in default user space; `None`
+    /// when nothing clips. A zero-area rectangle means fully clipped. Content outside it is
+    /// certainly clipped; content inside may still be. Under a text clip (§9.3.6) the bound
+    /// uses glyph boxes, which real outlines can exceed, so it is approximate.
+    pub clip: Option<Rect>,
     /// Whether this is an inline image (`BI ID EI`).
     pub inline: bool,
     /// Maps the unit square to user space.

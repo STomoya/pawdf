@@ -9,6 +9,7 @@ use super::{Font, GLYPH_SCALE, Glyphs, Shared, embedded_cmap, metrics};
 use crate::cmap::{CMap, Code};
 use crate::data::{predefined_cmap, ucs2};
 use crate::model::{FontInfo, FontKind, WritingMode};
+use crate::ranges::last_wins;
 
 /// Vertical metrics at size 1, in text space (§9.7.4.3).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -38,8 +39,7 @@ pub(crate) struct Cid {
     truetype: Option<(Arc<TrueType>, Option<Vec<u8>>)>,
 }
 
-/// The entry covering `cid` in ranges sorted by start.
-// ponytail: overlapping ranges resolve to the nearest start; pdfium takes the first listed.
+/// The entry covering `cid` in disjoint ranges sorted by start.
 fn find<T: Copy>(ranges: &[(u32, u32, T)], cid: u32) -> Option<T> {
     let i = ranges.partition_point(|r| r.0 <= cid);
     let r = ranges.get(i.checked_sub(1)?)?;
@@ -282,8 +282,9 @@ fn cid_ranges<const N: usize>(
     if bad {
         diags.push(DiagnosticKind::BadFont, at);
     }
-    out.sort_by_key(|r| r.0);
-    out
+    // pdfium's CPDF_CIDFont::GetCharWidthF scans the entries in order, so the first listed
+    // wins.
+    last_wins(out.into_iter().rev(), |v, _| v)
 }
 
 #[cfg(test)]
@@ -314,6 +315,26 @@ mod tests {
                 (10, 12, [-1., 0.5, 0.88])
             ]
         );
+    }
+
+    fn cid_width(src: &[u8], cid: u32) -> Option<[f64; 1]> {
+        find(&ranges::<1>(src).0, cid)
+    }
+
+    #[test]
+    fn overlapping_w_first_listed_wins() {
+        assert_eq!(cid_width(b"[1 3 500 2 [700]]", 2), Some([0.5]));
+        let src = b"[2 [700] 1 3 500]";
+        assert_eq!(
+            [1, 2, 3].map(|c| cid_width(src, c)),
+            [Some([0.5]), Some([0.7]), Some([0.5])]
+        );
+    }
+
+    #[test]
+    fn overlapping_w2_first_listed_wins() {
+        let (r, _) = ranges::<3>(b"[1 3 -1000 500 880 2 [-500 250 400]]");
+        assert_eq!(find(&r, 2), Some([-1., 0.5, 0.88]));
     }
 
     #[test]

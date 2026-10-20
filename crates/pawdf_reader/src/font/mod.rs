@@ -15,7 +15,7 @@ use crate::document::numbers;
 use crate::geom::Matrix;
 use crate::model::{FontInfo, FontKind, WritingMode};
 use cid::{Cid, Vertical, load_type0};
-use encoding::{glyph_unicode, type1_builtin};
+use encoding::{cff_builtin, glyph_unicode, type1_builtin};
 
 pub(crate) const GLYPH_SCALE: Matrix = Matrix {
     a: 0.001,
@@ -202,6 +202,21 @@ pub(crate) fn load_font(
             let program = s.decode(Location::Stream { obj: *r, offset: 0 }, diags);
             if let Some(t) = type1_builtin(&program.data) {
                 return t;
+            }
+        }
+        if matches!(kind, FontKind::Type1 | FontKind::MmType1)
+            && let Some(Object::Ref(r)) = desc.and_then(|d| d.get(b"FontFile3"))
+            && let Object::Stream(s) = file.resolve(*r)
+            && let Some(sub @ (b"Type1C" | b"OpenType")) = s
+                .dict
+                .get(b"Subtype")
+                .map(|o| file.deref(o))
+                .and_then(Object::as_name)
+        {
+            let program = s.decode(Location::Stream { obj: *r, offset: 0 }, diags);
+            match cff_builtin(&program.data, sub == b"OpenType") {
+                Some(t) => return t,
+                None => diags.push(DiagnosticKind::BadFont, at),
             }
         }
         names_of(encoding_names(BaseEncoding::Standard))
@@ -669,6 +684,71 @@ mod tests {
         assert_eq!(text(&f, 65).as_deref(), Some("\u{391}"));
         assert!(f.info.embedded);
         assert_eq!(f.info.base_font, "ABCDEF+Foo");
+    }
+
+    fn cff_font(
+        subtype: &str,
+        flags: u32,
+        encoding: &str,
+        program: &[u8],
+    ) -> (Font, Vec<pawdf_core::DiagnosticKind>) {
+        let font = format!(
+            "<< /Type /Font /Subtype /Type1 /BaseFont /ABCDEF+Foo {encoding} /FontDescriptor 6 0 R >>"
+        );
+        let desc = format!("<< /Type /FontDescriptor /Flags {flags} /FontFile3 7 0 R >>");
+        let ff = stream(&format!("/Subtype /{subtype}"), program);
+        load(&[(5, font.as_bytes()), (6, desc.as_bytes()), (7, &ff)])
+    }
+
+    fn alpha_snowman() -> Vec<u8> {
+        crate::testutil::cff(&[(65, "Alpha"), (66, "uni2603")])
+    }
+
+    #[test]
+    fn cff_builtin_encoding() {
+        let (f, d) = cff_font("Type1C", 4, "", &alpha_snowman());
+        assert_eq!(text(&f, 65).as_deref(), Some("\u{391}"));
+        assert_eq!(text(&f, 66).as_deref(), Some("\u{2603}"));
+        assert_eq!(text(&f, 67), None);
+        assert!(d.is_empty());
+    }
+
+    #[test]
+    fn cff_symbolic_differences_win() {
+        let (f, _) = cff_font(
+            "Type1C",
+            4,
+            "/Encoding << /Differences [66 /beta] >>",
+            &alpha_snowman(),
+        );
+        assert_eq!(text(&f, 65).as_deref(), Some("\u{391}"));
+        assert_eq!(text(&f, 66).as_deref(), Some("\u{3B2}"));
+    }
+
+    #[test]
+    fn cff_nonsymbolic_dictionary_uses_standard() {
+        let (f, _) = cff_font(
+            "Type1C",
+            32,
+            "/Encoding << /Differences [1 /g1] >>",
+            &alpha_snowman(),
+        );
+        assert_eq!(text(&f, 65).as_deref(), Some("A"));
+    }
+
+    #[test]
+    fn corrupt_cff_is_bad_font() {
+        let (f, d) = cff_font("Type1C", 4, "", b"garbage");
+        assert!(d.contains(&pawdf_core::DiagnosticKind::BadFont));
+        assert_eq!(text(&f, 65).as_deref(), Some("A"));
+    }
+
+    #[test]
+    fn opentype_cff() {
+        let program = crate::testutil::sfnt_tables(&[(*b"CFF ", &alpha_snowman())]);
+        let (f, d) = cff_font("OpenType", 4, "", &program);
+        assert_eq!(text(&f, 65).as_deref(), Some("\u{391}"));
+        assert!(d.is_empty());
     }
 
     #[test]

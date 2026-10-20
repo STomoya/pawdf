@@ -1,7 +1,7 @@
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyIndexError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyList, PyTuple};
+use pyo3::types::{PyBytes, PyList, PyRange, PyTuple};
 
 use pawdf_reader as r;
 use r::{Diagnostic as CoreDiagnostic, Location};
@@ -296,6 +296,11 @@ impl Glyph {
         self.0.stroke_alpha
     }
 
+    #[getter]
+    fn clip(&self) -> Option<Rect4> {
+        self.0.clip.map(rect)
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "Glyph(text={:?}, origin={:?}, font={})",
@@ -372,6 +377,11 @@ impl Path {
     #[getter]
     fn stroke_alpha(&self) -> f64 {
         self.0.stroke_alpha
+    }
+
+    #[getter]
+    fn clip(&self) -> Option<Rect4> {
+        self.0.clip.map(rect)
     }
 
     fn __repr__(&self) -> String {
@@ -548,6 +558,11 @@ impl Image {
         self.0.smask.clone().map(SoftMask)
     }
 
+    #[getter]
+    fn clip(&self) -> Option<Rect4> {
+        self.0.clip.map(rect)
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "Image(name={:?}, width={}, height={}, kind={:?})",
@@ -571,7 +586,68 @@ struct PageContent {
     #[pyo3(get)]
     fonts: Py<PyList>,
     #[pyo3(get)]
+    marked_contents: Py<PyList>,
+    #[pyo3(get)]
     diagnostics: Py<PyList>,
+}
+
+/// One marked-content sequence and the content it covers.
+#[pyclass(frozen, module = "pawdf._core")]
+struct MarkedContent(r::MarkedContent);
+
+fn range<'py>(py: Python<'py>, r: &std::ops::Range<usize>) -> PyResult<Bound<'py, PyRange>> {
+    let n = |v: usize| isize::try_from(v).unwrap_or(isize::MAX);
+    PyRange::new(py, n(r.start), n(r.end))
+}
+
+#[pymethods]
+impl MarkedContent {
+    #[getter]
+    fn tag(&self) -> &str {
+        &self.0.tag
+    }
+
+    #[getter]
+    fn mcid(&self) -> Option<u32> {
+        self.0.mcid
+    }
+
+    #[getter]
+    fn actual_text(&self) -> Option<&str> {
+        self.0.actual_text.as_deref()
+    }
+
+    #[getter]
+    fn artifact_type(&self) -> Option<&str> {
+        self.0.artifact_type.as_deref()
+    }
+
+    #[getter]
+    fn artifact_subtype(&self) -> Option<&str> {
+        self.0.artifact_subtype.as_deref()
+    }
+
+    #[getter]
+    fn glyphs<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyRange>> {
+        range(py, &self.0.glyphs)
+    }
+
+    #[getter]
+    fn paths<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyRange>> {
+        range(py, &self.0.paths)
+    }
+
+    #[getter]
+    fn images<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyRange>> {
+        range(py, &self.0.images)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "MarkedContent(tag={:?}, mcid={:?}, glyphs=range({}, {}))",
+            self.0.tag, self.0.mcid, self.0.glyphs.start, self.0.glyphs.end
+        )
+    }
 }
 
 fn list<T, W: pyo3::PyClass + Into<pyo3::PyClassInitializer<W>>>(
@@ -590,11 +666,12 @@ fn list<T, W: pyo3::PyClass + Into<pyo3::PyClassInitializer<W>>>(
 impl PageContent {
     fn __repr__(&self, py: Python<'_>) -> String {
         format!(
-            "PageContent(glyphs={}, paths={}, images={}, fonts={}, diagnostics={})",
+            "PageContent(glyphs={}, paths={}, images={}, fonts={}, marked_contents={}, diagnostics={})",
             self.glyphs.bind(py).len(),
             self.paths.bind(py).len(),
             self.images.bind(py).len(),
             self.fonts.bind(py).len(),
+            self.marked_contents.bind(py).len(),
             self.diagnostics.bind(py).len()
         )
     }
@@ -639,6 +716,7 @@ impl Page {
             paths: list(py, c.paths, Path)?,
             images: list(py, c.images, Image)?,
             fonts: list(py, c.fonts, FontInfo)?,
+            marked_contents: list(py, c.marked_contents, MarkedContent)?,
             diagnostics: diagnostics(py, c.diagnostics)?,
         })
     }
@@ -704,8 +782,8 @@ mod _core {
 
     #[pymodule_export]
     use super::{
-        Color, Diagnostic, Document, EncryptedError, FontInfo, Glyph, Image, Page, PageContent,
-        Path, PdfError, SoftMask,
+        Color, Diagnostic, Document, EncryptedError, FontInfo, Glyph, Image, MarkedContent, Page,
+        PageContent, Path, PdfError, SoftMask,
     };
 
     #[pyfunction]

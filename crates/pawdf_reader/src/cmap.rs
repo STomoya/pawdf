@@ -7,6 +7,7 @@ use std::sync::Arc;
 use pawdf_core::{DiagnosticKind, Diagnostics, Location, Object, Origin, Ref, parse_content};
 
 use crate::model::WritingMode;
+use crate::ranges::last_wins;
 
 /// Larger `bfrange`s are rejected; real ToUnicode ranges stay within one byte (§9.10.3).
 const MAX_RANGE: u64 = 1 << 16;
@@ -230,8 +231,10 @@ impl CMap {
                 _ => {}
             }
         }
-        t.cids.sort_by_key(|r| (r.len, r.lo));
-        t.notdef.sort_by_key(|r| (r.len, r.lo));
+        // pdfium's CPDF_CMapParser::HandleCid lets later entries overwrite earlier ones.
+        // pdfium ignores notdef ranges; they follow the same rule here.
+        t.cids = disjoint(&t.cids, |cid, d| cid.saturating_add(d));
+        t.notdef = disjoint(&t.notdef, |cid, _| cid);
         if let Some(p) = t.parent.clone() {
             let room = MAX_CODESPACE.saturating_sub(t.codespace.len());
             if p.codespace.len() > room && !codespace_full {
@@ -428,8 +431,6 @@ impl CMap {
 
     fn mapped(&self, code: Code, notdef: bool) -> Option<u32> {
         let ranges = if notdef { &self.notdef } else { &self.cids };
-        // ponytail: overlapping ranges resolve to the nearest start; pdfium takes the first
-        // defined. Add an interval index if a real file needs it.
         let i = ranges.partition_point(|r| (r.len, r.lo) <= (code.len, code.value));
         let own = i
             .checked_sub(1)
@@ -444,6 +445,23 @@ impl CMap {
             });
         own.or_else(|| self.parent.as_ref()?.mapped(code, notdef))
     }
+}
+
+/// Disjoint ranges sorted by `(len, lo)`, where later entries win.
+fn disjoint(ranges: &[CidRange], shift: impl Fn(u32, u32) -> u32) -> Vec<CidRange> {
+    (1..=4)
+        .flat_map(|len| {
+            last_wins(
+                ranges
+                    .iter()
+                    .filter(|r| r.len == len)
+                    .map(|r| (r.lo, r.hi, r.cid)),
+                &shift,
+            )
+            .into_iter()
+            .map(move |(lo, hi, cid)| CidRange { len, lo, hi, cid })
+        })
+        .collect()
 }
 
 /// A big-endian code of at most 4 bytes as an integer.
@@ -533,6 +551,35 @@ mod tests {
         assert_eq!(cids, [843, 633, 1, 0]);
         // A code of another length never matches a 2-byte range.
         assert_eq!(m.cid(code(0x30, 1)), 0);
+    }
+
+    const CS2: &str = "1 begincodespacerange <0000> <FFFF> endcodespacerange ";
+
+    #[test]
+    fn overlapping_cid_mappings_last_defined_wins() {
+        let m = cmap(&format!(
+            "{CS2}1 begincidrange <0000> <00ff> 100 endcidrange 1 begincidchar <0010> 5 endcidchar"
+        ));
+        assert_eq!((m.cid(code(0x10, 2)), m.cid(code(0x11, 2))), (5, 117));
+        let m = cmap(&format!(
+            "{CS2}1 begincidchar <0010> 5 endcidchar 1 begincidrange <0000> <00ff> 100 endcidrange"
+        ));
+        assert_eq!(m.cid(code(0x10, 2)), 116);
+        let m = cmap(&format!(
+            "{CS2}2 begincidrange <0000> <0020> 0 <0010> <0030> 1000 endcidrange"
+        ));
+        assert_eq!(
+            [0x05, 0x15, 0x25].map(|v| m.cid(code(v, 2))),
+            [5, 1005, 1021]
+        );
+    }
+
+    #[test]
+    fn overlapping_notdef_last_defined_wins() {
+        let m = cmap(&format!(
+            "{CS2}2 beginnotdefrange <0000> <001f> 1 <0010> <001f> 2 endnotdefrange"
+        ));
+        assert_eq!((m.cid(code(0x05, 2)), m.cid(code(0x15, 2))), (1, 2));
     }
 
     #[test]

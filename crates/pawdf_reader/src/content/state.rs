@@ -4,7 +4,7 @@ use pawdf_core::{Object, Ref};
 
 use crate::content::color::Space;
 use crate::font::Font;
-use crate::geom::Matrix;
+use crate::geom::{Matrix, Rect};
 use crate::model::{Color, RenderMode};
 
 /// The parts of the graphics state (§8.4.1) that extraction reports.
@@ -19,6 +19,8 @@ pub(crate) struct GraphicsState {
     pub fill_alpha: f64,
     pub stroke_alpha: f64,
     pub text: TextState,
+    /// Bound of the clipping path (§8.5.4), in default user space.
+    pub clip: Option<Rect>,
 }
 
 /// Identifies a font for page-local indexing and flood control.
@@ -71,6 +73,7 @@ impl Default for GraphicsState {
             fill_alpha: 1.,
             stroke_alpha: 1.,
             text: TextState::default(),
+            clip: None,
         }
     }
 }

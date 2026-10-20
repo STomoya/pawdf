@@ -31,13 +31,18 @@ pub enum DiagnosticKind {
     /// The page tree was malformed (cycle, bad node, bad box, or bad `/Rotate`).
     BadPageTree,
     /// An operator had the wrong operand count or type, or a non-finite number; it was skipped.
+    /// Also a clip whose bounds became non-finite or inverted through the CTM; it was ignored.
     BadOperands,
     /// An unknown operator appeared outside `BX`/`EX`.
     UnknownOperator,
-    /// A text operator appeared outside `BT`/`ET`, or `BT` was nested.
+    /// A text operator appeared outside `BT`/`ET`, `BT` was nested, or `W`/`W*` was not
+    /// followed by path construction or painting.
     MisplacedOperator,
     /// `Q` with an empty state stack, or `ET` without `BT`.
     UnbalancedRestore,
+    /// `EMC` without an open marked-content sequence, or a sequence still open at the end of
+    /// the page's content (all of `/Contents`, read as one stream) or of a form XObject.
+    UnbalancedMarkedContent,
     /// A named font, XObject, color space, or ExtGState was not in the resources.
     MissingResource,
     /// A font dictionary was unusable; fallback metrics were used.
@@ -71,6 +76,7 @@ impl DiagnosticKind {
             DiagnosticKind::UnknownOperator => "unknown_operator",
             DiagnosticKind::MisplacedOperator => "misplaced_operator",
             DiagnosticKind::UnbalancedRestore => "unbalanced_restore",
+            DiagnosticKind::UnbalancedMarkedContent => "unbalanced_marked_content",
             DiagnosticKind::MissingResource => "missing_resource",
             DiagnosticKind::BadFont => "bad_font",
             DiagnosticKind::UnmappedGlyph => "unmapped_glyph",

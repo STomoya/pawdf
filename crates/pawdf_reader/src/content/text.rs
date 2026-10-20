@@ -8,7 +8,7 @@ use crate::content::Interp;
 use crate::content::state::{FontKey, matrix, nums};
 use crate::font::{Font, load_font};
 use crate::geom::{Matrix, Point, Rect};
-use crate::model::{Glyph, RenderMode, WritingMode};
+use crate::model::{FontKind, Glyph, RenderMode, WritingMode};
 
 fn translate(tx: f64, ty: f64) -> Matrix {
     Matrix {
@@ -25,9 +25,14 @@ impl<'a> Interp<'a> {
         let args = op.operands.as_slice();
         let ok = match op.operator.as_slice() {
             b"BT" => {
+                let open_clip = self.text_clip.take();
                 if self.in_text {
                     self.diags
                         .push(DiagnosticKind::MisplacedOperator, op.location);
+                    // Recover as if `ET` had ended the open text object, so its clip is kept.
+                    if let Some(r) = open_clip {
+                        self.clip_to(r, op.location);
+                    }
                 }
                 self.in_text = true;
                 self.tm = Matrix::IDENTITY;
@@ -40,6 +45,10 @@ impl<'a> Interp<'a> {
                         .push(DiagnosticKind::UnbalancedRestore, op.location);
                 }
                 self.in_text = false;
+                // §9.3.6: the accumulated glyphs become the clip at the end of the text object.
+                if let Some(r) = self.text_clip.take() {
+                    self.clip_to(r, op.location);
+                }
                 true
             }
             b"Tc" => nums::<1>(args)
@@ -251,6 +260,11 @@ impl<'a> Interp<'a> {
                     self.glyph_budget_reported = true;
                     self.diags.push(DiagnosticKind::RecursionLimit, at);
                 }
+                // Glyphs past the budget are never measured, so a partial text clip would be
+                // too small; no clip keeps "content outside the clip is certainly clipped".
+                if is_clip(ts.render_mode) {
+                    self.text_clip = None;
+                }
                 return;
             }
             self.glyphs_left -= 1;
@@ -317,6 +331,19 @@ impl<'a> Interp<'a> {
                     char::REPLACEMENT_CHARACTER.to_string()
                 }
             };
+            let bbox = matrix.transform_rect(bbox);
+            // §9.3.6: glyphs without outlines, such as spaces, and Type 3 glyphs add nothing
+            // to a text clip.
+            // ponytail: glyph boxes stand in for outlines; carry /FontBBox to bound overhangs.
+            if is_clip(ts.render_mode)
+                && font.info.kind != FontKind::Type3
+                && !text.chars().all(char::is_whitespace)
+            {
+                self.text_clip = Some(match self.text_clip {
+                    Some(u) => u.union(&bbox),
+                    None => bbox,
+                });
+            }
             self.out.glyphs.push(Glyph {
                 text,
                 code: code.value,
@@ -325,17 +352,28 @@ impl<'a> Interp<'a> {
                 matrix,
                 origin: matrix.apply(Point { x: 0., y: 0. }),
                 advance,
-                bbox: matrix.transform_rect(bbox),
+                bbox,
                 wmode: font.info.wmode,
                 render_mode: ts.render_mode,
                 fill: self.gs.fill.clone(),
                 stroke: self.gs.stroke.clone(),
                 fill_alpha: self.gs.fill_alpha,
                 stroke_alpha: self.gs.stroke_alpha,
+                clip: self.gs.clip,
             });
             self.tm = shift.concat(&self.tm);
         }
     }
+}
+
+fn is_clip(mode: RenderMode) -> bool {
+    matches!(
+        mode,
+        RenderMode::FillClip
+            | RenderMode::StrokeClip
+            | RenderMode::FillStrokeClip
+            | RenderMode::Clip
+    )
 }
 
 fn render_mode(n: i64) -> Option<RenderMode> {

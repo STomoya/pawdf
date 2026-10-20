@@ -105,6 +105,13 @@ class Glyph:
     @property
     def stroke_alpha(self) -> float:
         """Stroke alpha."""
+    @property
+    def clip(self) -> Rect | None:
+        """Bound of the clipping region in effect, or None when nothing clips.
+
+        A zero-area rect means fully clipped. Content outside it is certainly clipped; content
+        inside may still be. Under a text clip the bound uses glyph boxes and is approximate.
+        """
 
 @final
 class Path:
@@ -137,6 +144,13 @@ class Path:
     @property
     def stroke_alpha(self) -> float:
         """Stroke alpha."""
+    @property
+    def clip(self) -> Rect | None:
+        """Bound of the clipping region in effect, or None when nothing clips.
+
+        A zero-area rect means fully clipped. Content outside it is certainly clipped; content
+        inside may still be. Under a text clip the bound uses glyph boxes and is approximate.
+        """
 
 @final
 class SoftMask:
@@ -213,6 +227,45 @@ class Image:
     @property
     def smask(self) -> SoftMask | None:
         """``/SMask``, if present."""
+    @property
+    def clip(self) -> Rect | None:
+        """Bound of the clipping region in effect, or None when nothing clips.
+
+        A zero-area rect means fully clipped. Content outside it is certainly clipped; content
+        inside may still be. Under a text clip the bound uses glyph boxes and is approximate.
+        """
+
+@final
+class MarkedContent:
+    """One marked-content sequence and the content it covers."""
+
+    @property
+    def tag(self) -> str:
+        """The tag of ``BMC``/``BDC``, for example ``'Span'``, ``'P'``, ``'Artifact'``."""
+    @property
+    def mcid(self) -> int | None:
+        """``/MCID``, linking the content to the structure tree."""
+    @property
+    def actual_text(self) -> str | None:
+        """``/ActualText``; None on sequences nested in one that has it.
+
+        Also None once the page's marked-content text limit is spent.
+        """
+    @property
+    def artifact_type(self) -> str | None:
+        """``/Type`` of an ``Artifact`` sequence, for example ``'Pagination'``."""
+    @property
+    def artifact_subtype(self) -> str | None:
+        """``/Subtype`` of an ``Artifact`` sequence, for example ``'Footer'``."""
+    @property
+    def glyphs(self) -> range:
+        """Indices into ``PageContent.glyphs``."""
+    @property
+    def paths(self) -> range:
+        """Indices into ``PageContent.paths``."""
+    @property
+    def images(self) -> range:
+        """Indices into ``PageContent.images``."""
 
 @final
 class PageContent:
@@ -230,6 +283,13 @@ class PageContent:
     @property
     def fonts(self) -> list[FontInfo]:
         """Fonts referenced by ``Glyph.font``."""
+    @property
+    def marked_contents(self) -> list[MarkedContent]:
+        """Marked-content sequences, ordered by where they open; a parent precedes its children.
+
+        Sequences nested deeper than 256 or past 2**20 per page are omitted, their content
+        counted in the enclosing sequence, and reported as a ``recursion_limit`` diagnostic.
+        """
     @property
     def diagnostics(self) -> list[Diagnostic]:
         """Recoveries made during this extraction."""

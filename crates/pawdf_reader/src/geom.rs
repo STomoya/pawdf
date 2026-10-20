@@ -32,6 +32,27 @@ impl Rect {
             y1: y0.max(y1),
         }
     }
+
+    /// The overlap; a zero-area rectangle when they do not overlap.
+    pub fn intersect(&self, other: &Rect) -> Rect {
+        let x0 = self.x0.max(other.x0);
+        let y0 = self.y0.max(other.y0);
+        Rect {
+            x0,
+            y0,
+            x1: self.x1.min(other.x1).max(x0),
+            y1: self.y1.min(other.y1).max(y0),
+        }
+    }
+
+    pub(crate) fn union(&self, other: &Rect) -> Rect {
+        Rect {
+            x0: self.x0.min(other.x0),
+            y0: self.y0.min(other.y0),
+            x1: self.x1.max(other.x1),
+            y1: self.y1.max(other.y1),
+        }
+    }
 }
 
 /// An affine matrix `[a b c d e f]`, applied to row vectors: `(x, y) ↦ (a·x + c·y + e, b·x + d·y + f)`.
@@ -146,6 +167,19 @@ mod tests {
         assert_eq!(
             t.concat(&s).apply(Point { x: 1., y: 1. }),
             Point { x: 22., y: 2. }
+        );
+    }
+
+    #[test]
+    fn rect_intersect() {
+        let a = Rect::from_corners(0., 0., 10., 10.);
+        assert_eq!(
+            a.intersect(&Rect::from_corners(5., 5., 20., 20.)),
+            Rect::from_corners(5., 5., 10., 10.)
+        );
+        assert_eq!(
+            a.intersect(&Rect::from_corners(20., 20., 30., 30.)),
+            Rect::from_corners(20., 20., 20., 20.)
         );
     }
 
