@@ -611,3 +611,45 @@ fn indirect_values_in_encrypt_dict() {
     assert_plaintext(&file);
     assert_eq!(count(&file, DiagnosticKind::BadEncryption), 0);
 }
+
+/// The repair scan resolves an indirect `/DecodeParms` naming the object stream's crypt
+/// filter, instead of falling back to Identity.
+#[test]
+fn broken_xref_object_stream_with_indirect_crypt_filter() {
+    let enc = Enc::new(4, "u", "o");
+    let rc4 = Enc {
+        cfm: Cfm::Rc4,
+        ..Enc::new(4, "u", "o")
+    };
+    let dict = enc
+        .dict()
+        .replace("/Length 16 >> >>", "/Length 16 >> /Other << /CFM /V2 >> >>");
+    let cat = "<< /Type /Catalog /Pages 2 0 R >> ";
+    let header = format!("1 0 2 {} ", cat.len());
+    let members = format!("{header}{cat}<< /Type /Pages /Kids [] /Count 0 >>");
+    let packed = compress_to_vec_zlib(members.as_bytes(), 6);
+    let objstm = rc4.stream(
+        3,
+        &format!(
+            "/Type /ObjStm /N 2 /First {} /Filter [/Crypt /FlateDecode] /DecodeParms 7 0 R",
+            header.len()
+        ),
+        &packed,
+    );
+    let (pdf, _) = build_pdf(
+        &[
+            (3, &objstm),
+            (5, dict.as_bytes()),
+            (7, b"[<< /Name /Other >> null]"),
+        ],
+        &format!("/Root 1 0 R {}", enc.trailer(5)),
+    );
+    let xref = xref_offset(&pdf).to_string();
+    let at = pdf.len() - "\n%%EOF\n".len() - xref.len();
+    let mut pdf = pdf;
+    pdf.splice(at..at + xref.len(), "9".repeat(xref.len()).into_bytes());
+
+    let file = File::from_bytes_with_password(pdf, "u").unwrap();
+    let catalog = file.resolve(r(1)).as_dict().unwrap();
+    assert_eq!(catalog.get(b"Pages"), Some(&Object::Ref(r(2))));
+}

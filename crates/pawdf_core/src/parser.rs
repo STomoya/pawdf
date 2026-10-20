@@ -125,6 +125,14 @@ fn parse_dict(lex: &mut Lexer, origin: Origin, diags: &mut Diagnostics, depth: u
                     entries.push((Name(key), Object::Null));
                     continue;
                 }
+                // `/Key endobj`: the value and the closing `>>` are both missing.
+                if let Some((_, Token::Keyword(k))) = lex.peek_token()
+                    && (k == b"endobj" || k == b"stream")
+                {
+                    diags.push(DiagnosticKind::BadObject, origin.at(start));
+                    entries.push((Name(key), Object::Null));
+                    break;
+                }
                 let Some((vstart, vtok)) = lex.next_token() else {
                     diags.push(DiagnosticKind::BadObject, origin.at(lex.pos()));
                     break;

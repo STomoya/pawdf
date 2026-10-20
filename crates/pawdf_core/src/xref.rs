@@ -286,14 +286,16 @@ pub(crate) fn header_matches(data: &[u8], offset: usize, num: u32) -> bool {
 /// Rebuilds the cross-reference by scanning for `N G obj` and `trailer` (what mature readers
 /// do with broken files). Later definitions win. Objects inside object streams are added
 /// when no direct definition exists. If no trailer names a `/Root` the scan found, the
-/// first `/Type /Catalog` object is used.
+/// last `/Type /Catalog` object is used, since an incremental update may add a new one.
 ///
 /// The scan is a single forward pass: candidates inside an object or trailer already
 /// parsed are skipped, so crafted files cannot make it quadratic.
 ///
 /// In an encrypted file, object streams are decrypted with `crypt` before being decoded;
-/// without it their members are not found.
-pub(crate) fn repair(data: &[u8], crypt: Option<&Crypt>) -> (Entries, Dict) {
+/// without it their members are not found. Indirect `/Filter` and `/DecodeParms` values,
+/// which name the crypt filter, are read through `known`, a table from an earlier scan or
+/// the xref.
+pub(crate) fn repair(data: &[u8], crypt: Option<(&Crypt, &Entries)>) -> (Entries, Dict) {
     let mut hits: Vec<(usize, Option<u32>)> = memfind_all(data, b"obj")
         .filter_map(|pos| object_start(data, pos))
         .map(|(num, start)| (start, Some(num)))
@@ -329,7 +331,7 @@ pub(crate) fn repair(data: &[u8], crypt: Option<&Crypt>) -> (Entries, Dict) {
         }
         entries.insert(num, Entry::InFile { offset: pos });
         let Object::Stream(s) = &obj else {
-            if catalog.is_none() && is_catalog(&obj) {
+            if is_catalog(&obj) {
                 catalog = Some(r);
             }
             continue;
@@ -340,8 +342,13 @@ pub(crate) fn repair(data: &[u8], crypt: Option<&Crypt>) -> (Entries, Dict) {
                 let origin = Origin::Stream(r);
                 let decrypted;
                 let s = match crypt {
-                    Some(c) => {
+                    Some((c, known)) => {
                         let mut copy = s.clone();
+                        for key in [&b"Filter"[..], b"DecodeParms"] {
+                            if let Some(v) = copy.dict.get_mut(key) {
+                                in_file_values(data, known, v);
+                            }
+                        }
                         c.decrypt_stream(r, &mut copy, Location::File(pos as u64), &mut quiet);
                         decrypted = copy;
                         &decrypted
@@ -358,10 +365,8 @@ pub(crate) fn repair(data: &[u8], crypt: Option<&Crypt>) -> (Entries, Dict) {
                         continue;
                     }
                     let index = u32::try_from(index).unwrap_or(u32::MAX);
-                    entries
-                        .entry(member)
-                        .or_insert(Entry::InStream { stream: num, index });
-                    if catalog.is_none() {
+                    let entry = Entry::InStream { stream: num, index };
+                    if *entries.entry(member).or_insert(entry) == entry {
                         let mut lex = Lexer::at(&decoded, first.saturating_add(off));
                         if parse_object(&mut lex, origin, &mut quiet)
                             .is_some_and(|o| is_catalog(&o))
@@ -390,6 +395,25 @@ pub(crate) fn repair(data: &[u8], crypt: Option<&Crypt>) -> (Entries, Dict) {
         trailer.insert("Root".into(), Object::Ref(r));
     }
     (entries, trailer)
+}
+
+/// Replaces a reference in `value`, or in its top-level array items, with the in-file
+/// object `known` places there. Objects in object streams are left as references.
+fn in_file_values(data: &[u8], known: &Entries, value: &mut Object) {
+    let load = |o: &mut Object| {
+        if let Object::Ref(r) = o
+            && let Some(Entry::InFile { offset }) = known.get(&r.num)
+            && header_matches(data, *offset, r.num)
+            && let Some((_, obj, _)) =
+                parse_indirect_end(data, *offset, &|_| None, &mut Diagnostics::new())
+        {
+            *o = obj;
+        }
+    };
+    load(value);
+    if let Object::Array(items) = value {
+        items.iter_mut().for_each(load);
+    }
 }
 
 fn is_catalog(obj: &Object) -> bool {

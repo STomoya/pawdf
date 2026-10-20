@@ -89,7 +89,7 @@ fn file_key(h: &SecurityHandler, id: &[u8], pw: &[u8]) -> Option<Vec<u8>> {
         md5.update([0xFF; 4]);
     }
     let mut hash = md5.finalize();
-    let n = if h.r == 2 { 5 } else { h.key_len };
+    let n = h.key_len;
     if h.r >= 3 {
         for _ in 0..50 {
             hash = Md5::digest(&hash[..n]);
@@ -129,7 +129,7 @@ fn owner_key(h: &SecurityHandler, id: &[u8], pw: &[u8]) -> Option<Vec<u8>> {
             hash = Md5::digest(hash);
         }
     }
-    let n = if h.r == 2 { 5 } else { h.key_len };
+    let n = h.key_len;
     let key = &hash[..n];
     let o = h.o.get(..32)?;
     let user = if h.r == 2 {

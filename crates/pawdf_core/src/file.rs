@@ -124,12 +124,13 @@ impl File {
         // The first scan could not decode encrypted object streams, so their members are
         // indexed only now that the key is known.
         if let (Some(_), Some(c)) = (&repaired, &crypt) {
-            (entries, trailer) = xref::repair(&data, Some(c));
+            (entries, trailer) = xref::repair(&data, Some((c, &entries)));
         }
-        if !matches!(trailer.get(b"Root"), Some(Object::Ref(r)) if entries.contains_key(&r.num)) {
-            return Err(Error::new(ErrorKind::Unrecoverable, offset as u64));
-        }
-        let file = File {
+        let root = match trailer.get(b"Root") {
+            Some(Object::Ref(r)) if entries.contains_key(&r.num) => *r,
+            _ => return Err(Error::new(ErrorKind::Unrecoverable, offset as u64)),
+        };
+        let mut file = File {
             data,
             table: Table::new(entries),
             repaired: OnceLock::new(),
@@ -142,6 +143,31 @@ impl File {
         };
         if let Some(t) = repaired {
             let _ = file.repaired.set(t);
+            return Ok(file);
+        }
+        // Like pdfium (CPDF_Parser::StartParseInternal), rebuild when the xref's /Root does
+        // not load: `root_ok` could only check an in-file header, before decryption.
+        if file
+            .lookup(&file.table, root, 0)
+            .and_then(Object::as_dict)
+            .is_none()
+        {
+            if file.repaired.get().is_none() {
+                file.report(DiagnosticKind::XrefRepaired, Location::File(0));
+            }
+            let crypt = file.crypt.as_ref().map(|c| (c, &file.table.entries));
+            let (entries, trailer) = xref::repair(&file.data, crypt);
+            if !matches!(trailer.get(b"Root"), Some(Object::Ref(r)) if entries.contains_key(&r.num))
+            {
+                return Err(Error::new(ErrorKind::Unrecoverable, offset as u64));
+            }
+            file.table = Table::new(entries);
+            file.trailer = trailer;
+            // The failed check may have marked objects missing or failed against the old
+            // table, or built a fallback table from it.
+            file.repaired = OnceLock::from(Table::new(Entries::new()));
+            lock(&file.failed).clear();
+            lock(&file.missing).clear();
         }
         Ok(file)
     }
@@ -239,7 +265,8 @@ impl File {
     fn repaired_table(&self) -> &Table {
         self.repaired.get_or_init(|| {
             self.report(DiagnosticKind::XrefRepaired, Location::File(0));
-            Table::new(xref::repair(&self.data, self.crypt.as_ref()).0)
+            let crypt = self.crypt.as_ref().map(|c| (c, &self.table.entries));
+            Table::new(xref::repair(&self.data, crypt).0)
         })
     }
 

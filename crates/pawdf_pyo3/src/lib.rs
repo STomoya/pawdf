@@ -1,5 +1,5 @@
 use pyo3::create_exception;
-use pyo3::exceptions::{PyException, PyIndexError};
+use pyo3::exceptions::{PyException, PyIndexError, PyOverflowError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyList, PyRange, PyTuple};
 
@@ -878,17 +878,24 @@ impl Document {
         self.0.page_count()
     }
 
-    fn __getitem__(&self, index: isize) -> PyResult<Page> {
+    fn __getitem__(&self, index: &Bound<'_, PyAny>) -> PyResult<Page> {
         let count = self.0.page_count();
+        let out_of_range =
+            || PyIndexError::new_err(format!("page index {index} out of range ({count} pages)"));
+        let index: isize = match index.extract() {
+            Ok(i) => i,
+            Err(e) if e.is_instance_of::<PyOverflowError>(index.py()) => {
+                return Err(out_of_range());
+            }
+            Err(e) => return Err(e),
+        };
         let resolved = if index < 0 {
             count.checked_sub(index.unsigned_abs())
         } else {
             Some(index.unsigned_abs())
         };
         let Some(i) = resolved else {
-            return Err(PyIndexError::new_err(format!(
-                "page index {index} out of range ({count} pages)"
-            )));
+            return Err(out_of_range());
         };
         self.0.page(i).map(Page).map_err(to_py_err)
     }

@@ -172,10 +172,11 @@ impl CMap {
                         }
                     }
                 }
-                b"endcidchar" => {
+                b"endcidchar" | b"endnotdefchar" => {
+                    let notdef = op.operator.as_slice() == b"endnotdefchar";
                     for pair in args.chunks(2) {
                         match pair {
-                            [Object::String(c), cid] => t.cid_range(c, c, cid, false, diags, at),
+                            [Object::String(c), cid] => t.cid_range(c, c, cid, notdef, diags, at),
                             _ => diags.push(DiagnosticKind::BadCMap, at),
                         }
                     }
@@ -545,10 +546,11 @@ mod tests {
         let m = cmap(
             "1 begincodespacerange <0000> <FFFF> endcodespacerange \
              1 begincidrange <3041> <3093> 842 endcidrange 1 begincidchar <3000> 633 endcidchar \
-             1 beginnotdefrange <0000> <001f> 1 endnotdefrange",
+             1 beginnotdefrange <0000> <001f> 1 endnotdefrange \
+             1 beginnotdefchar <0020> 7 endnotdefchar",
         );
-        let cids = [0x3042, 0x3000, 0x0005, 0x4e00].map(|v| m.cid(code(v, 2)));
-        assert_eq!(cids, [843, 633, 1, 0]);
+        let cids = [0x3042, 0x3000, 0x0005, 0x0020, 0x4e00].map(|v| m.cid(code(v, 2)));
+        assert_eq!(cids, [843, 633, 1, 7, 0]);
         // A code of another length never matches a 2-byte range.
         assert_eq!(m.cid(code(0x30, 1)), 0);
     }
