@@ -477,6 +477,17 @@ fn repair_recovers_after_unterminated_array() {
     );
 }
 
+/// Same for an `endobj` where a dictionary value should be.
+#[test]
+fn repair_recovers_after_missing_dict_value() {
+    let pdf = b"%PDF-1.4\n3 0 obj\n<< /A 1 /B\nendobj\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n";
+    let file = File::from_bytes(pdf.to_vec()).unwrap();
+    assert_eq!(file.trailer().get(b"Root"), Some(&Object::Ref(r(1))));
+    let d = file.resolve(r(3)).as_dict().unwrap();
+    assert_eq!(d.get(b"A"), Some(&Object::Int(1)));
+    assert_eq!(d.get(b"B"), Some(&Object::Null));
+}
+
 fn many_keys(n: usize) -> String {
     (0..n).map(|i| format!("/k{i} 1 ")).collect()
 }
