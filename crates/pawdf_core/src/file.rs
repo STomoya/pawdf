@@ -126,10 +126,11 @@ impl File {
         if let (Some(_), Some(c)) = (&repaired, &crypt) {
             (entries, trailer) = xref::repair(&data, Some(c));
         }
-        if !matches!(trailer.get(b"Root"), Some(Object::Ref(r)) if entries.contains_key(&r.num)) {
-            return Err(Error::new(ErrorKind::Unrecoverable, offset as u64));
-        }
-        let file = File {
+        let root = match trailer.get(b"Root") {
+            Some(Object::Ref(r)) if entries.contains_key(&r.num) => *r,
+            _ => return Err(Error::new(ErrorKind::Unrecoverable, offset as u64)),
+        };
+        let mut file = File {
             data,
             table: Table::new(entries),
             repaired: OnceLock::new(),
@@ -142,6 +143,24 @@ impl File {
         };
         if let Some(t) = repaired {
             let _ = file.repaired.set(t);
+            return Ok(file);
+        }
+        // Like pdfium (CPDF_Parser::StartParseInternal), rebuild when the xref's /Root does
+        // not load: `root_ok` could only check an in-file header, before decryption.
+        if file
+            .lookup(&file.table, root, 0)
+            .and_then(Object::as_dict)
+            .is_none()
+        {
+            file.report(DiagnosticKind::XrefRepaired, Location::File(0));
+            let (entries, trailer) = xref::repair(&file.data, file.crypt.as_ref());
+            if !matches!(trailer.get(b"Root"), Some(Object::Ref(r)) if entries.contains_key(&r.num))
+            {
+                return Err(Error::new(ErrorKind::Unrecoverable, offset as u64));
+            }
+            file.table = Table::new(entries);
+            file.trailer = trailer;
+            let _ = file.repaired.set(Table::new(Entries::new()));
         }
         Ok(file)
     }
