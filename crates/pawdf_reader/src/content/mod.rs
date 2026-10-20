@@ -328,10 +328,10 @@ impl<'a> Interp<'a> {
                 None => false,
             },
             b"BI" => match args {
-                [Object::Stream(s)] => {
+                [stray @ .., Object::Stream(s)] => {
                     let s = Stream::new(expand_inline(&s.dict), s.raw().to_vec());
                     self.place_image(&s, None, op.location, None);
-                    true
+                    stray.is_empty()
                 }
                 _ => false,
             },

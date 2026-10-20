@@ -211,6 +211,15 @@ fn inline_abbreviations() {
     );
 }
 
+/// Stray operands before `BI` are reported, but the image is still drawn, as in pdfium.
+#[test]
+fn inline_image_after_stray_operands() {
+    let c = run(b"1 2 BI /W 1 /H 1 /CS /G /BPC 8 ID \x00 EI", "<< >>", &[]);
+    assert_eq!(c.images.len(), 1);
+    let kinds: Vec<_> = c.diagnostics.iter().map(|d| d.kind).collect();
+    assert_eq!(kinds, [DiagnosticKind::BadOperands]);
+}
+
 #[test]
 fn short_samples_are_diagnosed() {
     let c = with_image(
