@@ -185,6 +185,11 @@ impl Dict {
         }
     }
 
+    pub(crate) fn remove(&mut self, key: &[u8]) -> Option<Object> {
+        let i = self.0.iter().position(|(k, _)| k.as_bytes() == key)?;
+        Some(self.0.remove(i).1)
+    }
+
     pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = (&Name, &mut Object)> {
         self.0.iter_mut().map(|(k, v)| (&*k, v))
     }

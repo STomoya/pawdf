@@ -190,12 +190,22 @@ impl Crypt {
     }
 
     fn decrypt_dict_strings(&self, r: Ref, d: &mut Dict, at: Location, diags: &mut Diagnostics) {
-        for (_, v) in d.iter_mut() {
-            self.decrypt_strings(r, v, at, diags);
+        // §7.6.2: a signature's /Contents is not encrypted. Some writers omit /Type, so
+        // /ByteRange marks one too (as in qpdf).
+        let sig = matches!(
+            d.get(b"Type").and_then(Object::as_name),
+            Some(b"Sig" | b"DocTimeStamp")
+        ) || d.contains_key(b"ByteRange");
+        for (k, v) in d.iter_mut() {
+            if !(sig && k.as_bytes() == b"Contents") {
+                self.decrypt_strings(r, v, at, diags);
+            }
         }
     }
 
-    /// Decrypts a stream's raw bytes with `/StmF`.
+    /// Decrypts a stream's raw bytes with its own `/Crypt` filter (then removed from the
+    /// filter chain), `/EFF` for embedded files, or `/StmF`. Cross-reference streams, and
+    /// metadata when `/EncryptMetadata` is false, are left alone (§7.6.2, §7.5.8.2).
     pub(crate) fn decrypt_stream(
         &self,
         r: Ref,
@@ -203,7 +213,23 @@ impl Crypt {
         at: Location,
         diags: &mut Diagnostics,
     ) {
-        let method = self.handler.stm_f;
+        let h = &self.handler;
+        let method = match s.dict.get(b"Type").and_then(Object::as_name) {
+            Some(b"XRef") => return,
+            Some(b"Metadata") if !h.encrypt_metadata => return,
+            ty => {
+                let embedded = ty == Some(b"EmbeddedFile");
+                match take_crypt_filter(&mut s.dict) {
+                    Some(name) => h.filter(&name),
+                    None if embedded => h.eff,
+                    None => h.stm_f,
+                }
+            }
+        };
+        if method == CryptFilter::Unknown {
+            diags.push(DiagnosticKind::BadEncryption, at);
+            return;
+        }
         s.raw = match cipher::decrypt(&self.key, method, r, &s.raw) {
             Ok(plain) => plain,
             Err(partial) => {
@@ -212,6 +238,42 @@ impl Crypt {
             }
         };
     }
+}
+
+/// If the first `/Filter` is `/Crypt` (§7.4.10), removes it and its `/DecodeParms` slot and
+/// returns the crypt filter's `/Name` (default `Identity`).
+fn take_crypt_filter(dict: &mut Dict) -> Option<Vec<u8>> {
+    let first = |o: &Object| match o {
+        Object::Array(a) => a.first().cloned(),
+        o => Some(o.clone()),
+    };
+    let filter = dict.get(b"Filter").and_then(first)?;
+    if filter.as_name() != Some(b"Crypt") {
+        return None;
+    }
+    let params = dict.get(b"DecodeParms").and_then(first);
+    let name = params
+        .as_ref()
+        .and_then(Object::as_dict)
+        .and_then(|p| p.get(b"Name"))
+        .and_then(Object::as_name)
+        .unwrap_or(b"Identity")
+        .to_vec();
+    for key in [&b"Filter"[..], b"DecodeParms"] {
+        let rest = match dict.remove(key) {
+            Some(Object::Array(mut a)) if !a.is_empty() => {
+                a.remove(0);
+                a
+            }
+            _ => continue,
+        };
+        match rest.len() {
+            0 => {}
+            1 => dict.insert(key.into(), rest.into_iter().next().unwrap_or(Object::Null)),
+            _ => dict.insert(key.into(), Object::Array(rest)),
+        }
+    }
+    Some(name)
 }
 
 /// `/StmF` or `/StrF` (default `Identity`). Nothing could be read with an unknown default

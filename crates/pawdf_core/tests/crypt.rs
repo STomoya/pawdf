@@ -1,9 +1,9 @@
 mod common;
 
-use common::crypt::{Enc, raw_stream};
+use common::crypt::{Cfm, Enc, raw_stream};
 use common::{CATALOG, PAGES, build_pdf};
 use miniz_oxide::deflate::compress_to_vec_zlib;
-use pawdf_core::{DiagnosticKind, ErrorKind, File, Location, Ref};
+use pawdf_core::{DiagnosticKind, Diagnostics, ErrorKind, File, Location, Object, Ref};
 
 fn r(num: u32) -> Ref {
     Ref { num, generation: 0 }
@@ -294,4 +294,148 @@ fn crypt_filter_length_bits_or_bytes() {
             "{len}"
         );
     }
+}
+
+/// Catalog, pages, the given objects, and `dict` as object 5.
+fn with_dict(enc: &Enc, dict: &str, objects: &[(u32, &[u8])]) -> File {
+    let mut all: Vec<(u32, &[u8])> = vec![(1, CATALOG), (2, PAGES), (5, dict.as_bytes())];
+    all.extend_from_slice(objects);
+    all.sort_by_key(|(n, _)| *n);
+    let (pdf, _) = build_pdf(&all, &format!("/Root 1 0 R {}", enc.trailer(5)));
+    File::from_bytes_with_password(pdf, "u").unwrap()
+}
+
+fn stream(file: &File, num: u32) -> &pawdf_core::Stream {
+    file.resolve(r(num)).as_stream().unwrap()
+}
+
+const PLAIN: &[u8] = b"BT (x) Tj ET";
+
+#[test]
+fn per_stream_crypt_identity() {
+    let enc = Enc::new(4, "u", "o");
+    let obj4 = raw_stream(
+        "/Filter [/Crypt] /DecodeParms [<< /Name /Identity >>]",
+        PLAIN,
+    );
+    let file = with_dict(&enc, &enc.dict(), &[(4, &obj4)]);
+    let s = stream(&file, 4);
+    assert_eq!(s.raw(), PLAIN);
+    assert_eq!(s.dict.get(b"Filter"), None);
+    assert_eq!(s.dict.get(b"DecodeParms"), None);
+    assert!(file.diagnostics().is_empty(), "{:?}", file.diagnostics());
+}
+
+#[test]
+fn per_stream_crypt_named_filter() {
+    let enc = Enc::new(4, "u", "o");
+    let rc4 = Enc {
+        cfm: Cfm::Rc4,
+        ..Enc::new(4, "u", "o")
+    };
+    let dict = enc
+        .dict()
+        .replace("/Length 16 >> >>", "/Length 16 >> /Other << /CFM /V2 >> >>");
+    let obj4 = rc4.stream(4, "/Filter /Crypt /DecodeParms << /Name /Other >>", PLAIN);
+    let file = with_dict(&enc, &dict, &[(4, &obj4)]);
+    assert_eq!(stream(&file, 4).raw(), PLAIN);
+    assert!(file.diagnostics().is_empty(), "{:?}", file.diagnostics());
+}
+
+#[test]
+fn crypt_filter_with_indirect_decodeparms() {
+    let enc = Enc::new(4, "u", "o");
+    let packed = compress_to_vec_zlib(PLAIN, 6);
+    let obj4 = raw_stream("/Filter [/Crypt /FlateDecode] /DecodeParms 7 0 R", &packed);
+    let file = with_dict(
+        &enc,
+        &enc.dict(),
+        &[(4, &obj4), (7, b"[<< /Name /Identity >> null]")],
+    );
+    let s = stream(&file, 4);
+    assert_eq!(
+        s.dict.get(b"Filter").unwrap().as_name(),
+        Some(&b"FlateDecode"[..])
+    );
+    let mut d = Diagnostics::new();
+    assert_eq!(s.decode(Location::File(0), &mut d).data, PLAIN);
+    assert!(d.is_empty());
+}
+
+#[test]
+fn unknown_crypt_filter_name_is_diagnostic() {
+    let enc = Enc::new(4, "u", "o");
+    let ct = enc.encrypt(4, PLAIN);
+    let obj4 = raw_stream("/Filter /Crypt /DecodeParms << /Name /Nope >>", &ct);
+    let file = with_dict(&enc, &enc.dict(), &[(4, &obj4)]);
+    assert_eq!(stream(&file, 4).raw(), &ct[..]);
+    assert_eq!(count(&file, DiagnosticKind::BadEncryption), 1);
+}
+
+#[test]
+fn encrypt_metadata_false() {
+    let mut enc = Enc::new(4, "u", "o");
+    enc.encrypt_metadata = false;
+    let meta = raw_stream("/Type /Metadata /Subtype /XML", b"<x:xmpmeta/>");
+    let obj4 = enc.stream(4, "", PLAIN);
+    let file = with_dict(&enc, &enc.dict(), &[(4, &obj4), (6, &meta)]);
+    assert_eq!(stream(&file, 6).raw(), b"<x:xmpmeta/>");
+    assert_eq!(stream(&file, 4).raw(), PLAIN);
+}
+
+#[test]
+fn xref_stream_left_alone() {
+    let enc = Enc::new(4, "u", "o");
+    let dict = enc.dict();
+    let pdf = xref_stream_pdf(
+        &[(1, CATALOG), (2, PAGES), (5, dict.as_bytes())],
+        &[],
+        &format!("/Root 1 0 R {}", enc.trailer(5)),
+    );
+    let file = File::from_bytes_with_password(pdf, "u").unwrap();
+    let raw = stream(&file, 6).raw();
+    assert_eq!(raw.len(), 7 * 7);
+    assert_eq!(&raw[..8], &[0, 0, 0, 0, 0, 0, 0, 1]);
+}
+
+#[test]
+fn signature_contents_left_alone() {
+    let enc = Enc::new(4, "u", "o");
+    let sig = format!(
+        "<< /Type /Sig /Contents <0011> /M {} >>",
+        enc.string(6, b"D:2026")
+    );
+    let by_range = "<< /ByteRange [0 1 2 3] /Contents <0011> >>";
+    let nested = "<< /V << /Type /DocTimeStamp /Contents <0011> >> >>";
+    let file = with_dict(
+        &enc,
+        &enc.dict(),
+        &[
+            (6, sig.as_bytes()),
+            (7, by_range.as_bytes()),
+            (8, nested.as_bytes()),
+        ],
+    );
+    let contents = |d: &pawdf_core::Dict| d.get(b"Contents").unwrap().as_string().unwrap().to_vec();
+    let six = file.resolve(r(6)).as_dict().unwrap();
+    assert_eq!(contents(six), [0, 0x11]);
+    assert_eq!(six.get(b"M").unwrap().as_string(), Some(&b"D:2026"[..]));
+    assert_eq!(contents(file.resolve(r(7)).as_dict().unwrap()), [0, 0x11]);
+    let v = file.resolve(r(8)).as_dict().unwrap().get(b"V").unwrap();
+    assert_eq!(contents(v.as_dict().unwrap()), [0, 0x11]);
+    assert!(matches!(six.get(b"Type"), Some(Object::Name(_))));
+}
+
+#[test]
+fn embedded_file_uses_eff() {
+    let enc = Enc::new(4, "u", "o");
+    let dict = enc.dict().replace(
+        "/StmF /StdCF /StrF /StdCF",
+        "/StmF /Identity /StrF /Identity /EFF /StdCF",
+    );
+    let ef = enc.stream(6, "/Type /EmbeddedFile", b"attachment");
+    let obj4 = raw_stream("", PLAIN);
+    let file = with_dict(&enc, &dict, &[(4, &obj4), (6, &ef)]);
+    assert_eq!(stream(&file, 6).raw(), b"attachment");
+    assert_eq!(stream(&file, 4).raw(), PLAIN);
 }
