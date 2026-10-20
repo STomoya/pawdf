@@ -41,11 +41,12 @@ impl Page {
         let file = &self.doc.file;
         let resources = self.info.resources.as_deref().and_then(Object::as_dict);
         let mut interp = Interp::new(&self.doc, resources);
-        let streams = content_streams(file, self.info.obj);
+        let streams = content_streams(file, self.info.obj, &mut interp.diags);
         let end = streams
             .last()
             .map(|&obj| Location::Stream { obj, offset: 0 });
         let mut carry: Vec<Object> = Vec::new();
+        let mut carry_at = None;
         for r in streams {
             let Some(parsed) = interp.parse_stream(r) else {
                 continue;
@@ -65,8 +66,12 @@ impl Page {
                 && let Some(last) = ops.pop()
             {
                 carry = last.operands;
+                carry_at = Some(last.location);
             }
             interp.run(&ops);
+        }
+        if let Some(at) = carry_at.filter(|_| !carry.is_empty()) {
+            interp.diags.push(DiagnosticKind::BadOperands, at);
         }
         if let Some(at) = end {
             interp.close_marked(at);
@@ -76,16 +81,23 @@ impl Page {
 }
 
 /// The page's `/Contents` stream references, in order.
-fn content_streams(file: &File, page: Ref) -> Vec<Ref> {
+fn content_streams(file: &File, page: Ref, diags: &mut Diagnostics) -> Vec<Ref> {
     let Some(dict) = file.resolve(page).as_dict() else {
         return Vec::new();
     };
+    let refs = |a: &[Object], diags: &mut Diagnostics| {
+        let refs: Vec<Ref> = a.iter().filter_map(Object::as_ref).collect();
+        if refs.len() < a.len() {
+            diags.push(DiagnosticKind::BadPageTree, Location::Object(page));
+        }
+        refs
+    };
     match dict.get(b"Contents") {
         Some(Object::Ref(r)) => match file.resolve(*r) {
-            Object::Array(a) => a.iter().filter_map(Object::as_ref).collect(),
+            Object::Array(a) => refs(a, diags),
             _ => vec![*r],
         },
-        Some(Object::Array(a)) => a.iter().filter_map(Object::as_ref).collect(),
+        Some(Object::Array(a)) => refs(a, diags),
         _ => Vec::new(),
     }
 }
@@ -434,6 +446,7 @@ impl<'a> Interp<'a> {
             b"sh" | b"MP" | b"DP" | b"d" | b"i" | b"j" | b"J" | b"M" | b"ri" | b"d0" | b"d1" => {
                 true
             }
+            b"" => false,
             _ => {
                 if self.compat == 0 {
                     self.bad(DiagnosticKind::UnknownOperator, op);
@@ -469,7 +482,10 @@ impl<'a> Interp<'a> {
                 );
             }
             Some(b"Form") => self.run_form(r, s, op),
-            _ => {}
+            _ => self.diags.push(
+                DiagnosticKind::BadObject,
+                Location::Stream { obj: r, offset: 0 },
+            ),
         }
     }
 
@@ -550,9 +566,16 @@ impl<'a> Interp<'a> {
         let m = s
             .dict
             .get(b"Matrix")
-            .and_then(|m| numbers::<6>(file, m))
-            .map(matrix)
-            .unwrap_or(Matrix::IDENTITY);
+            .map(|m| numbers::<6>(file, m).map(matrix));
+        let m = match m {
+            Some(Some(m)) => m,
+            Some(None) => {
+                let at = Location::Stream { obj: r, offset: 0 };
+                self.diags.push(DiagnosticKind::BadObject, at);
+                Matrix::IDENTITY
+            }
+            None => Matrix::IDENTITY,
+        };
         let res = match s
             .dict
             .get(b"Resources")

@@ -461,3 +461,38 @@ fn repeated_placements_are_bounded() {
     assert!(c.images.len() >= 200);
     assert_eq!(kinds(&c), [DiagnosticKind::BadImage]);
 }
+
+#[test]
+fn non_numeric_decode_is_diagnosed() {
+    let c = with_image(
+        "/Width 1 /Height 1 /BitsPerComponent 8 /ColorSpace /DeviceGray /Decode [1 /x]",
+        b"\x00",
+    );
+    assert_eq!(kinds(&c), [DiagnosticKind::BadImage]);
+}
+
+#[test]
+fn non_stream_smask_and_globals_are_diagnosed() {
+    let im = stream(
+        "/Type /XObject /Subtype /Image /Width 1 /Height 1 /BitsPerComponent 8 /ColorSpace /DeviceGray /SMask 6 0 R",
+        b"\x00",
+    );
+    let c = run(
+        b"/Im1 Do",
+        "<< /XObject << /Im1 5 0 R >> >>",
+        &[(5, &im), (6, b"42")],
+    );
+    assert_eq!(c.images[0].smask, None);
+    assert_eq!(kinds(&c), [DiagnosticKind::BadImage]);
+
+    let im = stream(
+        "/Type /XObject /Subtype /Image /Width 8 /Height 1 /ImageMask true /Filter /JBIG2Decode /DecodeParms << /JBIG2Globals 6 0 R >>",
+        b"PAGE",
+    );
+    let c = run(
+        b"/Im1 Do",
+        "<< /XObject << /Im1 5 0 R >> >>",
+        &[(5, &im), (6, b"42")],
+    );
+    assert_eq!(kinds(&c), [DiagnosticKind::BadImage]);
+}

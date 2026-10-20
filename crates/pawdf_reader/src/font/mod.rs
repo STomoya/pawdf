@@ -181,7 +181,10 @@ pub(crate) fn load_font(
         FontKind::Type3 => get(b"FontMatrix")
             .and_then(|m| numbers::<6>(file, m))
             .map(|[a, b, c, d, e, f]| Matrix { a, b, c, d, e, f })
-            .unwrap_or(GLYPH_SCALE),
+            .unwrap_or_else(|| {
+                diags.push(DiagnosticKind::BadFont, at);
+                GLYPH_SCALE
+            }),
         _ => GLYPH_SCALE,
     };
     let std14 = std14_name(&base_font);
@@ -270,6 +273,9 @@ pub(crate) fn load_font(
     let first = get(b"FirstChar").and_then(Object::as_int).unwrap_or(0);
     let widths_arr = get(b"Widths").and_then(Object::as_array);
     let missing = dget(b"MissingWidth").and_then(Object::as_number);
+    if widths_arr.is_some_and(|w| w.iter().any(|o| file.deref(o).as_number().is_none())) {
+        diags.push(DiagnosticKind::BadFont, at);
+    }
     let widths = (0..256i64)
         .map(|code| {
             let listed = widths_arr

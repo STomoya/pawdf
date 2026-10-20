@@ -81,10 +81,14 @@ class Diagnostic:
         """The kind of recovery, in snake_case (for example ``'xref_repaired'``)."""
     @property
     def offset(self) -> int:
-        """Byte offset in the file, or in the decoded stream when ``object`` is set."""
+        """Byte offset in the file, or in the decoded stream when ``object`` is a stream; 0
+        when the diagnostic is about ``object`` as a whole.
+        """
     @property
     def object(self) -> tuple[int, int] | None:
-        """``(number, generation)`` of the stream the offset points into."""
+        """``(number, generation)`` of the stream the offset points into, or of the object the
+        diagnostic is about.
+        """
 
 @final
 class Color:

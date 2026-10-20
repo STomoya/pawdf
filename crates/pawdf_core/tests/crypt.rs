@@ -91,8 +91,12 @@ fn every_revision_and_password() {
         );
 
         let pdf = encrypted(&Enc::new(rev, "", "o"));
-        assert_plaintext(&File::from_bytes(pdf.clone()).unwrap());
-        assert_plaintext(&File::from_bytes_with_password(pdf, "x").unwrap());
+        let file = File::from_bytes(pdf.clone()).unwrap();
+        assert_plaintext(&file);
+        assert!(file.diagnostics().is_empty(), "R{rev}");
+        let file = File::from_bytes_with_password(pdf, "x").unwrap();
+        assert_plaintext(&file);
+        assert_eq!(count(&file, DiagnosticKind::WrongPassword), 1, "R{rev}");
     }
 }
 

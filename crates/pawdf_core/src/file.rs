@@ -226,7 +226,7 @@ impl File {
 
     fn resolve_depth(&self, r: Ref, depth: usize) -> &Object {
         if depth > MAX_RESOLVE_DEPTH {
-            self.report(DiagnosticKind::RecursionLimit, Location::File(0));
+            self.report(DiagnosticKind::RecursionLimit, Location::Object(r));
             return &NULL;
         }
         let obj = self.find(r, depth).unwrap_or(&NULL);
@@ -257,7 +257,7 @@ impl File {
             return Some(o);
         }
         if lock(&self.missing).insert(r.num) {
-            self.report(DiagnosticKind::ObjectNotFound, Location::File(0));
+            self.report(DiagnosticKind::ObjectNotFound, Location::Object(r));
         }
         None
     }
@@ -369,7 +369,7 @@ impl File {
         };
         let Object::Stream(stream) = self.resolve_depth(stream_ref, depth + 1) else {
             if lock(&table.loaded_streams).insert(stream_num) {
-                self.report(DiagnosticKind::ObjectNotFound, Location::File(0));
+                self.report(DiagnosticKind::ObjectNotFound, Location::Object(stream_ref));
             }
             return;
         };
@@ -383,13 +383,16 @@ impl File {
                 &mut diags,
             )
             .data;
+        let origin = Origin::Stream(stream_ref);
         let first = stream
             .dict
             .get(b"First")
             .and_then(|o| o.as_int())
-            .unwrap_or(0);
-        let first = usize::try_from(first).unwrap_or(0);
-        let origin = Origin::Stream(stream_ref);
+            .and_then(|f| usize::try_from(f).ok());
+        let first = first.unwrap_or_else(|| {
+            diags.push(DiagnosticKind::BadObject, origin.at(0));
+            0
+        });
         for (num, off) in xref::objstm_header(&stream.dict, &decoded) {
             let belongs = matches!(table.entries.get(&num), Some(Entry::InStream { stream, .. }) if *stream == stream_num);
             let Some(slot) = table.cache.get(&num).filter(|_| belongs) else {

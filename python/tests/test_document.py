@@ -161,6 +161,7 @@ def test_diagnostics() -> None:
     c = pawdf.Document(_pdf(b'Q'))[0].content()
     d = c.diagnostics[0]
     assert (d.kind, d.offset, d.object) == ('unbalanced_restore', 0, (4, 0))
+    assert repr(d) == "Diagnostic(kind='unbalanced_restore', offset=0, object=(4, 0))"
 
 
 def test_reprs() -> None:
