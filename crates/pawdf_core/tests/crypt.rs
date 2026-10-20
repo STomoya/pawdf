@@ -439,3 +439,34 @@ fn embedded_file_uses_eff() {
     assert_eq!(stream(&file, 6).raw(), b"attachment");
     assert_eq!(stream(&file, 4).raw(), PLAIN);
 }
+
+#[test]
+fn broken_xref_with_encrypted_object_streams() {
+    let enc = Enc::new(4, "u", "o");
+    let cat = "<< /Type /Catalog /Pages 2 0 R >> ";
+    let header = format!("1 0 2 {} ", cat.len());
+    let members = format!("{header}{cat}<< /Type /Pages /Kids [] /Count 0 >>");
+    let packed = compress_to_vec_zlib(members.as_bytes(), 6);
+    let objstm = enc.stream(
+        3,
+        &format!(
+            "/Type /ObjStm /N 2 /First {} /Filter /FlateDecode",
+            header.len()
+        ),
+        &packed,
+    );
+    let dict = enc.dict();
+    let (pdf, _) = build_pdf(
+        &[(3, &objstm), (5, dict.as_bytes())],
+        &format!("/Root 1 0 R {}", enc.trailer(5)),
+    );
+    let xref = xref_offset(&pdf).to_string();
+    let at = pdf.len() - "\n%%EOF\n".len() - xref.len();
+    let mut pdf = pdf;
+    pdf.splice(at..at + xref.len(), "9".repeat(xref.len()).into_bytes());
+
+    let file = File::from_bytes_with_password(pdf, "u").unwrap();
+    let catalog = file.resolve(r(1)).as_dict().unwrap();
+    assert_eq!(catalog.get(b"Pages"), Some(&Object::Ref(r(2))));
+    assert!(count(&file, DiagnosticKind::XrefRepaired) > 0);
+}

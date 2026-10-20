@@ -92,11 +92,11 @@ impl File {
         let loaded = xref::load(&data, &mut diags)
             .filter(|(entries, trailer, _)| root_ok(&data, entries, trailer));
         let xref_damaged = diags.as_slice().len() > before;
-        let (entries, trailer, offset, repaired) = match loaded {
+        let (mut entries, mut trailer, offset, repaired) = match loaded {
             Some((entries, trailer, offset)) => (entries, trailer, offset, None),
             None => {
                 diags.push(DiagnosticKind::XrefRepaired, Location::File(0));
-                let (entries, trailer) = xref::repair(&data);
+                let (entries, trailer) = xref::repair(&data, None);
                 // The main table is already the repaired one; an empty fallback avoids a rescan.
                 (entries, trailer, 0, Some(Table::new(Entries::new())))
             }
@@ -125,6 +125,11 @@ impl File {
                 Some(Crypt::new(handler, key, kind, encrypt_ref))
             }
         };
+        // The first scan could not decode encrypted object streams, so their members are
+        // indexed only now that the key is known.
+        if let (Some(_), Some(c)) = (&repaired, &crypt) {
+            (entries, trailer) = xref::repair(&data, Some(c));
+        }
         if !matches!(trailer.get(b"Root"), Some(Object::Ref(r)) if entries.contains_key(&r.num)) {
             return Err(Error::new(ErrorKind::Unrecoverable, offset as u64));
         }
@@ -233,7 +238,7 @@ impl File {
     fn repaired_table(&self) -> &Table {
         self.repaired.get_or_init(|| {
             self.report(DiagnosticKind::XrefRepaired, Location::File(0));
-            Table::new(xref::repair(&self.data).0)
+            Table::new(xref::repair(&self.data, self.crypt.as_ref()).0)
         })
     }
 
@@ -404,7 +409,7 @@ fn crypt_handler(
                 _ => None,
             };
             let obj = at(entries)
-                .or_else(|| at(&xref::repair(data).0))
+                .or_else(|| at(&xref::repair(data, None).0))
                 .unwrap_or(Object::Null);
             (obj, Some(*r))
         }
