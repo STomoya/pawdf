@@ -525,3 +525,50 @@ fn encryption_info() {
     let (null, _) = build_pdf(&[(1, CATALOG), (2, PAGES)], "/Root 1 0 R /Encrypt null");
     assert_eq!(File::from_bytes(null).unwrap().encryption(), None);
 }
+
+#[test]
+fn bad_string_padding_is_diagnostic() {
+    let enc = Enc::new(4, "u", "o");
+    let mut ct = enc.encrypt(6, b"title");
+    *ct.last_mut().unwrap() ^= 0xFF;
+    let obj6 = format!("<< /T <{}> >>", common::crypt::hex(&ct));
+    let file = with_dict(&enc, &enc.dict(), &[(6, obj6.as_bytes())]);
+    let t = file.resolve(r(6)).as_dict().unwrap().get(b"T").unwrap();
+    assert_eq!(t.as_string().unwrap().len(), 16);
+    assert_eq!(count(&file, DiagnosticKind::BadEncryption), 1);
+}
+
+#[test]
+fn crypt_filter_removed_from_longer_chain() {
+    let enc = Enc::new(4, "u", "o");
+    let packed = compress_to_vec_zlib(PLAIN, 6);
+    let hexed: String = packed
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>()
+        + ">";
+    let obj4 = raw_stream(
+        "/Filter [/Crypt /AHx /FlateDecode] /DecodeParms [<< /Name /Identity >> null null]",
+        hexed.as_bytes(),
+    );
+    let file = with_dict(&enc, &enc.dict(), &[(4, &obj4)]);
+    let s = stream(&file, 4);
+    let names: Vec<_> = s
+        .dict
+        .get(b"Filter")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o.as_name().unwrap().to_vec())
+        .collect();
+    assert_eq!(names, [b"AHx".to_vec(), b"FlateDecode".to_vec()]);
+    assert_eq!(
+        s.dict.get(b"DecodeParms"),
+        Some(&Object::Array(vec![Object::Null, Object::Null]))
+    );
+    assert_eq!(
+        s.decode(Location::File(0), &mut Diagnostics::new()).data,
+        PLAIN
+    );
+}
