@@ -359,10 +359,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('pdf', type=Path)
     parser.add_argument('--pages', help='comma-separated 0-based page indices')
+    parser.add_argument('--password', default=None, help='password of an encrypted file')
     args = parser.parse_args()
 
-    ours = pawdf.open(args.pdf)
-    theirs = pdfium.PdfDocument(args.pdf)
+    ours = pawdf.open(args.pdf, password=args.password)
+    theirs = pdfium.PdfDocument(args.pdf, password=args.password)
     try:
         pages = [int(p) for p in args.pages.split(',')] if args.pages else range(len(ours))
         failed = False
