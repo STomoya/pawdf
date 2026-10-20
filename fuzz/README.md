@@ -10,6 +10,7 @@
 | `content`  | one page's content stream, interpreted            |
 | `document` | `Document`: every page's content                  |
 | `cmap`     | an embedded CMap on a Type0 font                  |
+| `crypt`    | an encryption dictionary and password, then decryption of a string and a stream |
 
 ```sh
 cargo +nightly fuzz run document -- -max_total_time=300

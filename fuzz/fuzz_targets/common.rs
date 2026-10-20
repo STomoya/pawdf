@@ -1,5 +1,5 @@
-//! Builds a small PDF around fuzz input so the content and CMap parsers are reachable
-//! through the public API.
+//! Builds a small PDF around fuzz input so the content, CMap and encryption parsers are
+//! reachable through the public API.
 #![allow(dead_code)]
 
 fn stream(dict: &str, data: &[u8]) -> Vec<u8> {
@@ -52,7 +52,29 @@ pub fn type0_page(cmap: &[u8], shown: &[u8], vertical: bool) -> Vec<u8> {
     assemble(&objects)
 }
 
+/// A file whose `/Encrypt` dictionary is `dict` (object 4), with an encrypted-looking string
+/// (object 2) and a 32-byte stream behind a `/StdCF` crypt filter (object 3).
+pub fn encrypted(dict: &[u8]) -> Vec<u8> {
+    let objects: Vec<Vec<u8>> = vec![
+        b"<< /Type /Catalog >>".to_vec(),
+        b"(0123456789abcdef)".to_vec(),
+        stream(
+            "/Filter [/Crypt] /DecodeParms [<< /Name /StdCF >>]",
+            b"0123456789abcdef0123456789abcdef",
+        ),
+        dict.to_vec(),
+    ];
+    assemble_with(
+        &objects,
+        "/Encrypt 4 0 R /ID [<00112233445566778899aabbccddeeff> <00>]",
+    )
+}
+
 fn assemble(objects: &[Vec<u8>]) -> Vec<u8> {
+    assemble_with(objects, "")
+}
+
+fn assemble_with(objects: &[Vec<u8>], trailer_extra: &str) -> Vec<u8> {
     let mut out = b"%PDF-1.7\n".to_vec();
     let mut offsets = Vec::new();
     for (i, body) in objects.iter().enumerate() {
@@ -70,7 +92,7 @@ fn assemble(objects: &[Vec<u8>]) -> Vec<u8> {
     }
     out.extend_from_slice(
         format!(
-            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+            "trailer\n<< /Size {} /Root 1 0 R {trailer_extra} >>\nstartxref\n{xref}\n%%EOF\n",
             objects.len() + 1
         )
         .as_bytes(),
