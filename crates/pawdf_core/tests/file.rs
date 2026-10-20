@@ -32,7 +32,9 @@ fn missing_object_is_null_with_diagnostic() {
     let (pdf, _) = build_pdf(&[(1, CATALOG), (2, PAGES)], "/Root 1 0 R");
     let file = File::from_bytes(pdf).unwrap();
     assert_eq!(file.resolve(r(9)), &Object::Null);
-    assert!(kinds(&file).contains(&DiagnosticKind::ObjectNotFound));
+    let d = file.diagnostics();
+    assert_eq!(d[0].kind, DiagnosticKind::ObjectNotFound);
+    assert_eq!(d[0].location, Location::Object(r(9)));
 }
 
 #[test]
@@ -50,7 +52,9 @@ fn reference_chains_are_followed_and_cycles_cut() {
     let file = File::from_bytes(pdf).unwrap();
     assert_eq!(file.resolve(r(3)), &Object::Int(42));
     assert_eq!(file.resolve(r(5)), &Object::Null);
-    assert!(kinds(&file).contains(&DiagnosticKind::RecursionLimit));
+    let d = file.diagnostics();
+    assert_eq!(d[0].kind, DiagnosticKind::RecursionLimit);
+    assert_eq!(d[0].location, Location::Object(r(5)));
 }
 
 #[test]
@@ -751,4 +755,19 @@ fn indirect_length_with_mismatched_header_is_ignored() {
     let file = File::from_bytes(pdf.into_bytes()).unwrap();
     assert_eq!(file.resolve(r(3)).as_stream().unwrap().raw(), b"hello");
     assert!(kinds(&file).contains(&DiagnosticKind::BadStreamLength));
+}
+
+#[test]
+fn object_stream_without_first_is_diagnosed() {
+    let pdf = objstm_pdf("/Root 1 0 R");
+    let at = pdf.windows(6).position(|w| w == b"/First").unwrap();
+    let mut pdf = pdf;
+    pdf[at..at + 6].copy_from_slice(b"/Fxxxx");
+    let file = File::from_bytes(pdf).unwrap();
+    file.resolve(r(2));
+    assert!(
+        kinds(&file).contains(&DiagnosticKind::BadObject),
+        "{:?}",
+        file.diagnostics()
+    );
 }

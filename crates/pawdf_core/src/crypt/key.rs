@@ -50,7 +50,7 @@ pub(crate) fn authenticate(
         .iter()
         .flat_map(|f| [(f.as_slice(), PasswordKind::User), (f, PasswordKind::Owner)])
         .chain([(&b""[..], PasswordKind::User)]);
-    for (pw, kind) in attempts {
+    for (i, (pw, kind)) in attempts.enumerate() {
         let key = if modern {
             let pw = &pw[..pw.len().min(127)];
             modern_key(h, pw, kind)
@@ -63,6 +63,9 @@ pub(crate) fn authenticate(
         if let Some(key) = key {
             if modern && !h.perms.is_empty() && !perms_ok(h, &key) {
                 diags.push(DiagnosticKind::BadEncryption, Location::File(0));
+            }
+            if password.is_some() && i == forms.len() * 2 {
+                diags.push(DiagnosticKind::WrongPassword, Location::File(0));
             }
             return Some((key, kind));
         }

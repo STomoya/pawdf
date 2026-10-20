@@ -116,23 +116,27 @@ impl Diagnostic {
     fn offset(&self) -> u64 {
         match self.0.location {
             Location::File(o) | Location::Stream { offset: o, .. } => o,
+            Location::Object(_) => 0,
         }
     }
 
     #[getter]
     fn object(&self) -> Option<(u32, u16)> {
         match self.0.location {
-            Location::Stream { obj, .. } => Some((obj.num, obj.generation)),
+            Location::Stream { obj, .. } | Location::Object(obj) => Some((obj.num, obj.generation)),
             Location::File(_) => None,
         }
     }
 
     fn __repr__(&self) -> String {
         format!(
-            "Diagnostic(kind={:?}, offset={}, object={:?})",
+            "Diagnostic(kind='{}', offset={}, object={})",
             self.kind(),
             self.offset(),
-            self.object()
+            match self.object() {
+                Some((n, g)) => format!("({n}, {g})"),
+                None => "None".to_owned(),
+            }
         )
     }
 }

@@ -14,7 +14,8 @@ pub enum DiagnosticKind {
     ObjectNotFound,
     /// An xref offset did not point at the expected `N G obj` header.
     ObjectMismatch,
-    /// Syntax error inside an object; the parsable part was kept.
+    /// Syntax error inside an object, or an entry of the wrong type or out of range; the
+    /// parsable part or a default was used.
     BadObject,
     /// `/Length` was missing or wrong; the data was delimited by `endstream` instead.
     BadStreamLength,
@@ -28,9 +29,11 @@ pub enum DiagnosticKind {
     RecursionLimit,
     /// The diagnostic limit was reached; later diagnostics were dropped.
     TooManyDiagnostics,
-    /// The page tree was malformed (cycle, bad node, bad box, or bad `/Rotate`).
+    /// The page tree was malformed (cycle, bad node, bad box, bad `/Rotate`, or a `/Contents`
+    /// entry that is not a reference).
     BadPageTree,
     /// An operator had the wrong operand count or type, or a non-finite number; it was skipped.
+    /// Also operands left at the end of the content with no operator.
     /// Also a clip whose bounds became non-finite or inverted through the CTM; it was ignored.
     BadOperands,
     /// An unknown operator appeared outside `BX`/`EX`.
@@ -56,6 +59,8 @@ pub enum DiagnosticKind {
     /// Encryption data was malformed (`/ID`, `/Length`, `/Perms`, AES padding, or an unknown
     /// crypt filter); the object or value was used as is.
     BadEncryption,
+    /// The given password was wrong, but the empty user password opened the file.
+    WrongPassword,
 }
 
 impl DiagnosticKind {
@@ -86,6 +91,7 @@ impl DiagnosticKind {
             DiagnosticKind::BadCMap => "bad_cmap",
             DiagnosticKind::BadImage => "bad_image",
             DiagnosticKind::BadEncryption => "bad_encryption",
+            DiagnosticKind::WrongPassword => "wrong_password",
         }
     }
 }
@@ -102,6 +108,8 @@ pub enum Location {
         /// Offset in its decoded data.
         offset: u64,
     },
+    /// An object as a whole, when there is no byte position to point at.
+    Object(Ref),
 }
 
 /// A recovery from malformed input.

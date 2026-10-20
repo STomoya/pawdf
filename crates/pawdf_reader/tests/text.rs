@@ -284,3 +284,40 @@ fn simple_truetype_without_encoding_uses_cmap() {
     // Codes the font's cmap does not resolve keep the M2 result.
     assert_eq!(c.glyphs[1].text, "B");
 }
+
+#[test]
+fn non_numeric_width_is_diagnosed() {
+    let c = run(
+        b"BT /F1 10 Tf (AB) Tj ET",
+        "<< /Font << /F1 5 0 R >> >>",
+        &[(
+            5,
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Foo /FirstChar 65 /Widths [500 /x] >>",
+        )],
+    );
+    assert_eq!(c.glyphs.len(), 2);
+    assert!(
+        c.diagnostics
+            .iter()
+            .any(|d| d.kind == DiagnosticKind::BadFont),
+        "{:?}",
+        c.diagnostics
+    );
+}
+
+#[test]
+fn bad_type3_font_matrix_is_diagnosed() {
+    let t3 = b"<< /Type /Font /Subtype /Type3 /FontMatrix [0.001 0 0] /FontBBox [0 0 1000 1000] /FirstChar 65 /Widths [1000] /Encoding << /Differences [65 /A] >> /CharProcs << >> >>";
+    let c = run(
+        b"BT /T3 10 Tf (A) Tj ET",
+        "<< /Font << /T3 5 0 R >> >>",
+        &[(5, t3)],
+    );
+    assert!(
+        c.diagnostics
+            .iter()
+            .any(|d| d.kind == DiagnosticKind::BadFont),
+        "{:?}",
+        c.diagnostics
+    );
+}

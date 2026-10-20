@@ -132,7 +132,10 @@ pub(crate) fn read_image(
                         s.decode(Location::Stream { obj: *r, offset: 0 }, diags)
                             .data,
                     ),
-                    _ => None,
+                    _ => {
+                        diags.push(DiagnosticKind::BadImage, at);
+                        None
+                    }
                 },
                 _ => None,
             };
@@ -147,10 +150,15 @@ pub(crate) fn read_image(
         },
     };
     let decode = get(b"Decode").and_then(Object::as_array).map(|a| {
-        a.iter()
+        let nums: Vec<f32> = a
+            .iter()
             .filter_map(|o| file.deref(o).as_number())
             .map(|n| n as f32)
-            .collect()
+            .collect();
+        if nums.len() < a.len() {
+            diags.push(DiagnosticKind::BadImage, at);
+        }
+        nums
     });
     let smask = match dict.get(b"SMask") {
         Some(Object::Ref(r)) if with_smask => match file.resolve(*r) {
@@ -165,7 +173,10 @@ pub(crate) fn read_image(
                     data: m.data,
                 })
             }
-            _ => None,
+            _ => {
+                diags.push(DiagnosticKind::BadImage, at);
+                None
+            }
         },
         _ => None,
     };

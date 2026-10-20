@@ -405,3 +405,68 @@ fn bad_color_space_is_missing_resource() {
     let c = content_with(b"/C cs", "<< /ColorSpace << /C [/Bogus] >> >>", &[]);
     assert_eq!(kinds(&c), [DiagnosticKind::MissingResource]);
 }
+
+#[test]
+fn leftover_operands_are_diagnosed() {
+    assert_eq!(kinds(&content(b"0 0 m 1 2")), [DiagnosticKind::BadOperands]);
+    assert_eq!(kinds(&content(b"BX 1 2")), [DiagnosticKind::BadOperands]);
+}
+
+#[test]
+fn non_reference_contents_entry_is_diagnosed() {
+    let s4 = stream("", b"0 0 m 1 1 l S");
+    let (pdf, _) = build_pdf(
+        &[
+            (1, CATALOG),
+            (2, b"<< /Type /Pages /Kids [3 0 R] >>"),
+            (
+                3,
+                b"<< /Type /Page /MediaBox [0 0 1 1] /Contents [4 0 R 5] >>",
+            ),
+            (4, &s4),
+        ],
+        "/Root 1 0 R",
+    );
+    let c = Document::from_bytes(pdf)
+        .unwrap()
+        .page(0)
+        .unwrap()
+        .content();
+    assert_eq!(c.paths.len(), 1);
+    assert_eq!(kinds(&c), [DiagnosticKind::BadPageTree]);
+    assert_eq!(
+        c.diagnostics[0].location,
+        Location::Object(Ref {
+            num: 3,
+            generation: 0
+        })
+    );
+}
+
+#[test]
+fn bad_form_matrix_is_diagnosed() {
+    let form = stream(
+        "/Type /XObject /Subtype /Form /Matrix [1 0 0]",
+        b"0 0 m 1 1 l S",
+    );
+    let c = content_with(b"/X Do", "<< /XObject << /X 5 0 R >> >>", &[(5, &form)]);
+    assert_eq!(c.paths.len(), 1);
+    assert_eq!(kinds(&c), [DiagnosticKind::BadObject]);
+}
+
+#[test]
+fn unknown_xobject_subtype_is_diagnosed() {
+    let ps = stream("/Type /XObject /Subtype /PS", b"");
+    let c = content_with(b"/X Do", "<< /XObject << /X 5 0 R >> >>", &[(5, &ps)]);
+    assert_eq!(kinds(&c), [DiagnosticKind::BadObject]);
+}
+
+#[test]
+fn out_of_range_hival_is_diagnosed() {
+    let c = content_with(
+        b"/C cs 0 sc",
+        "<< /ColorSpace << /C [/Indexed /DeviceGray 300 5 0 R] >> >>",
+        &[(5, &stream("", &[0u8; 256]))],
+    );
+    assert_eq!(kinds(&c), [DiagnosticKind::BadObject]);
+}

@@ -157,7 +157,11 @@ fn resolve_depth(
         b"DeviceN" => other(ColorSpaceFamily::DeviceN, arg(1)?.as_array()?.len().min(32)),
         b"Indexed" | b"I" => {
             let base = resolve_depth(file, arr.get(1)?, at, diags, depth + 1)?;
-            let hival = u8::try_from(arg(2)?.as_int()?.clamp(0, 255)).ok()?;
+            let hival = arg(2)?.as_int()?;
+            if !(0..=255).contains(&hival) {
+                diags.push(DiagnosticKind::BadObject, at);
+            }
+            let hival = u8::try_from(hival.clamp(0, 255)).ok()?;
             let lookup = match arr.get(3)? {
                 Object::String(s) => s.clone(),
                 Object::Ref(r) => match file.resolve(*r) {
