@@ -100,6 +100,17 @@ impl Stream {
     pub fn decode(&self, location: Location, diags: &mut Diagnostics) -> Decoded {
         let mut data = self.raw.clone();
         for (name, params) in chain(&self.dict) {
+            // §7.4.10: `File` strips a stream's crypt filter after decrypting with it, so one
+            // left here is only usable when it changes nothing.
+            if name == b"Crypt" {
+                match params.get(b"Name").and_then(Object::as_name) {
+                    None | Some(b"Identity") => continue,
+                    Some(_) => {
+                        diags.push(DiagnosticKind::UnknownFilter, location);
+                        break;
+                    }
+                }
+            }
             match lookup(&name) {
                 Some(Filter::Data(f)) => match f(&data, &params) {
                     Ok(out) => data = out,
@@ -187,11 +198,44 @@ mod tests {
     #[test]
     fn unknown_filter_reports_and_stops() {
         let mut d = Diagnostics::new();
-        let s = stream(&[("Filter", name("Crypt"))], b"xyz");
+        let s = stream(&[("Filter", name("Bogus"))], b"xyz");
         let out = s.decode(Location::File(9), &mut d);
         assert_eq!(out.data, b"xyz");
         assert_eq!(d.as_slice()[0].kind, DiagnosticKind::UnknownFilter);
         assert_eq!(d.as_slice()[0].location, Location::File(9));
+    }
+
+    #[test]
+    fn crypt_identity_is_skipped() {
+        let mut d = Diagnostics::new();
+        let s = stream(
+            &[
+                ("Filter", Object::Array(vec![name("Crypt"), name("AHx")])),
+                (
+                    "DecodeParms",
+                    Object::Array(vec![Object::Null, Object::Null]),
+                ),
+            ],
+            b"4142>",
+        );
+        assert_eq!(s.decode(Location::File(0), &mut d).data, b"AB");
+        assert!(d.is_empty());
+    }
+
+    #[test]
+    fn crypt_named_filter_outside_file_is_unknown() {
+        let mut d = Diagnostics::new();
+        let mut params = Dict::new();
+        params.insert("Name".into(), name("StdCF"));
+        let s = stream(
+            &[
+                ("Filter", name("Crypt")),
+                ("DecodeParms", Object::Dict(params)),
+            ],
+            b"xyz",
+        );
+        assert_eq!(s.decode(Location::File(0), &mut d).data, b"xyz");
+        assert_eq!(d.as_slice()[0].kind, DiagnosticKind::UnknownFilter);
     }
 
     #[test]

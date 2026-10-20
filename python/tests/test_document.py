@@ -78,9 +78,10 @@ def test_open_reads_path(tmp_path: Path) -> None:
 
 
 def test_errors() -> None:
-    """Encrypted files raise EncryptedError, a PdfError subclass; garbage raises PdfError."""
-    with pytest.raises(pawdf.EncryptedError) as e:
+    """Unsupported encryption raises an EncryptedError, a PdfError subclass; garbage raises PdfError."""
+    with pytest.raises(pawdf.UnsupportedEncryptionError, match='missing /Filter') as e:
         pawdf.Document(_pdf(b'', trailer_extra=b'/Encrypt << >>'))
+    assert isinstance(e.value, pawdf.EncryptedError)
     assert isinstance(e.value, pawdf.PdfError)
     with pytest.raises(pawdf.PdfError):
         pawdf.Document(b'not a pdf')

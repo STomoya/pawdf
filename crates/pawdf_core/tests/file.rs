@@ -132,13 +132,34 @@ fn no_catalog_is_unrecoverable() {
 }
 
 #[test]
-fn encrypted_is_rejected() {
+fn unsupported_handler_is_named() {
     let (pdf, _) = build_pdf(
-        &[(1, CATALOG), (2, PAGES), (3, b"<< /Filter /Standard >>")],
+        &[
+            (1, CATALOG),
+            (2, PAGES),
+            (3, b"<< /Filter /Adobe.PubSec /V 4 /R 4 >>"),
+        ],
         "/Root 1 0 R /Encrypt 3 0 R",
     );
+    let xref = xref_offset(&pdf);
     let err = File::from_bytes(pdf).err().unwrap();
-    assert_eq!(err.kind, ErrorKind::Encrypted);
+    assert_eq!(
+        err.kind,
+        ErrorKind::UnsupportedEncryption("Adobe.PubSec".into())
+    );
+    assert_eq!(
+        err.to_string(),
+        format!("unsupported encryption: Adobe.PubSec (at byte {xref})")
+    );
+}
+
+#[test]
+fn non_dict_encrypt_opens_unencrypted() {
+    for trailer in ["/Root 1 0 R /Encrypt 99 0 R", "/Root 1 0 R /Encrypt null"] {
+        let (pdf, _) = build_pdf(&[(1, CATALOG), (2, PAGES)], trailer);
+        let file = File::from_bytes(pdf).unwrap();
+        assert_eq!(count(&file, DiagnosticKind::BadEncryption), 1, "{trailer}");
+    }
 }
 
 #[test]

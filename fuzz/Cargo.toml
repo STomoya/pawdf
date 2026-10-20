@@ -56,3 +56,10 @@ path = "fuzz_targets/cmap.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "crypt"
+path = "fuzz_targets/crypt.rs"
+test = false
+doc = false
+bench = false

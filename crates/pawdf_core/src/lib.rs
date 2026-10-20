@@ -3,6 +3,7 @@
 #![warn(missing_docs)]
 
 mod content;
+mod crypt;
 mod diag;
 mod error;
 mod file;
@@ -14,6 +15,7 @@ mod text;
 mod xref;
 
 pub use content::{Operation, parse_content};
+pub use crypt::{Encryption, Method, PasswordKind, Permissions};
 pub use diag::{Diagnostic, DiagnosticKind, Diagnostics, Location, Origin};
 pub use error::{Error, ErrorKind};
 pub use file::File;

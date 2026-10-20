@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 
+use crate::crypt::Crypt;
 use crate::diag::{DiagnosticKind, Diagnostics, Location, Origin};
 use crate::lexer::{Lexer, Token, is_regular, is_whitespace};
 use crate::object::{Dict, Object, Ref};
@@ -289,7 +290,10 @@ pub(crate) fn header_matches(data: &[u8], offset: usize, num: u32) -> bool {
 ///
 /// The scan is a single forward pass: candidates inside an object or trailer already
 /// parsed are skipped, so crafted files cannot make it quadratic.
-pub(crate) fn repair(data: &[u8]) -> (Entries, Dict) {
+///
+/// In an encrypted file, object streams are decrypted with `crypt` before being decoded;
+/// without it their members are not found.
+pub(crate) fn repair(data: &[u8], crypt: Option<&Crypt>) -> (Entries, Dict) {
     let mut hits: Vec<(usize, Option<u32>)> = memfind_all(data, b"obj")
         .filter_map(|pos| object_start(data, pos))
         .map(|(num, start)| (start, Some(num)))
@@ -334,6 +338,16 @@ pub(crate) fn repair(data: &[u8]) -> (Entries, Dict) {
             Some(b"XRef") => xref_dicts.push(s.dict.clone()),
             Some(b"ObjStm") => {
                 let origin = Origin::Stream(r);
+                let decrypted;
+                let s = match crypt {
+                    Some(c) => {
+                        let mut copy = s.clone();
+                        c.decrypt_stream(r, &mut copy, Location::File(pos as u64), &mut quiet);
+                        decrypted = copy;
+                        &decrypted
+                    }
+                    None => s,
+                };
                 let decoded = s.decode(origin.at(0), &mut quiet).data;
                 let first = s.dict.get(b"First").and_then(|o| o.as_int()).unwrap_or(0);
                 let first = usize::try_from(first).unwrap_or(0);
@@ -542,7 +556,7 @@ mod tests {
         data.extend(xref_stream("/Root 2 0 R /A 2 /B 1 /Size 0 /W [1 0 0]", b""));
         data.extend(xref_stream("/B 2 /Size 0 /W [1 0 0]", b""));
         data.extend(b"trailer << /A 3 >>\n");
-        let (_, t) = repair(&data);
+        let (_, t) = repair(&data, None);
         assert_eq!(
             t.get(b"Root"),
             Some(&Object::Ref(Ref {

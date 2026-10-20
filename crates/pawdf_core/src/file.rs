@@ -1,7 +1,9 @@
+use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 use std::thread::ThreadId;
 
+use crate::crypt::{Crypt, Encryption, SecurityHandler, authenticate};
 use crate::diag::{Diagnostic, DiagnosticKind, Diagnostics, Location, Origin};
 use crate::error::{Error, ErrorKind};
 use crate::lexer::Lexer;
@@ -62,14 +64,26 @@ pub struct File {
     /// Loading the xref reported problems, so an absent object may have been lost with a
     /// damaged section and is worth looking for in the repaired table.
     xref_damaged: bool,
+    crypt: Option<Crypt>,
 }
 
 impl File {
-    /// Parses the header, cross-reference data, and trailer.
+    /// Parses the header, cross-reference data, and trailer. An encrypted file is opened
+    /// with the empty user password.
     ///
-    /// Fails only if the file is encrypted or no document catalog can be found even after
-    /// a full repair scan.
+    /// Fails only if the file is encrypted and cannot be decrypted, or no document catalog
+    /// can be found even after a full repair scan.
     pub fn from_bytes(data: Vec<u8>) -> Result<File, Error> {
+        Self::open(data, None)
+    }
+
+    /// Like [`File::from_bytes`], for an encrypted file: tries `password` as the user, then
+    /// the owner password, then the empty user password.
+    pub fn from_bytes_with_password(data: Vec<u8>, password: &str) -> Result<File, Error> {
+        Self::open(data, Some(password))
+    }
+
+    fn open(data: Vec<u8>, password: Option<&str>) -> Result<File, Error> {
         let mut diags = Diagnostics::new();
         let header_window = &data[..data.len().min(1024)];
         if find(header_window, b"%PDF-").is_none() {
@@ -79,17 +93,38 @@ impl File {
         let loaded = xref::load(&data, &mut diags)
             .filter(|(entries, trailer, _)| root_ok(&data, entries, trailer));
         let xref_damaged = diags.as_slice().len() > before;
-        let (entries, trailer, offset, repaired) = match loaded {
+        let (mut entries, mut trailer, offset, repaired) = match loaded {
             Some((entries, trailer, offset)) => (entries, trailer, offset, None),
             None => {
                 diags.push(DiagnosticKind::XrefRepaired, Location::File(0));
-                let (entries, trailer) = xref::repair(&data);
+                let (entries, trailer) = xref::repair(&data, None);
                 // The main table is already the repaired one; an empty fallback avoids a rescan.
                 (entries, trailer, 0, Some(Table::new(Entries::new())))
             }
         };
-        if trailer.contains_key(b"Encrypt") {
-            return Err(Error::new(ErrorKind::Encrypted, offset as u64));
+        let fail = |kind| Error::new(kind, offset as u64);
+        let crypt = match crypt_handler(&data, &entries, &trailer, &mut diags)
+            .map_err(|name| fail(ErrorKind::UnsupportedEncryption(name)))?
+        {
+            None => None,
+            Some((handler, encrypt_ref, id)) => {
+                // §7.6.4.3.2 Algorithm 2 step (e): R5/R6 do not use /ID.
+                if id.is_none() && handler.r <= 4 {
+                    diags.push(DiagnosticKind::BadEncryption, Location::File(0));
+                }
+                let id = id.unwrap_or_default();
+                let Some((key, kind)) = authenticate(&handler, &id, password, &mut diags) else {
+                    return Err(fail(ErrorKind::IncorrectPassword {
+                        password_given: password.is_some(),
+                    }));
+                };
+                Some(Crypt::new(handler, key, kind, encrypt_ref))
+            }
+        };
+        // The first scan could not decode encrypted object streams, so their members are
+        // indexed only now that the key is known.
+        if let (Some(_), Some(c)) = (&repaired, &crypt) {
+            (entries, trailer) = xref::repair(&data, Some(c));
         }
         if !matches!(trailer.get(b"Root"), Some(Object::Ref(r)) if entries.contains_key(&r.num)) {
             return Err(Error::new(ErrorKind::Unrecoverable, offset as u64));
@@ -103,11 +138,17 @@ impl File {
             failed: Mutex::new(HashSet::new()),
             missing: Mutex::new(HashSet::new()),
             xref_damaged,
+            crypt,
         };
         if let Some(t) = repaired {
             let _ = file.repaired.set(t);
         }
         Ok(file)
+    }
+
+    /// How the file was decrypted, or `None` if it is not encrypted.
+    pub fn encryption(&self) -> Option<Encryption> {
+        self.crypt.as_ref().map(Crypt::info)
     }
 
     /// The (merged) trailer dictionary.
@@ -198,7 +239,7 @@ impl File {
     fn repaired_table(&self) -> &Table {
         self.repaired.get_or_init(|| {
             self.report(DiagnosticKind::XrefRepaired, Location::File(0));
-            Table::new(xref::repair(&self.data).0)
+            Table::new(xref::repair(&self.data, self.crypt.as_ref()).0)
         })
     }
 
@@ -238,10 +279,24 @@ impl File {
         }
         let mut diags = Diagnostics::new();
         let length_of = |len_ref: Ref| self.length_of(len_ref);
-        let (_, mut obj) = parse_indirect(&self.data, offset, &length_of, &mut diags)?;
+        let (header, mut obj) = parse_indirect(&self.data, offset, &length_of, &mut diags)?;
+        let at = Location::File(offset as u64);
+        // §7.6.2: the key comes from the `N G obj` header, since references' generations
+        // are not checked.
+        let crypt = self.crypt.as_ref().filter(|c| !c.is_encrypt_dict(num));
+        // §7.5.8.2: a cross-reference stream's dictionary is not encrypted either.
+        let is_xref = matches!(&obj, Object::Stream(s) if s.dict.get(b"Type").and_then(Object::as_name) == Some(b"XRef"));
+        if let Some(c) = crypt.filter(|_| !is_xref) {
+            c.decrypt_strings(header, &mut obj, at, &mut diags);
+        }
         self.lock_diags().append(diags);
         if let Object::Stream(s) = &mut obj {
             self.resolve_filter_values(&mut s.dict, depth);
+            if let Some(c) = crypt {
+                let mut diags = Diagnostics::new();
+                c.decrypt_stream(header, s, at, &mut diags);
+                self.lock_diags().append(diags);
+            }
         }
         Some(obj)
     }
@@ -331,6 +386,93 @@ impl File {
             self.lock_diags().append(diags);
         }
     }
+}
+
+/// Loads objects without decryption, for the encryption dictionary and `/ID`, which are
+/// read before the key exists. They are never in object streams (§7.5.7), so one hop
+/// through the main table, then a repair scan, finds them.
+struct RawObjects<'a> {
+    data: &'a [u8],
+    entries: &'a Entries,
+    repaired: OnceCell<Entries>,
+}
+
+impl RawObjects<'_> {
+    fn get(&self, num: u32) -> Option<Object> {
+        let at = |entries: &Entries| match entries.get(&num) {
+            Some(Entry::InFile { offset }) => {
+                parse_indirect(self.data, *offset, &|_| None, &mut Diagnostics::new())
+                    .filter(|(found, _)| found.num == num)
+                    .map(|(_, o)| o)
+            }
+            _ => None,
+        };
+        at(self.entries).or_else(|| {
+            at(self
+                .repaired
+                .get_or_init(|| xref::repair(self.data, None).0))
+        })
+    }
+
+    /// `obj`, or the object it references (null if missing).
+    fn deref(&self, obj: &Object) -> Object {
+        match obj {
+            Object::Ref(r) => self.get(r.num).unwrap_or(Object::Null),
+            o => o.clone(),
+        }
+    }
+}
+
+/// The parsed handler, the encryption dictionary's reference, and the first `/ID` string.
+type EncryptInfo = (SecurityHandler, Option<Ref>, Option<Vec<u8>>);
+
+/// The trailer's `/Encrypt` dictionary, parsed without decryption, its reference when
+/// indirect, and the first `/ID` string. Indirect values in the dictionary, its crypt
+/// filters and `/ID` are followed one level, as mature readers do. A value that is not a
+/// dictionary is diagnosed and the file read as unencrypted. `Err` names an unsupported
+/// handler.
+fn crypt_handler(
+    data: &[u8],
+    entries: &Entries,
+    trailer: &Dict,
+    diags: &mut Diagnostics,
+) -> Result<Option<EncryptInfo>, String> {
+    let Some(value) = trailer.get(b"Encrypt") else {
+        return Ok(None);
+    };
+    let raw = RawObjects {
+        data,
+        entries,
+        repaired: OnceCell::new(),
+    };
+    let Object::Dict(mut dict) = raw.deref(value) else {
+        diags.push(DiagnosticKind::BadEncryption, Location::File(0));
+        return Ok(None);
+    };
+    for (_, v) in dict.iter_mut() {
+        *v = raw.deref(v);
+    }
+    if let Some(Object::Dict(cf)) = dict.get_mut(b"CF") {
+        for (_, filter) in cf.iter_mut() {
+            *filter = raw.deref(filter);
+            if let Object::Dict(f) = filter {
+                for (_, v) in f.iter_mut() {
+                    *v = raw.deref(v);
+                }
+            }
+        }
+    }
+    let id = trailer
+        .get(b"ID")
+        .map(|id| raw.deref(id))
+        .and_then(|id| {
+            id.as_array()
+                .and_then(|a| a.first())
+                .map(|first| raw.deref(first))
+        })
+        .and_then(|first| first.as_string().map(<[u8]>::to_vec));
+    let handler = SecurityHandler::parse(&dict, diags)?;
+    Ok(Some((handler, value.as_ref(), id)))
 }
 
 /// The trailer's `/Root` exists and its xref entry points at a real object.

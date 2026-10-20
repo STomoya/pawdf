@@ -12,7 +12,65 @@ class PdfError(Exception):
     """The PDF could not be read."""
 
 class EncryptedError(PdfError):
-    """The PDF is encrypted; decryption is not supported."""
+    """The PDF is encrypted and could not be decrypted."""
+
+class PasswordError(EncryptedError):
+    """No password (given or empty) opened the encrypted PDF."""
+
+class UnsupportedEncryptionError(EncryptedError):
+    """The PDF uses an unsupported security handler or encryption method."""
+
+@final
+class Permissions:
+    """The permission flags ``/P`` of an encrypted PDF. Reported, not enforced."""
+
+    @property
+    def bits(self) -> int:
+        """The raw ``/P`` value as an unsigned 32-bit integer."""
+    @property
+    def print(self) -> bool:
+        """Printing is allowed (at low quality unless ``print_high_quality``)."""
+    @property
+    def modify(self) -> bool:
+        """Modifying the contents is allowed."""
+    @property
+    def copy(self) -> bool:
+        """Copying or extracting text and graphics is allowed."""
+    @property
+    def annotate(self) -> bool:
+        """Adding or modifying annotations and filling forms is allowed."""
+    @property
+    def fill_forms(self) -> bool:
+        """Filling in form fields is allowed."""
+    @property
+    def extract_for_accessibility(self) -> bool:
+        """Extracting text and graphics for accessibility is allowed."""
+    @property
+    def assemble(self) -> bool:
+        """Assembling the document (inserting, rotating, deleting pages) is allowed."""
+    @property
+    def print_high_quality(self) -> bool:
+        """Printing at full quality is allowed."""
+
+@final
+class Encryption:
+    """How an encrypted PDF was opened."""
+
+    @property
+    def revision(self) -> int:
+        """The standard security handler revision ``/R`` (2 to 6)."""
+    @property
+    def method(self) -> Literal['identity', 'rc4', 'aes-128', 'aes-256']:
+        """The encryption method of strings and streams."""
+    @property
+    def key_bits(self) -> int:
+        """The file key length in bits."""
+    @property
+    def permissions(self) -> Permissions:
+        """The permission flags."""
+    @property
+    def authenticated_as(self) -> Literal['user', 'owner']:
+        """Which password opened the file."""
 
 @final
 class Diagnostic:
@@ -320,12 +378,18 @@ class Page:
 class Document:
     """An open PDF document."""
 
-    def __init__(self, data: bytes) -> None:
+    def __init__(self, data: bytes, password: str | None = None) -> None:
         """Open a document from its bytes.
+
+        Args:
+            data: The PDF file contents.
+            password: Password of an encrypted file, tried as the user then the owner
+                password. The empty user password is always tried too.
 
         Raises:
             PdfError: If the data is not a readable PDF.
-            EncryptedError: If the PDF is encrypted.
+            PasswordError: If the PDF is encrypted and no password opened it.
+            UnsupportedEncryptionError: If the PDF uses an unsupported security handler.
         """
     def __len__(self) -> int: ...
     def __getitem__(self, index: int) -> Page:
@@ -333,3 +397,6 @@ class Document:
     @property
     def diagnostics(self) -> list[Diagnostic]:
         """Structural recoveries made while opening the file."""
+    @property
+    def encryption(self) -> Encryption | None:
+        """How the file was decrypted, or ``None`` if it is not encrypted."""

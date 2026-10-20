@@ -16,7 +16,19 @@ create_exception!(
     pawdf._core,
     EncryptedError,
     PdfError,
-    "The PDF is encrypted; decryption is not supported."
+    "The PDF is encrypted and could not be decrypted."
+);
+create_exception!(
+    pawdf._core,
+    PasswordError,
+    EncryptedError,
+    "No password (given or empty) opened the encrypted PDF."
+);
+create_exception!(
+    pawdf._core,
+    UnsupportedEncryptionError,
+    EncryptedError,
+    "The PDF uses an unsupported security handler or encryption method."
 );
 
 type Rect4 = (f64, f64, f64, f64);
@@ -32,8 +44,11 @@ fn matrix(m: r::Matrix) -> Matrix6 {
 
 fn to_py_err(e: r::Error) -> PyErr {
     match e.kind {
-        r::ErrorKind::Core(c) if c.kind == r::CoreErrorKind::Encrypted => {
-            EncryptedError::new_err(c.to_string())
+        r::ErrorKind::Core(c) if matches!(c.kind, r::CoreErrorKind::IncorrectPassword { .. }) => {
+            PasswordError::new_err(c.to_string())
+        }
+        r::ErrorKind::Core(c) if matches!(c.kind, r::CoreErrorKind::UnsupportedEncryption(_)) => {
+            UnsupportedEncryptionError::new_err(c.to_string())
         }
         r::ErrorKind::PageOutOfRange { .. } => PyIndexError::new_err(e.to_string()),
         r::ErrorKind::Core(_) => PdfError::new_err(e.to_string()),
@@ -731,6 +746,112 @@ impl Page {
     }
 }
 
+/// The permission flags `/P` of an encrypted PDF. Reported, not enforced.
+#[pyclass(frozen, module = "pawdf._core")]
+struct Permissions(r::Permissions);
+
+#[pymethods]
+impl Permissions {
+    #[getter]
+    fn bits(&self) -> u32 {
+        self.0.bits()
+    }
+
+    #[getter]
+    fn print(&self) -> bool {
+        self.0.print()
+    }
+
+    #[getter]
+    fn modify(&self) -> bool {
+        self.0.modify()
+    }
+
+    #[getter]
+    fn copy(&self) -> bool {
+        self.0.copy()
+    }
+
+    #[getter]
+    fn annotate(&self) -> bool {
+        self.0.annotate()
+    }
+
+    #[getter]
+    fn fill_forms(&self) -> bool {
+        self.0.fill_forms()
+    }
+
+    #[getter]
+    fn extract_for_accessibility(&self) -> bool {
+        self.0.extract_for_accessibility()
+    }
+
+    #[getter]
+    fn assemble(&self) -> bool {
+        self.0.assemble()
+    }
+
+    #[getter]
+    fn print_high_quality(&self) -> bool {
+        self.0.print_high_quality()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("Permissions(bits={:#010x})", self.0.bits())
+    }
+}
+
+/// How an encrypted PDF was opened.
+#[pyclass(frozen, module = "pawdf._core")]
+struct Encryption(r::Encryption);
+
+#[pymethods]
+impl Encryption {
+    #[getter]
+    fn revision(&self) -> u8 {
+        self.0.revision
+    }
+
+    #[getter]
+    fn method(&self) -> &'static str {
+        match self.0.method {
+            r::Method::Identity => "identity",
+            r::Method::Rc4 => "rc4",
+            r::Method::Aes128 => "aes-128",
+            r::Method::Aes256 => "aes-256",
+        }
+    }
+
+    #[getter]
+    fn key_bits(&self) -> u16 {
+        self.0.key_bits
+    }
+
+    #[getter]
+    fn permissions(&self) -> Permissions {
+        Permissions(self.0.permissions)
+    }
+
+    #[getter]
+    fn authenticated_as(&self) -> &'static str {
+        match self.0.authenticated_as {
+            r::PasswordKind::User => "user",
+            r::PasswordKind::Owner => "owner",
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Encryption(revision={}, method='{}', key_bits={}, authenticated_as='{}')",
+            self.0.revision,
+            self.method(),
+            self.0.key_bits,
+            self.authenticated_as()
+        )
+    }
+}
+
 /// An open PDF document.
 #[pyclass(frozen, module = "pawdf._core")]
 struct Document(r::Document);
@@ -738,10 +859,19 @@ struct Document(r::Document);
 #[pymethods]
 impl Document {
     #[new]
-    fn new(py: Python<'_>, data: Vec<u8>) -> PyResult<Self> {
-        py.detach(|| r::Document::from_bytes(data))
-            .map(Document)
-            .map_err(to_py_err)
+    #[pyo3(signature = (data, password=None))]
+    fn new(py: Python<'_>, data: Vec<u8>, password: Option<String>) -> PyResult<Self> {
+        py.detach(|| match password {
+            Some(pw) => r::Document::from_bytes_with_password(data, &pw),
+            None => r::Document::from_bytes(data),
+        })
+        .map(Document)
+        .map_err(to_py_err)
+    }
+
+    #[getter]
+    fn encryption(&self) -> Option<Encryption> {
+        self.0.encryption().map(Encryption)
     }
 
     fn __len__(&self) -> usize {
@@ -782,8 +912,9 @@ mod _core {
 
     #[pymodule_export]
     use super::{
-        Color, Diagnostic, Document, EncryptedError, FontInfo, Glyph, Image, MarkedContent, Page,
-        PageContent, Path, PdfError, SoftMask,
+        Color, Diagnostic, Document, EncryptedError, Encryption, FontInfo, Glyph, Image,
+        MarkedContent, Page, PageContent, PasswordError, Path, PdfError, Permissions, SoftMask,
+        UnsupportedEncryptionError,
     };
 
     #[pyfunction]

@@ -34,6 +34,18 @@ pub fn decode_text_string(bytes: &[u8]) -> String {
     }
 }
 
+/// Encodes `s` in PDFDocEncoding, the inverse of [`decode_text_string`]'s fallback. `None` if
+/// any character has no PDFDocEncoding byte.
+pub(crate) fn encode_pdf_doc(s: &str) -> Option<Vec<u8>> {
+    s.chars()
+        .map(|c| {
+            (c != char::REPLACEMENT_CHARACTER)
+                .then(|| (0..=u8::MAX).find(|&b| pdf_doc_char(b) == c))
+                .flatten()
+        })
+        .collect()
+}
+
 fn pdf_doc_char(b: u8) -> char {
     match b {
         0x18..=0x1F => ACCENTS[usize::from(b - 0x18)],
