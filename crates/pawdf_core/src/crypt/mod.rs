@@ -80,6 +80,13 @@ impl SecurityHandler {
                 fixed as usize / 8
             }
         };
+        // Algorithm 2 step (f): R2 always uses 5 bytes, whatever /Length says.
+        let key_len = if r == 2 && key_len != 5 {
+            diags.push(DiagnosticKind::BadEncryption, Location::File(0));
+            5
+        } else {
+            key_len
+        };
         let filters: Vec<(Vec<u8>, CryptFilter)> = match dict.get(b"CF") {
             Some(Object::Dict(cf)) if v >= 4 => cf
                 .iter()
@@ -96,10 +103,12 @@ impl SecurityHandler {
             ue: string(dict, b"UE"),
             perms: string(dict, b"Perms"),
             p: int(b"P").unwrap_or(0) as u32,
-            encrypt_metadata: dict
-                .get(b"EncryptMetadata")
-                .and_then(Object::as_bool)
-                .unwrap_or(true),
+            // Table 20: meaningful only for V4 and V5.
+            encrypt_metadata: v < 4
+                || dict
+                    .get(b"EncryptMetadata")
+                    .and_then(Object::as_bool)
+                    .unwrap_or(true),
             stm_f: CryptFilter::Rc4,
             str_f: CryptFilter::Rc4,
             eff: CryptFilter::Rc4,
@@ -518,6 +527,16 @@ mod tests {
                 5,
                 1,
             ),
+            // R2 always derives a 40-bit key (Algorithm 2 step (f)).
+            (
+                standard(&[
+                    ("V", Object::Int(2)),
+                    ("R", Object::Int(2)),
+                    ("Length", Object::Int(128)),
+                ]),
+                5,
+                1,
+            ),
             (v4(16), 16, 0),
             (v4(128), 16, 0),
             (
@@ -538,6 +557,26 @@ mod tests {
             assert_eq!(h.key_len, key_len, "case {i}");
             assert_eq!(bad_encryption(&dg), diags, "case {i}");
         }
+    }
+
+    /// Table 20: `/EncryptMetadata` is meaningful only for V4 and V5.
+    #[test]
+    fn encrypt_metadata_needs_v4() {
+        let parse = |v: i64| {
+            let d = standard(&[
+                ("V", Object::Int(v)),
+                ("R", Object::Int(if v == 4 { 4 } else { 3 })),
+                ("CF", cf("AESV2", None)),
+                ("StmF", name("StdCF")),
+                ("StrF", name("StdCF")),
+                ("EncryptMetadata", Object::Bool(false)),
+            ]);
+            SecurityHandler::parse(&d, &mut Diagnostics::new())
+                .expect("supported")
+                .encrypt_metadata
+        };
+        assert!(parse(2));
+        assert!(!parse(4));
     }
 
     #[test]
