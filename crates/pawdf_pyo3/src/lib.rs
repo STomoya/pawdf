@@ -32,7 +32,13 @@ fn matrix(m: r::Matrix) -> Matrix6 {
 
 fn to_py_err(e: r::Error) -> PyErr {
     match e.kind {
-        r::ErrorKind::Core(c) if c.kind == r::CoreErrorKind::Encrypted => {
+        r::ErrorKind::Core(c)
+            if matches!(
+                c.kind,
+                r::CoreErrorKind::IncorrectPassword { .. }
+                    | r::CoreErrorKind::UnsupportedEncryption(_)
+            ) =>
+        {
             EncryptedError::new_err(c.to_string())
         }
         r::ErrorKind::PageOutOfRange { .. } => PyIndexError::new_err(e.to_string()),

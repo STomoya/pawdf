@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 use std::thread::ThreadId;
 
+use crate::crypt::SecurityHandler;
 use crate::diag::{Diagnostic, DiagnosticKind, Diagnostics, Location, Origin};
 use crate::error::{Error, ErrorKind};
 use crate::lexer::Lexer;
@@ -67,7 +68,7 @@ pub struct File {
 impl File {
     /// Parses the header, cross-reference data, and trailer.
     ///
-    /// Fails only if the file is encrypted or no document catalog can be found even after
+    /// Fails only if the file is encrypted and cannot be decrypted, or no document catalog can be found even after
     /// a full repair scan.
     pub fn from_bytes(data: Vec<u8>) -> Result<File, Error> {
         let mut diags = Diagnostics::new();
@@ -88,8 +89,13 @@ impl File {
                 (entries, trailer, 0, Some(Table::new(Entries::new())))
             }
         };
-        if trailer.contains_key(b"Encrypt") {
-            return Err(Error::new(ErrorKind::Encrypted, offset as u64));
+        if let Some((_handler, _encrypt_ref)) = crypt_handler(&data, &entries, &trailer, &mut diags)
+            .map_err(|name| Error::new(ErrorKind::UnsupportedEncryption(name), offset as u64))?
+        {
+            return Err(Error::new(
+                ErrorKind::UnsupportedEncryption("Standard".into()),
+                offset as u64,
+            ));
         }
         if !matches!(trailer.get(b"Root"), Some(Object::Ref(r)) if entries.contains_key(&r.num)) {
             return Err(Error::new(ErrorKind::Unrecoverable, offset as u64));
@@ -331,6 +337,43 @@ impl File {
             self.lock_diags().append(diags);
         }
     }
+}
+
+/// The trailer's `/Encrypt` dictionary, parsed without decryption, and its reference when
+/// indirect. It is never in an object stream (§7.5.7), so one hop through the main table,
+/// then a repair scan, finds it. A value that is not a dictionary is diagnosed and the file
+/// read as unencrypted. `Err` names an unsupported handler.
+fn crypt_handler(
+    data: &[u8],
+    entries: &Entries,
+    trailer: &Dict,
+    diags: &mut Diagnostics,
+) -> Result<Option<(SecurityHandler, Option<Ref>)>, String> {
+    let Some(value) = trailer.get(b"Encrypt") else {
+        return Ok(None);
+    };
+    let (obj, encrypt_ref) = match value {
+        Object::Ref(r) => {
+            let at = |entries: &Entries| match entries.get(&r.num) {
+                Some(Entry::InFile { offset }) => {
+                    parse_indirect(data, *offset, &|_| None, &mut Diagnostics::new())
+                        .filter(|(found, _)| found.num == r.num)
+                        .map(|(_, o)| o)
+                }
+                _ => None,
+            };
+            let obj = at(entries)
+                .or_else(|| at(&xref::repair(data).0))
+                .unwrap_or(Object::Null);
+            (obj, Some(*r))
+        }
+        o => (o.clone(), None),
+    };
+    let Object::Dict(dict) = obj else {
+        diags.push(DiagnosticKind::BadEncryption, Location::File(0));
+        return Ok(None);
+    };
+    Ok(Some((SecurityHandler::parse(&dict, diags)?, encrypt_ref)))
 }
 
 /// The trailer's `/Root` exists and its xref entry points at a real object.

@@ -53,6 +53,9 @@ pub enum DiagnosticKind {
     BadCMap,
     /// An image had bad dimensions or short data, or an inline image had no `EI`.
     BadImage,
+    /// Encryption data was malformed (`/ID`, `/Length`, `/Perms`, AES padding, or an unknown
+    /// crypt filter); the object or value was used as is.
+    BadEncryption,
 }
 
 impl DiagnosticKind {
@@ -82,6 +85,7 @@ impl DiagnosticKind {
             DiagnosticKind::UnmappedGlyph => "unmapped_glyph",
             DiagnosticKind::BadCMap => "bad_cmap",
             DiagnosticKind::BadImage => "bad_image",
+            DiagnosticKind::BadEncryption => "bad_encryption",
         }
     }
 }

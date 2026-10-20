@@ -162,7 +162,9 @@ fn encrypted_is_core_error() {
         "/Root 1 0 R /Encrypt << >>",
     );
     let err = Document::from_bytes(pdf).expect_err("fails");
-    assert!(matches!(err.kind, ErrorKind::Core(e) if e.kind == pawdf_core::ErrorKind::Encrypted));
+    assert!(
+        matches!(err.kind, ErrorKind::Core(ref e) if matches!(e.kind, pawdf_core::ErrorKind::UnsupportedEncryption(_)))
+    );
 }
 
 #[test]
@@ -218,7 +220,7 @@ fn errors_display() {
     let err = Document::from_bytes(pdf).expect_err("encrypted");
     assert!(
         err.to_string()
-            .starts_with("encrypted PDF files are not supported")
+            .starts_with("unsupported encryption: missing /Filter")
     );
     assert!(std::error::Error::source(&err).is_some());
     assert!(format!("{doc:?}").starts_with("Document"));

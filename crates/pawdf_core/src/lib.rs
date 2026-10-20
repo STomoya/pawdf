@@ -3,6 +3,7 @@
 #![warn(missing_docs)]
 
 mod content;
+mod crypt;
 mod diag;
 mod error;
 mod file;
