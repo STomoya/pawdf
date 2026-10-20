@@ -67,6 +67,10 @@ def test_index_error() -> None:
         doc[1]
     with pytest.raises(IndexError):
         doc[-2]
+    with pytest.raises(IndexError):
+        doc[2**70]
+    with pytest.raises(IndexError):
+        doc[-(2**70)]
 
 
 def test_open_reads_path(tmp_path: Path) -> None:
