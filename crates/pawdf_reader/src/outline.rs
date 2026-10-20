@@ -10,6 +10,7 @@ use crate::model::{Destination, Outline, OutlineItem};
 struct Cx<'a> {
     file: &'a File,
     pages: HashMap<Ref, usize>,
+    page_count: usize,
     visited: HashSet<u32>,
     diags: Diagnostics,
 }
@@ -34,6 +35,7 @@ pub(crate) fn read(doc: &Inner) -> Outline {
     let mut cx = Cx {
         file,
         pages,
+        page_count: doc.pages.len(),
         visited: HashSet::new(),
         diags: Diagnostics::new(),
     };
@@ -112,6 +114,89 @@ fn chain<'a>(
     out
 }
 
-fn destination(_cx: &mut Cx, _item: &Dict, _at: Location) -> Option<Destination> {
-    None
+/// The item's `/Dest`, else the `/D` of a GoTo `/A` (§12.3.3, Table 151).
+fn destination(cx: &mut Cx, item: &Dict, at: Location) -> Option<Destination> {
+    let action = entry(item, b"A");
+    if let Some(d) = entry(item, b"Dest") {
+        // Table 151: /Dest "shall not be present if an A entry is present".
+        if action.is_some() {
+            cx.bad(at);
+        }
+        return target(cx, d, at);
+    }
+    let action = cx.file.deref(action?);
+    let Some(action) = action.as_dict() else {
+        cx.bad(at);
+        return None;
+    };
+    if action.get(b"S").and_then(Object::as_name) != Some(b"GoTo") {
+        return None;
+    }
+    match entry(action, b"D") {
+        Some(d) => target(cx, d, at),
+        None => {
+            cx.bad(at);
+            None
+        }
+    }
+}
+
+/// A destination value: an explicit array, a dictionary with `/D` (§12.3.2.4), or a name.
+fn target(cx: &mut Cx, value: &Object, at: Location) -> Option<Destination> {
+    let file = cx.file;
+    match file.deref(value) {
+        Object::Array(a) => explicit(cx, a, at),
+        Object::Dict(d) => match d.get(b"D").map(|d| file.deref(d)) {
+            Some(Object::Array(a)) => explicit(cx, a, at),
+            _ => {
+                cx.bad(at);
+                None
+            }
+        },
+        _ => {
+            cx.bad(at);
+            None
+        }
+    }
+}
+
+/// `[page /Form operands…]` (§12.3.2.2, Table 149).
+fn explicit(cx: &mut Cx, arr: &[Object], at: Location) -> Option<Destination> {
+    let page = match arr.first() {
+        Some(Object::Ref(r)) => cx.pages.get(r).copied(),
+        // Only remote GoTo may use a page number, but pdf.js accepts it locally too.
+        Some(Object::Int(n)) => match usize::try_from(*n).ok().filter(|&n| n < cx.page_count) {
+            Some(n) => {
+                cx.bad(at);
+                Some(n)
+            }
+            None => None,
+        },
+        _ => None,
+    };
+    let Some(page) = page else {
+        cx.bad(at);
+        return None;
+    };
+    let file = cx.file;
+    let mut operand = |i: usize| match arr.get(i).map(|o| file.deref(o)) {
+        Some(Object::Null) => None,
+        Some(o) if o.as_number().is_some_and(f64::is_finite) => o.as_number(),
+        _ => {
+            cx.bad(at);
+            None
+        }
+    };
+    let (left, top) = match arr.get(1).map(|o| file.deref(o)).and_then(Object::as_name) {
+        Some(b"XYZ") => (operand(2), operand(3)),
+        Some(b"FitH" | b"FitBH") => (None, operand(2)),
+        Some(b"FitV" | b"FitBV") => (operand(2), None),
+        Some(b"FitR") => (operand(2), operand(5)),
+        Some(b"Fit" | b"FitB") => (None, None),
+        _ => {
+            cx.bad(at);
+            (None, None)
+        }
+    };
+    Some(Destination { page, left, top })
 }

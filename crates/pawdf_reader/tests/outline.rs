@@ -1,7 +1,9 @@
 mod common;
 
 use common::build_pdf;
-use pawdf_reader::{Diagnostic, DiagnosticKind, Document, Location, Outline, OutlineItem, Ref};
+use pawdf_reader::{
+    Destination, Diagnostic, DiagnosticKind, Document, Location, Outline, OutlineItem, Ref,
+};
 
 fn r(num: u32) -> Ref {
     Ref { num, generation: 0 }
@@ -181,4 +183,139 @@ fn non_dict_root_and_links() {
     );
     assert_eq!(titles(&o.items), ["A"]);
     assert_eq!(o.diagnostics, [bad(11)]);
+}
+
+fn dest(page: usize, left: Option<f64>, top: Option<f64>) -> Option<Destination> {
+    Some(Destination { page, left, top })
+}
+
+/// One top-level item per entry, objects 11.., each carrying `entries[i]` verbatim.
+fn items(catalog_extra: &str, entries: &[&str], extra: &[(u32, String)]) -> Outline {
+    let mut objects = vec![obj(10, "<< /First 11 0 R >>")];
+    for (i, e) in entries.iter().enumerate() {
+        let n = 11 + i as u32;
+        let next = if i + 1 < entries.len() {
+            format!("/Next {} 0 R", n + 1)
+        } else {
+            String::new()
+        };
+        objects.push((n, format!("<< /Title (t) {e} {next} >>")));
+    }
+    objects.extend_from_slice(extra);
+    outline(&format!("/Outlines 10 0 R {catalog_extra}"), &objects)
+}
+
+fn dests(o: &Outline) -> Vec<Option<Destination>> {
+    o.items.iter().map(|i| i.dest.clone()).collect()
+}
+
+#[test]
+fn explicit_forms() {
+    let o = items(
+        "",
+        &[
+            "/Dest [4 0 R /XYZ 10 20 0]",
+            "/Dest [4 0 R /XYZ null null null]",
+            "/Dest [4 0 R /Fit]",
+            "/Dest [4 0 R /FitH 30]",
+            "/Dest [4 0 R /FitBH 31]",
+            "/Dest [4 0 R /FitV 40]",
+            "/Dest [4 0 R /FitBV 41]",
+            "/Dest [4 0 R /FitR 1 2 3 4]",
+            "/Dest [4 0 R /FitB]",
+        ],
+        &[],
+    );
+    assert_eq!(o.diagnostics, []);
+    assert_eq!(
+        dests(&o),
+        [
+            dest(1, Some(10.), Some(20.)),
+            dest(1, None, None),
+            dest(1, None, None),
+            dest(1, None, Some(30.)),
+            dest(1, None, Some(31.)),
+            dest(1, Some(40.), None),
+            dest(1, Some(41.), None),
+            dest(1, Some(1.), Some(4.)),
+            dest(1, None, None),
+        ]
+    );
+}
+
+#[test]
+fn goto_action() {
+    let o = items("", &["/A << /S /GoTo /D [3 0 R /Fit] >>"], &[]);
+    assert_eq!(o.diagnostics, []);
+    assert_eq!(dests(&o), [dest(0, None, None)]);
+}
+
+#[test]
+fn indirect_action_and_dest() {
+    let o = items(
+        "",
+        &["/A 20 0 R"],
+        &[
+            obj(20, "<< /S /GoTo /D 21 0 R >>"),
+            obj(21, "[4 0 R /FitH 5]"),
+        ],
+    );
+    assert_eq!(o.diagnostics, []);
+    assert_eq!(dests(&o), [dest(1, None, Some(5.))]);
+}
+
+#[test]
+fn non_goto_action_has_no_dest_and_no_diagnostic() {
+    let o = items("", &["/A << /S /URI /URI (https://x) >>"], &[]);
+    assert_eq!(o.diagnostics, []);
+    assert_eq!(dests(&o), [None]);
+}
+
+#[test]
+fn dest_wins_over_action() {
+    let o = items(
+        "",
+        &["/Dest [4 0 R /Fit] /A << /S /GoTo /D [3 0 R /Fit] >>"],
+        &[],
+    );
+    assert_eq!(dests(&o), [dest(1, None, None)]);
+    assert_eq!(o.diagnostics, [bad(11)]);
+}
+
+#[test]
+fn integer_page_is_accepted() {
+    let o = items("", &["/Dest [1 /Fit]", "/Dest [9 /Fit]"], &[]);
+    assert_eq!(dests(&o), [dest(1, None, None), None]);
+    assert_eq!(o.diagnostics, [bad(11), bad(12)]);
+}
+
+#[test]
+fn bad_destinations() {
+    let o = items(
+        "",
+        &[
+            "/Dest [5 0 R /Fit]",
+            "/Dest []",
+            "/Dest [3 0 R]",
+            "/Dest [3 0 R /Bogus]",
+            "/Dest [3 0 R /XYZ (a) 5]",
+            "/Dest 7",
+        ],
+        &[obj(5, "<< /Type /Font >>")],
+    );
+    assert_eq!(
+        dests(&o),
+        [
+            None,
+            None,
+            dest(0, None, None),
+            dest(0, None, None),
+            dest(0, None, Some(5.)),
+            None,
+        ]
+    );
+    assert_eq!(
+        o.diagnostics,
+        [bad(11), bad(12), bad(13), bad(14), bad(15), bad(16)]
+    );
 }
