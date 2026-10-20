@@ -61,6 +61,9 @@ pub enum DiagnosticKind {
     BadEncryption,
     /// The given password was wrong, but the empty user password opened the file.
     WrongPassword,
+    /// An outline item or destination was malformed; the item was kept, cut, or left without
+    /// a destination.
+    BadOutline,
 }
 
 impl DiagnosticKind {
@@ -92,6 +95,7 @@ impl DiagnosticKind {
             DiagnosticKind::BadImage => "bad_image",
             DiagnosticKind::BadEncryption => "bad_encryption",
             DiagnosticKind::WrongPassword => "wrong_password",
+            DiagnosticKind::BadOutline => "bad_outline",
         }
     }
 }

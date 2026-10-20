@@ -8,8 +8,9 @@ use pawdf_core::{
 use crate::error::{Error, ErrorKind};
 use crate::font::{Font, Shared, load_font};
 use crate::geom::{Matrix, Rect, Rotation};
+use crate::model::Outline;
 
-const MAX_TREE_DEPTH: usize = 64;
+pub(crate) const MAX_TREE_DEPTH: usize = 64;
 
 const LETTER: Rect = Rect {
     x0: 0.,
@@ -120,6 +121,11 @@ impl Document {
                 },
             }),
         }
+    }
+
+    /// The document outline (§12.3.3), read on every call.
+    pub fn outline(&self) -> Outline {
+        crate::outline::read(&self.0)
     }
 
     /// Structural diagnostics: file-level recoveries plus page-tree problems.
