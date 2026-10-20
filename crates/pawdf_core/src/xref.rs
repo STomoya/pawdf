@@ -292,8 +292,10 @@ pub(crate) fn header_matches(data: &[u8], offset: usize, num: u32) -> bool {
 /// parsed are skipped, so crafted files cannot make it quadratic.
 ///
 /// In an encrypted file, object streams are decrypted with `crypt` before being decoded;
-/// without it their members are not found.
-pub(crate) fn repair(data: &[u8], crypt: Option<&Crypt>) -> (Entries, Dict) {
+/// without it their members are not found. Indirect `/Filter` and `/DecodeParms` values,
+/// which name the crypt filter, are read through `known`, a table from an earlier scan or
+/// the xref.
+pub(crate) fn repair(data: &[u8], crypt: Option<(&Crypt, &Entries)>) -> (Entries, Dict) {
     let mut hits: Vec<(usize, Option<u32>)> = memfind_all(data, b"obj")
         .filter_map(|pos| object_start(data, pos))
         .map(|(num, start)| (start, Some(num)))
@@ -340,8 +342,13 @@ pub(crate) fn repair(data: &[u8], crypt: Option<&Crypt>) -> (Entries, Dict) {
                 let origin = Origin::Stream(r);
                 let decrypted;
                 let s = match crypt {
-                    Some(c) => {
+                    Some((c, known)) => {
                         let mut copy = s.clone();
+                        for key in [&b"Filter"[..], b"DecodeParms"] {
+                            if let Some(v) = copy.dict.get_mut(key) {
+                                in_file_values(data, known, v);
+                            }
+                        }
                         c.decrypt_stream(r, &mut copy, Location::File(pos as u64), &mut quiet);
                         decrypted = copy;
                         &decrypted
@@ -388,6 +395,25 @@ pub(crate) fn repair(data: &[u8], crypt: Option<&Crypt>) -> (Entries, Dict) {
         trailer.insert("Root".into(), Object::Ref(r));
     }
     (entries, trailer)
+}
+
+/// Replaces a reference in `value`, or in its top-level array items, with the in-file
+/// object `known` places there. Objects in object streams are left as references.
+fn in_file_values(data: &[u8], known: &Entries, value: &mut Object) {
+    let load = |o: &mut Object| {
+        if let Object::Ref(r) = o
+            && let Some(Entry::InFile { offset }) = known.get(&r.num)
+            && header_matches(data, *offset, r.num)
+            && let Some((_, obj, _)) =
+                parse_indirect_end(data, *offset, &|_| None, &mut Diagnostics::new())
+        {
+            *o = obj;
+        }
+    };
+    load(value);
+    if let Object::Array(items) = value {
+        items.iter_mut().for_each(load);
+    }
 }
 
 fn is_catalog(obj: &Object) -> bool {

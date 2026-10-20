@@ -124,7 +124,7 @@ impl File {
         // The first scan could not decode encrypted object streams, so their members are
         // indexed only now that the key is known.
         if let (Some(_), Some(c)) = (&repaired, &crypt) {
-            (entries, trailer) = xref::repair(&data, Some(c));
+            (entries, trailer) = xref::repair(&data, Some((c, &entries)));
         }
         let root = match trailer.get(b"Root") {
             Some(Object::Ref(r)) if entries.contains_key(&r.num) => *r,
@@ -153,7 +153,8 @@ impl File {
             .is_none()
         {
             file.report(DiagnosticKind::XrefRepaired, Location::File(0));
-            let (entries, trailer) = xref::repair(&file.data, file.crypt.as_ref());
+            let crypt = file.crypt.as_ref().map(|c| (c, &file.table.entries));
+            let (entries, trailer) = xref::repair(&file.data, crypt);
             if !matches!(trailer.get(b"Root"), Some(Object::Ref(r)) if entries.contains_key(&r.num))
             {
                 return Err(Error::new(ErrorKind::Unrecoverable, offset as u64));
@@ -258,7 +259,8 @@ impl File {
     fn repaired_table(&self) -> &Table {
         self.repaired.get_or_init(|| {
             self.report(DiagnosticKind::XrefRepaired, Location::File(0));
-            Table::new(xref::repair(&self.data, self.crypt.as_ref()).0)
+            let crypt = self.crypt.as_ref().map(|c| (c, &self.table.entries));
+            Table::new(xref::repair(&self.data, crypt).0)
         })
     }
 
