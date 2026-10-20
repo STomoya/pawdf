@@ -192,13 +192,15 @@ fn hash(r: u8, pw: &[u8], salt: &[u8], udata: &[u8]) -> Vec<u8> {
     k
 }
 
-/// Algorithm 13: `/Perms` decrypts to `/P` (little-endian) and `adb` at bytes 9..12.
+/// Algorithm 13: `/Perms` decrypts to `/P` (little-endian), `T`/`F` for `/EncryptMetadata` at
+/// byte 8, and `adb` at bytes 9..12.
 fn perms_ok(h: &SecurityHandler, key: &[u8]) -> bool {
     let Ok(block) = <[u8; 16]>::try_from(h.perms.as_slice()) else {
         return false;
     };
+    let meta = if h.encrypt_metadata { b'T' } else { b'F' };
     aes256_ecb_decrypt(key, &block)
-        .is_some_and(|p| p[9..12] == *b"adb" && p[..4] == h.p.to_le_bytes())
+        .is_some_and(|p| p[9..12] == *b"adb" && p[..4] == h.p.to_le_bytes() && p[8] == meta)
 }
 
 #[cfg(test)]
@@ -440,6 +442,10 @@ mod tests {
         let (got, bad) = auth(&h, k, Some("u"));
         assert_eq!(got.map(|(_, kind)| kind), Some(PasswordKind::User));
         assert_eq!(bad, 1);
+
+        let mut h = handler(k);
+        h.encrypt_metadata = !h.encrypt_metadata;
+        assert_eq!(auth(&h, k, Some("u")).1, 1);
     }
 
     #[test]

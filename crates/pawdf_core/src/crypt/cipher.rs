@@ -83,9 +83,6 @@ pub(crate) fn aes_cbc_decrypt(key: &[u8], data: &[u8]) -> Result<Vec<u8>, Vec<u8
     if whole != body.len() {
         return Err(plain);
     }
-    if plain.is_empty() {
-        return Ok(plain);
-    }
     let n = plain.last().copied().unwrap_or(0);
     let pad_ok = (1..=16).contains(&n)
         && plain
@@ -164,6 +161,7 @@ mod tests {
         let ct = encrypt_pkcs7(&key, &iv, b"hello");
         assert_eq!(aes_cbc_decrypt(&key, &ct), Ok(b"hello".to_vec()));
         assert_eq!(aes_cbc_decrypt(&key, &ct[..10]), Err(Vec::new()));
+        assert_eq!(aes_cbc_decrypt(&key, &iv), Err(Vec::new()));
 
         let two = encrypt_pkcs7(&key, &iv, &[b'a'; 20]);
         assert_eq!(aes_cbc_decrypt(&key, &two[..33]), Err(vec![b'a'; 16]));

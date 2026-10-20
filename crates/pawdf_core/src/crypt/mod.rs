@@ -408,12 +408,11 @@ fn string(dict: &Dict, key: &[u8]) -> Vec<u8> {
 }
 
 fn cfm(filter: &Object) -> CryptFilter {
+    let Some(f) = filter.as_dict() else {
+        return CryptFilter::Unknown;
+    };
     // Table 25: /CFM defaults to /None, meaning the data is left as is.
-    match filter
-        .as_dict()
-        .and_then(|f| f.get(b"CFM"))
-        .and_then(Object::as_name)
-    {
+    match f.get(b"CFM").and_then(Object::as_name) {
         None | Some(b"None") => CryptFilter::Identity,
         Some(b"V2") => CryptFilter::Rc4,
         Some(b"AESV2") => CryptFilter::AesV2,
@@ -558,6 +557,14 @@ mod tests {
         assert_eq!(h.eff, CryptFilter::AesV2);
         assert_eq!(h.filter(b"Missing"), CryptFilter::Unknown);
         assert_eq!(h.filter(b"Identity"), CryptFilter::Identity);
+
+        let mut d = standard(&base);
+        d.insert(
+            "CF".into(),
+            Object::Dict(dict(&[("StdCF", Object::Int(1))])),
+        );
+        let h = SecurityHandler::parse(&d, &mut dg).expect("supported");
+        assert_eq!(h.filter(b"StdCF"), CryptFilter::Unknown);
 
         let mut d = standard(&base);
         d.insert("StmF".into(), name("Identity"));
