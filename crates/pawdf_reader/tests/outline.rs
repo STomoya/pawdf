@@ -319,3 +319,108 @@ fn bad_destinations() {
         [bad(11), bad(12), bad(13), bad(14), bad(15), bad(16)]
     );
 }
+
+const TREE: &str = "/Names << /Dests 30 0 R >>";
+
+fn tree(leaf_limits: &str) -> Vec<(u32, String)> {
+    vec![
+        obj(30, "<< /Kids [31 0 R] >>"),
+        (
+            31,
+            format!("<< /Limits {leaf_limits} /Names [(sec.1) [4 0 R /Fit] (sec.2) 32 0 R] >>"),
+        ),
+        obj(32, "<< /D [3 0 R /XYZ 0 700 0] >>"),
+    ]
+}
+
+#[test]
+fn string_name_via_name_tree() {
+    let o = items(
+        TREE,
+        &["/A << /S /GoTo /D (sec.1) >>", "/Dest (sec.2)"],
+        &tree("[(a) (z)]"),
+    );
+    assert_eq!(o.diagnostics, []);
+    assert_eq!(
+        dests(&o),
+        [dest(1, None, None), dest(0, Some(0.), Some(700.))]
+    );
+}
+
+#[test]
+fn wrong_limits_are_ignored() {
+    let o = items(TREE, &["/Dest (sec.1)"], &tree("[(x) (y)]"));
+    assert_eq!(o.diagnostics, []);
+    assert_eq!(dests(&o), [dest(1, None, None)]);
+}
+
+#[test]
+fn name_via_legacy_dests() {
+    let o = items("/Dests << /chap1 [4 0 R /Fit] >>", &["/Dest /chap1"], &[]);
+    assert_eq!(o.diagnostics, []);
+    assert_eq!(dests(&o), [dest(1, None, None)]);
+}
+
+#[test]
+fn string_and_name_share_keys() {
+    let o = items(
+        &format!("{TREE} /Dests << /chap1 [4 0 R /Fit] >>"),
+        &["/Dest /sec.1", "/Dest (chap1)"],
+        &tree("[(a) (z)]"),
+    );
+    assert_eq!(o.diagnostics, []);
+    assert_eq!(dests(&o), [dest(1, None, None), dest(1, None, None)]);
+}
+
+#[test]
+fn name_tree_wins_over_legacy() {
+    let o = items(
+        &format!("{TREE} /Dests << /sec.1 [3 0 R /Fit] >>"),
+        &["/Dest (sec.1)"],
+        &tree("[(a) (z)]"),
+    );
+    assert_eq!(dests(&o), [dest(1, None, None)]);
+}
+
+#[test]
+fn unknown_name() {
+    let o = items(TREE, &["/Dest (nope)"], &tree("[(a) (z)]"));
+    assert_eq!(dests(&o), [None]);
+    assert_eq!(o.diagnostics, [bad(11)]);
+}
+
+#[test]
+fn name_tree_cycle_is_cut() {
+    let o = items(
+        TREE,
+        &["/Dest (a)"],
+        &[
+            obj(30, "<< /Kids [31 0 R 30 0 R] >>"),
+            obj(31, "<< /Names [(a) [3 0 R /Fit]] >>"),
+        ],
+    );
+    assert_eq!(dests(&o), [dest(0, None, None)]);
+    assert_eq!(o.diagnostics, [bad(30)]);
+}
+
+#[test]
+fn odd_names_array() {
+    let o = items(
+        TREE,
+        &["/Dest (a)"],
+        &[obj(30, "<< /Names [(a) [3 0 R /Fit] (b)] >>")],
+    );
+    assert_eq!(dests(&o), [dest(0, None, None)]);
+    assert_eq!(o.diagnostics, [bad(30)]);
+}
+
+#[test]
+fn aliased_name_is_not_followed() {
+    let o = items(
+        TREE,
+        &["/Dest (x)"],
+        &[obj(30, "<< /Names [(x) (y) (y) [3 0 R /Fit]] >>")],
+    );
+    assert_eq!(dests(&o), [None]);
+    assert_eq!(o.diagnostics, [bad(11)]);
+}

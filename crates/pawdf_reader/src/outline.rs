@@ -13,6 +13,10 @@ struct Cx<'a> {
     page_count: usize,
     visited: HashSet<u32>,
     diags: Diagnostics,
+    catalog: Option<&'a Dict>,
+    catalog_at: Location,
+    /// The `/Names /Dests` tree, flattened on the first named lookup.
+    names: Option<HashMap<&'a [u8], &'a Object>>,
 }
 
 impl Cx<'_> {
@@ -32,22 +36,23 @@ pub(crate) fn read(doc: &Inner) -> Outline {
     for (i, p) in doc.pages.iter().enumerate() {
         pages.entry(p.obj).or_insert(i);
     }
+    let root = file.trailer().get(b"Root");
+    let catalog_at = root
+        .and_then(Object::as_ref)
+        .map_or(Location::File(0), Location::Object);
+    let catalog = root.and_then(|c| file.deref(c).as_dict());
     let mut cx = Cx {
         file,
         pages,
         page_count: doc.pages.len(),
         visited: HashSet::new(),
         diags: Diagnostics::new(),
+        catalog,
+        catalog_at,
+        names: None,
     };
-    let root = file.trailer().get(b"Root");
-    let catalog_at = root
-        .and_then(Object::as_ref)
-        .map_or(Location::File(0), Location::Object);
-    let outlines = root
-        .and_then(|c| file.deref(c).as_dict())
-        .and_then(|c| entry(c, b"Outlines"));
     let mut items = Vec::new();
-    if let Some(o) = outlines {
+    if let Some(o) = catalog.and_then(|c| entry(c, b"Outlines")) {
         let at = o.as_ref().map_or(catalog_at, Location::Object);
         match file.deref(o).as_dict() {
             Some(d) => items = chain(&mut cx, entry(d, b"First"), at, 0),
@@ -115,7 +120,7 @@ fn chain<'a>(
 }
 
 /// The item's `/Dest`, else the `/D` of a GoTo `/A` (§12.3.3, Table 151).
-fn destination(cx: &mut Cx, item: &Dict, at: Location) -> Option<Destination> {
+fn destination<'a>(cx: &mut Cx<'a>, item: &'a Dict, at: Location) -> Option<Destination> {
     let action = entry(item, b"A");
     if let Some(d) = entry(item, b"Dest") {
         // Table 151: /Dest "shall not be present if an A entry is present".
@@ -142,7 +147,7 @@ fn destination(cx: &mut Cx, item: &Dict, at: Location) -> Option<Destination> {
 }
 
 /// A destination value: an explicit array, a dictionary with `/D` (§12.3.2.4), or a name.
-fn target(cx: &mut Cx, value: &Object, at: Location) -> Option<Destination> {
+fn target<'a>(cx: &mut Cx<'a>, value: &'a Object, at: Location) -> Option<Destination> {
     let file = cx.file;
     match file.deref(value) {
         Object::Array(a) => explicit(cx, a, at),
@@ -153,6 +158,8 @@ fn target(cx: &mut Cx, value: &Object, at: Location) -> Option<Destination> {
                 None
             }
         },
+        Object::String(key) => named(cx, key, at),
+        Object::Name(key) => named(cx, key.as_bytes(), at),
         _ => {
             cx.bad(at);
             None
@@ -199,4 +206,86 @@ fn explicit(cx: &mut Cx, arr: &[Object], at: Location) -> Option<Destination> {
         }
     };
     Some(Destination { page, left, top })
+}
+
+/// Looks `key` up in the `/Names /Dests` tree, then the legacy catalog `/Dests` (§12.3.2.4).
+/// Strings and names with the same bytes match the same entry.
+fn named<'a>(cx: &mut Cx<'a>, key: &[u8], at: Location) -> Option<Destination> {
+    let file = cx.file;
+    if cx.names.is_none() {
+        let mut names = HashMap::new();
+        if let Some(root) = cx
+            .catalog
+            .and_then(|c| entry(c, b"Names"))
+            .and_then(|n| file.deref(n).as_dict())
+            .and_then(|n| entry(n, b"Dests"))
+        {
+            flatten(cx, root, &mut names);
+        }
+        cx.names = Some(names);
+    }
+    let value = cx
+        .names
+        .as_ref()
+        .and_then(|n| n.get(key).copied())
+        .or_else(|| {
+            cx.catalog
+                .and_then(|c| entry(c, b"Dests"))
+                .and_then(|d| file.deref(d).as_dict())
+                .and_then(|d| d.get(key))
+        });
+    match value.map(|v| file.deref(v)) {
+        // A name mapping to another name is not followed, so lookups cannot loop.
+        Some(Object::Array(_) | Object::Dict(_)) => value.and_then(|v| target(cx, v, at)),
+        _ => {
+            cx.bad(at);
+            None
+        }
+    }
+}
+
+/// Collects a name tree's leaves (§7.9.6). `/Limits` is ignored because writers get it
+/// wrong; the first occurrence of a key wins.
+fn flatten<'a>(cx: &mut Cx<'a>, root: &'a Object, out: &mut HashMap<&'a [u8], &'a Object>) {
+    let file = cx.file;
+    let mut visited = HashSet::new();
+    let mut stack = vec![(root, cx.catalog_at, 0usize)];
+    while let Some((obj, holder, depth)) = stack.pop() {
+        if let Some(r) = obj.as_ref()
+            && !visited.insert(r.num)
+        {
+            cx.bad(holder);
+            continue;
+        }
+        let Some(node) = file.deref(obj).as_dict() else {
+            cx.bad(holder);
+            continue;
+        };
+        let at = obj.as_ref().map_or(holder, Location::Object);
+        if let Some(names) = entry(node, b"Names").map(|n| file.deref(n)) {
+            let Some(names) = names.as_array() else {
+                cx.bad(at);
+                continue;
+            };
+            let (pairs, rest) = names.as_chunks::<2>();
+            if !rest.is_empty() {
+                cx.bad(at);
+            }
+            for [key, value] in pairs {
+                match file.deref(key) {
+                    Object::String(k) => {
+                        out.entry(k.as_slice()).or_insert(value);
+                    }
+                    _ => cx.bad(at),
+                }
+            }
+        }
+        if let Some(kids) = entry(node, b"Kids").map(|k| file.deref(k)) {
+            match kids.as_array() {
+                Some(_) if depth >= MAX_TREE_DEPTH => cx.bad(at),
+                Some(kids) => stack.extend(kids.iter().rev().map(|k| (k, at, depth + 1))),
+                None => cx.bad(at),
+            }
+        }
+    }
 }
