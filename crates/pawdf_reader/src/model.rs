@@ -387,3 +387,37 @@ pub struct Destination {
     /// Top edge in default user space, when the destination gives one.
     pub top: Option<f64>,
 }
+
+/// The annotations of one page (§12.5).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Annotations {
+    /// Annotations in `/Annots` order, of every subtype.
+    pub items: Vec<Annotation>,
+    /// Recoveries made while reading the annotations.
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// One annotation. Its appearance is not read.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Annotation {
+    /// `/Subtype`, e.g. `Link`, `Text`, `Highlight`, `Widget`; empty when missing.
+    pub subtype: String,
+    /// `/Rect` in default user space, normalized; all zero when missing or malformed.
+    pub rect: Rect,
+    /// `/Contents`, decoded.
+    pub contents: Option<String>,
+    /// `/T`, decoded: the author of a markup annotation (§12.5.6.2). Always `None` for a
+    /// `Widget`, whose `/T` is a form field name.
+    pub author: Option<String>,
+    /// `/NM`, decoded: the annotation's name, unique on its page.
+    pub name: Option<String>,
+    /// `/F` annotation flags (§12.5.3); 0 when missing or malformed.
+    pub flags: u32,
+    /// `/QuadPoints` in default user space, four points per quadrilateral, in the order
+    /// written.
+    pub quad_points: Vec<[Point; 4]>,
+    /// Where `/Dest` or a GoTo action points in this document, as for outline items.
+    pub dest: Option<Destination>,
+    /// The URI of a URI action.
+    pub uri: Option<String>,
+}
