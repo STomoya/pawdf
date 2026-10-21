@@ -24,7 +24,8 @@ impl TrueType {
     /// Reads only the `cmap` table, since subset programs in PDFs often lack others.
     pub fn parse(program: &[u8]) -> Option<TrueType> {
         let raw = RawFace::parse(program, 0).ok()?;
-        let table = cmap::Table::parse(raw.table(Tag::from_bytes(b"cmap"))?)?;
+        let data = without_oversized(raw.table(Tag::from_bytes(b"cmap"))?);
+        let table = cmap::Table::parse(&data)?;
         // A font may declare up to 65535 records, all pointing at one subtable, so only
         // the first full-repertoire and the first BMP Unicode subtable are inverted.
         let full = |s: &cmap::Subtable| {
@@ -74,6 +75,41 @@ impl TrueType {
     pub fn simple_gid(&self, code: u8) -> Option<u16> {
         self.simple[usize::from(code)]
     }
+}
+
+/// A copy of `cmap` without the subtables whose 32-bit count runs past the table. ttf-parser
+/// 0.25.1 would reject them anyway, but only after a `debug_assert!` that panics (#21).
+// ponytail: drop once a ttf-parser release includes upstream dcb583b9.
+fn without_oversized(cmap: &[u8]) -> Vec<u8> {
+    let be = |at: usize, n: usize| {
+        let b = cmap.get(at..at.checked_add(n)?)?;
+        Some(b.iter().fold(0u64, |a, &x| a << 8 | u64::from(x)))
+    };
+    let fits = |at: usize| {
+        // (count offset, header length, record size) per format.
+        let (count_at, head, size) = match be(at, 2) {
+            Some(10) => (16, 20, 2),
+            Some(12 | 13) => (12, 16, 12),
+            Some(14) => (6, 10, 11),
+            _ => return true,
+        };
+        be(at + count_at, 4).is_none_or(|c| head + c * size <= (cmap.len() - at) as u64)
+    };
+    let mut out = cmap.to_vec();
+    let mut kept = 0u16;
+    for i in 0..be(2, 2).unwrap_or(0) as usize {
+        let rec = 4 + 8 * i;
+        let Some(offset) = be(rec + 4, 4) else { break };
+        if fits(offset as usize) {
+            let slot = 4 + 8 * usize::from(kept);
+            out[slot..slot + 8].copy_from_slice(&cmap[rec..rec + 8]);
+            kept += 1;
+        }
+    }
+    if let Some(n) = out.get_mut(2..4) {
+        n.copy_from_slice(&kept.to_be_bytes());
+    }
+    out
 }
 
 /// The TrueType (or OpenType) program in `desc`, parsed once per document. `BadFont`
@@ -170,6 +206,24 @@ mod tests {
         let a = load(&f, &shared, Some(&desc), Location::File(0), &mut d).unwrap();
         let b = load(&f, &shared, Some(&desc), Location::File(0), &mut d).unwrap();
         assert!(std::sync::Arc::ptr_eq(&a, &b));
+    }
+
+    #[test]
+    fn oversized_subtable_count_does_not_panic() {
+        // A format 14 subtable whose record count overflows a u32 byte length (#21), then a
+        // format 12 one mapping U+0041 to glyph 5.
+        let be32 = |x: u32| x.to_be_bytes();
+        let mut cmap = vec![
+            0, 0, 0, 2, 0, 0, 0, 5, 0, 0, 0, 20, 0, 3, 0, 10, 0, 0, 0, 30,
+        ];
+        cmap.extend([0, 14, 0, 0, 0, 10]);
+        cmap.extend(be32(0x1800_0000));
+        cmap.extend([0, 12, 0, 0]);
+        for x in [28, 0, 1, 0x41, 0x41, 5] {
+            cmap.extend(be32(x));
+        }
+        let t = TrueType::parse(&crate::testutil::sfnt_tables(&[(*b"cmap", &cmap)])).unwrap();
+        assert_eq!(t.unicode(5), Some("A"));
     }
 
     #[test]
