@@ -1,15 +1,14 @@
 use std::collections::{HashMap, HashSet};
 
-use pawdf_core::{
-    DiagnosticKind, Diagnostics, Dict, File, Location, Object, Ref, decode_text_string,
-};
+use pawdf_core::{DiagnosticKind, Diagnostics, Dict, File, Location, Object, decode_text_string};
 
 use crate::document::{Inner, MAX_TREE_DEPTH};
 use crate::model::{Destination, Outline, OutlineItem};
 
 struct Cx<'a> {
     file: &'a File,
-    pages: HashMap<Ref, usize>,
+    /// Page index by object number; generations are ignored, as `File::resolve` does.
+    pages: HashMap<u32, usize>,
     page_count: usize,
     visited: HashSet<u32>,
     diags: Diagnostics,
@@ -34,7 +33,7 @@ pub(crate) fn read(doc: &Inner) -> Outline {
     let file = &doc.file;
     let mut pages = HashMap::new();
     for (i, p) in doc.pages.iter().enumerate() {
-        pages.entry(p.obj).or_insert(i);
+        pages.entry(p.obj.num).or_insert(i);
     }
     let root = file.trailer().get(b"Root");
     let catalog_at = root
@@ -134,7 +133,12 @@ fn destination<'a>(cx: &mut Cx<'a>, item: &'a Dict, at: Location) -> Option<Dest
         cx.bad(at);
         return None;
     };
-    if action.get(b"S").and_then(Object::as_name) != Some(b"GoTo") {
+    if action
+        .get(b"S")
+        .map(|t| cx.file.deref(t))
+        .and_then(Object::as_name)
+        != Some(b"GoTo")
+    {
         return None;
     }
     match entry(action, b"D") {
@@ -170,7 +174,7 @@ fn target<'a>(cx: &mut Cx<'a>, value: &'a Object, at: Location) -> Option<Destin
 /// `[page /Form operands…]` (§12.3.2.2, Table 149).
 fn explicit(cx: &mut Cx, arr: &[Object], at: Location) -> Option<Destination> {
     let page = match arr.first() {
-        Some(Object::Ref(r)) => cx.pages.get(r).copied(),
+        Some(Object::Ref(r)) => cx.pages.get(&r.num).copied(),
         // Only remote GoTo may use a page number, but pdf.js accepts it locally too.
         Some(Object::Int(n)) => match usize::try_from(*n).ok().filter(|&n| n < cx.page_count) {
             Some(n) => {

@@ -424,3 +424,21 @@ fn aliased_name_is_not_followed() {
     assert_eq!(dests(&o), [None]);
     assert_eq!(o.diagnostics, [bad(11)]);
 }
+
+#[test]
+fn indirect_action_type_is_resolved() {
+    let o = items(
+        "",
+        &["/A << /S 20 0 R /D [4 0 R /Fit] >>"],
+        &[obj(20, "/GoTo")],
+    );
+    assert_eq!(o.diagnostics, []);
+    assert_eq!(dests(&o), [dest(1, None, None)]);
+}
+
+#[test]
+fn page_ref_generation_is_ignored() {
+    let o = items("", &["/Dest [4 1 R /Fit]"], &[]);
+    assert_eq!(o.diagnostics, []);
+    assert_eq!(dests(&o), [dest(1, None, None)]);
+}
