@@ -29,6 +29,7 @@ fuzz_target!(|data: &[u8]| {
         for i in 0..doc.page_count() {
             if let Ok(page) = doc.page(i) {
                 let _ = page.content();
+                let _ = page.annotations();
             }
         }
     }

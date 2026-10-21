@@ -8,7 +8,7 @@ use pawdf_core::{
 use crate::error::{Error, ErrorKind};
 use crate::font::{Font, Shared, load_font};
 use crate::geom::{Matrix, Rect, Rotation};
-use crate::model::Outline;
+use crate::model::{Annotations, Outline};
 
 pub(crate) const MAX_TREE_DEPTH: usize = 64;
 
@@ -165,6 +165,11 @@ impl Page {
         self.info.rotate
     }
 
+    /// The page's annotations (§12.5), read on every call.
+    pub fn annotations(&self) -> Annotations {
+        crate::annotation::read(&self.doc, &self.info)
+    }
+
     /// Maps user space to display space: origin at the top-left of the rotated crop box,
     /// y pointing down, in points.
     pub fn display_matrix(&self) -> Matrix {
@@ -305,7 +310,7 @@ fn intersect(a: Rect, b: Rect) -> Option<Rect> {
     (r.x0 < r.x1 && r.y0 < r.y1).then_some(r)
 }
 
-fn rect(file: &File, obj: &Object) -> Option<Rect> {
+pub(crate) fn rect(file: &File, obj: &Object) -> Option<Rect> {
     let [x0, y0, x1, y1] = numbers::<4>(file, obj)?;
     Some(Rect::from_corners(x0, y0, x1, y1))
 }

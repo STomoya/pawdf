@@ -64,6 +64,9 @@ pub enum DiagnosticKind {
     /// An outline item or destination was malformed; the item was kept, cut, or left without
     /// a destination.
     BadOutline,
+    /// An annotation or its destination was malformed; the annotation was skipped, or an entry
+    /// was left empty or defaulted.
+    BadAnnotation,
 }
 
 impl DiagnosticKind {
@@ -96,6 +99,7 @@ impl DiagnosticKind {
             DiagnosticKind::BadEncryption => "bad_encryption",
             DiagnosticKind::WrongPassword => "wrong_password",
             DiagnosticKind::BadOutline => "bad_outline",
+            DiagnosticKind::BadAnnotation => "bad_annotation",
         }
     }
 }
