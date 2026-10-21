@@ -6,6 +6,8 @@ from pathlib import Path as _Path
 from typing import TYPE_CHECKING
 
 from pawdf._core import (
+    Annotation,
+    Annotations,
     Color,
     Destination,
     Diagnostic,
@@ -34,6 +36,8 @@ if TYPE_CHECKING:
     import os
 
 __all__ = [
+    'Annotation',
+    'Annotations',
     'Color',
     'Destination',
     'Diagnostic',

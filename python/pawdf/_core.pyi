@@ -377,6 +377,8 @@ class Page:
         """Maps user space to top-left, y-down display space with rotation applied."""
     def content(self) -> PageContent:
         """Extract glyphs, painted paths, and images. Releases the GIL while parsing."""
+    def annotations(self) -> Annotations:
+        """The page's annotations. Read on every call. Releases the GIL while parsing."""
 
 @final
 class Destination:
@@ -416,6 +418,49 @@ class Outline:
     @property
     def diagnostics(self) -> list[Diagnostic]:
         """Recoveries made while reading the outline."""
+
+@final
+class Annotation:
+    """One annotation. Its appearance is not read."""
+
+    @property
+    def subtype(self) -> str:
+        """``/Subtype``, e.g. ``'Link'``, ``'Text'``, ``'Highlight'``, ``'Widget'``; empty when missing."""
+    @property
+    def rect(self) -> Rect:
+        """``/Rect`` in default user space, normalized; all zero when missing or malformed."""
+    @property
+    def contents(self) -> str | None:
+        """``/Contents``, decoded."""
+    @property
+    def author(self) -> str | None:
+        """``/T``, decoded: the author of a markup annotation."""
+    @property
+    def name(self) -> str | None:
+        """``/NM``, decoded: the annotation's name, unique on its page."""
+    @property
+    def flags(self) -> int:
+        """``/F`` annotation flags; 0 when missing or malformed."""
+    @property
+    def quad_points(self) -> list[tuple[Point, Point, Point, Point]]:
+        """``/QuadPoints`` in default user space, four points per quadrilateral, as written."""
+    @property
+    def dest(self) -> Destination | None:
+        """Where ``/Dest`` or a GoTo action points in this document."""
+    @property
+    def uri(self) -> str | None:
+        """The URI of a URI action."""
+
+@final
+class Annotations:
+    """The annotations of one page."""
+
+    @property
+    def items(self) -> list[Annotation]:
+        """Annotations in ``/Annots`` order, of every subtype."""
+    @property
+    def diagnostics(self) -> list[Diagnostic]:
+        """Recoveries made while reading the annotations."""
 
 @final
 class Document:

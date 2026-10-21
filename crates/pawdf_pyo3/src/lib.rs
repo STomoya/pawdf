@@ -795,6 +795,96 @@ impl Outline {
     }
 }
 
+/// One annotation. Its appearance is not read.
+#[pyclass(frozen, module = "pawdf._core")]
+struct Annotation(r::Annotation);
+
+type Point2 = (f64, f64);
+type Quad = (Point2, Point2, Point2, Point2);
+
+#[pymethods]
+impl Annotation {
+    #[getter]
+    fn subtype(&self) -> &str {
+        &self.0.subtype
+    }
+
+    #[getter]
+    fn rect(&self) -> Rect4 {
+        rect(self.0.rect)
+    }
+
+    #[getter]
+    fn contents(&self) -> Option<&str> {
+        self.0.contents.as_deref()
+    }
+
+    #[getter]
+    fn author(&self) -> Option<&str> {
+        self.0.author.as_deref()
+    }
+
+    #[getter]
+    fn name(&self) -> Option<&str> {
+        self.0.name.as_deref()
+    }
+
+    #[getter]
+    fn flags(&self) -> u32 {
+        self.0.flags
+    }
+
+    #[getter]
+    fn quad_points(&self) -> Vec<Quad> {
+        self.0
+            .quad_points
+            .iter()
+            .map(|q| {
+                let [a, b, c, d] = q.map(|p| (p.x, p.y));
+                (a, b, c, d)
+            })
+            .collect()
+    }
+
+    #[getter]
+    fn dest(&self) -> Option<Destination> {
+        self.0.dest.clone().map(Destination)
+    }
+
+    #[getter]
+    fn uri(&self) -> Option<&str> {
+        self.0.uri.as_deref()
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        Ok(format!(
+            "Annotation(subtype={}, rect={:?})",
+            self.subtype().into_pyobject(py)?.repr()?,
+            self.rect()
+        ))
+    }
+}
+
+/// The annotations of one page.
+#[pyclass(frozen, module = "pawdf._core")]
+struct Annotations {
+    #[pyo3(get)]
+    items: Py<PyList>,
+    #[pyo3(get)]
+    diagnostics: Py<PyList>,
+}
+
+#[pymethods]
+impl Annotations {
+    fn __repr__(&self, py: Python<'_>) -> String {
+        format!(
+            "Annotations(items={}, diagnostics={})",
+            self.items.bind(py).len(),
+            self.diagnostics.bind(py).len()
+        )
+    }
+}
+
 /// One page of a document.
 #[pyclass(frozen, module = "pawdf._core")]
 struct Page(r::Page);
@@ -836,6 +926,15 @@ impl Page {
             fonts: list(py, c.fonts, FontInfo)?,
             marked_contents: list(py, c.marked_contents, MarkedContent)?,
             diagnostics: diagnostics(py, c.diagnostics)?,
+        })
+    }
+
+    /// The page's annotations, read on every call. Releases the GIL while parsing.
+    fn annotations(&self, py: Python<'_>) -> PyResult<Annotations> {
+        let a = py.detach(|| self.0.annotations());
+        Ok(Annotations {
+            items: list(py, a.items, Annotation)?,
+            diagnostics: diagnostics(py, a.diagnostics)?,
         })
     }
 
@@ -1031,9 +1130,9 @@ mod _core {
 
     #[pymodule_export]
     use super::{
-        Color, Destination, Diagnostic, Document, EncryptedError, Encryption, FontInfo, Glyph,
-        Image, MarkedContent, Outline, OutlineItem, Page, PageContent, PasswordError, Path,
-        PdfError, Permissions, SoftMask, UnsupportedEncryptionError,
+        Annotation, Annotations, Color, Destination, Diagnostic, Document, EncryptedError,
+        Encryption, FontInfo, Glyph, Image, MarkedContent, Outline, OutlineItem, Page, PageContent,
+        PasswordError, Path, PdfError, Permissions, SoftMask, UnsupportedEncryptionError,
     };
 
     #[pyfunction]

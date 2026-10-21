@@ -287,3 +287,35 @@ fn null_and_missing_entries_are_silent() {
     let a = annots("/Annots [null 99 0 R]", &[]);
     assert_eq!(a, Annotations::default());
 }
+
+#[test]
+fn malformed_actions_and_dests() {
+    for body in [
+        "/A 5",
+        "/A << /D [3 0 R /Fit] >>",
+        "/A << /S /GoTo >>",
+        "/Dest << /D 5 >>",
+    ] {
+        let a = one(&format!("/Subtype /Link /Rect [0 0 1 1] {body}"));
+        assert_eq!(a.diagnostics, [bad(10)], "{body}");
+        assert_eq!(a.items[0].dest, None, "{body}");
+    }
+}
+
+#[test]
+fn malformed_name_trees() {
+    for tree in [
+        "/Kids [5]",
+        "/Names 5",
+        "/Names [/k [3 0 R /Fit]]",
+        "/Kids 5",
+    ] {
+        let a = annots_with(
+            &format!("/Names << /Dests << {tree} >> >>"),
+            "/Annots [10 0 R]",
+            &[obj(10, "<< /Subtype /Link /Rect [0 0 1 1] /Dest (k) >>")],
+        );
+        assert_eq!(a.diagnostics, [bad(1), bad(10)], "{tree}");
+        assert_eq!(a.items[0].dest, None, "{tree}");
+    }
+}
