@@ -4,14 +4,15 @@ use std::collections::{HashMap, HashSet};
 
 use pawdf_core::{DiagnosticKind, Diagnostics, Dict, File, Location, Object};
 
-use crate::document::{Inner, MAX_TREE_DEPTH};
+use crate::document::{Inner, MAX_TREE_DEPTH, PageInfo};
 use crate::model::Destination;
 
 pub(crate) struct Cx<'a> {
     pub file: &'a File,
-    /// Page index by object number; generations are ignored, as `File::resolve` does.
-    pages: HashMap<u32, usize>,
-    page_count: usize,
+    doc_pages: &'a [PageInfo],
+    /// Page index by object number, built on the first lookup; generations are ignored, as
+    /// `File::resolve` does.
+    pages: Option<HashMap<u32, usize>>,
     pub diags: Diagnostics,
     /// What every recovery is reported as.
     kind: DiagnosticKind,
@@ -24,15 +25,11 @@ pub(crate) struct Cx<'a> {
 impl<'a> Cx<'a> {
     pub fn new(doc: &'a Inner, kind: DiagnosticKind) -> Self {
         let file = &doc.file;
-        let mut pages = HashMap::new();
-        for (i, p) in doc.pages.iter().enumerate() {
-            pages.entry(p.obj.num).or_insert(i);
-        }
         let root = file.trailer().get(b"Root");
         Cx {
             file,
-            pages,
-            page_count: doc.pages.len(),
+            doc_pages: &doc.pages,
+            pages: None,
             diags: Diagnostics::new(),
             kind,
             catalog: root.and_then(|c| file.deref(c).as_dict()),
@@ -45,6 +42,20 @@ impl<'a> Cx<'a> {
 
     pub fn bad(&mut self, at: Location) {
         self.diags.push(self.kind, at);
+    }
+
+    fn page_index(&mut self, num: u32) -> Option<usize> {
+        let doc_pages = self.doc_pages;
+        self.pages
+            .get_or_insert_with(|| {
+                let mut map = HashMap::with_capacity(doc_pages.len());
+                for (i, p) in doc_pages.iter().enumerate() {
+                    map.entry(p.obj.num).or_insert(i);
+                }
+                map
+            })
+            .get(&num)
+            .copied()
     }
 }
 
@@ -118,15 +129,17 @@ fn target<'a>(cx: &mut Cx<'a>, value: &'a Object, at: Location) -> Option<Destin
 /// `[page /Form operands…]` (§12.3.2.2, Table 149).
 fn explicit(cx: &mut Cx, arr: &[Object], at: Location) -> Option<Destination> {
     let page = match arr.first() {
-        Some(Object::Ref(r)) => cx.pages.get(&r.num).copied(),
+        Some(Object::Ref(r)) => cx.page_index(r.num),
         // Only remote GoTo may use a page number, but pdf.js accepts it locally too.
-        Some(Object::Int(n)) => match usize::try_from(*n).ok().filter(|&n| n < cx.page_count) {
-            Some(n) => {
-                cx.bad(at);
-                Some(n)
+        Some(Object::Int(n)) => {
+            match usize::try_from(*n).ok().filter(|&n| n < cx.doc_pages.len()) {
+                Some(n) => {
+                    cx.bad(at);
+                    Some(n)
+                }
+                None => None,
             }
-            None => None,
-        },
+        }
         _ => None,
     };
     let Some(page) = page else {

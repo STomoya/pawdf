@@ -434,7 +434,10 @@ class Annotation:
         """``/Contents``, decoded."""
     @property
     def author(self) -> str | None:
-        """``/T``, decoded: the author of a markup annotation."""
+        """``/T``, decoded: the author of a markup annotation.
+
+        Always ``None`` for a ``Widget``, whose ``/T`` is a form field name.
+        """
     @property
     def name(self) -> str | None:
         """``/NM``, decoded: the annotation's name, unique on its page."""

@@ -319,3 +319,20 @@ fn malformed_name_trees() {
         assert_eq!(a.items[0].dest, None, "{tree}");
     }
 }
+
+#[test]
+fn repeated_reference_is_skipped() {
+    let a = annots(
+        "/Annots [10 0 R 10 0 R 10 0 R]",
+        &[obj(10, "<< /Subtype /Text /Rect [0 0 1 1] >>")],
+    );
+    assert_eq!(a.diagnostics, [bad(3), bad(3)]);
+    assert_eq!(a.items.len(), 1);
+}
+
+#[test]
+fn widget_has_no_author() {
+    let a = one("/Subtype /Widget /Rect [0 0 1 1] /T (email)");
+    assert_eq!(a.diagnostics, []);
+    assert_eq!(a.items[0].author, None);
+}

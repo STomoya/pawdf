@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use pawdf_core::{DiagnosticKind, Dict, Location, Object, decode_text_string};
 
 use crate::dest::{Cx, destination, entry};
@@ -6,19 +8,30 @@ use crate::geom::{Point, Rect};
 use crate::model::{Annotation, Annotations};
 
 pub(crate) fn read(doc: &Inner, page: &PageInfo) -> Annotations {
-    let mut cx = Cx::new(doc, DiagnosticKind::BadAnnotation);
-    let file = cx.file;
+    let file = &doc.file;
     let page_at = Location::Object(page.obj);
-    let mut items = Vec::new();
-    let annots = file
+    let Some(annots) = file
         .resolve(page.obj)
         .as_dict()
         .and_then(|p| entry(p, b"Annots"))
-        .map(|a| file.deref(a));
+        .map(|a| file.deref(a))
+    else {
+        return Annotations::default();
+    };
+    let mut cx = Cx::new(doc, DiagnosticKind::BadAnnotation);
+    let mut items = Vec::new();
     match annots {
-        None => {}
-        Some(Object::Array(annots)) => {
+        Object::Array(annots) => {
+            let mut seen = HashSet::new();
             for a in annots {
+                // §12.5.2 lists an annotation in one `/Annots` only; following a repeated
+                // reference would duplicate the object in the output for every listing.
+                if let Some(r) = a.as_ref()
+                    && !seen.insert(r)
+                {
+                    cx.bad(page_at);
+                    continue;
+                }
                 match file.deref(a) {
                     Object::Dict(d) => {
                         let at = a.as_ref().map_or(page_at, Location::Object);
@@ -30,7 +43,7 @@ pub(crate) fn read(doc: &Inner, page: &PageInfo) -> Annotations {
                 }
             }
         }
-        Some(_) => cx.bad(page_at),
+        _ => cx.bad(page_at),
     }
     Annotations {
         items,
@@ -69,11 +82,17 @@ fn annotation<'a>(cx: &mut Cx<'a>, d: &'a Dict, at: Location) -> Annotation {
             }
         },
     };
+    // A widget's `/T` is its field's partial name (§12.7.4), not an author.
+    let author = if subtype == "Widget" {
+        None
+    } else {
+        text(cx, d, b"T", at)
+    };
     Annotation {
         subtype,
         rect,
         contents: text(cx, d, b"Contents", at),
-        author: text(cx, d, b"T", at),
+        author,
         name: text(cx, d, b"NM", at),
         flags,
         quad_points: quad_points(cx, d, at),

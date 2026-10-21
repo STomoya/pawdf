@@ -406,7 +406,8 @@ pub struct Annotation {
     pub rect: Rect,
     /// `/Contents`, decoded.
     pub contents: Option<String>,
-    /// `/T`, decoded: the author of a markup annotation (§12.5.6.2).
+    /// `/T`, decoded: the author of a markup annotation (§12.5.6.2). Always `None` for a
+    /// `Widget`, whose `/T` is a form field name.
     pub author: Option<String>,
     /// `/NM`, decoded: the annotation's name, unique on its page.
     pub name: Option<String>,
