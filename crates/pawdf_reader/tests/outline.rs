@@ -442,3 +442,24 @@ fn page_ref_generation_is_ignored() {
     assert_eq!(o.diagnostics, []);
     assert_eq!(dests(&o), [dest(1, None, None)]);
 }
+
+#[test]
+fn action_without_name_type_is_diagnosed() {
+    let o = items(
+        "",
+        &[
+            "/A << /D [4 0 R /Fit] >>",
+            "/A << /S (GoTo) /D [4 0 R /Fit] >>",
+        ],
+        &[],
+    );
+    assert_eq!(dests(&o), [None, None]);
+    assert_eq!(o.diagnostics, [bad(11), bad(12)]);
+}
+
+#[test]
+fn empty_name_tree_node_is_diagnosed() {
+    let o = items(TREE, &["/Dest (a)"], &[obj(30, "<< >>")]);
+    assert_eq!(dests(&o), [None]);
+    assert_eq!(o.diagnostics, [bad(30), bad(11)]);
+}

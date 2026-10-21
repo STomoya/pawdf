@@ -133,13 +133,17 @@ fn destination<'a>(cx: &mut Cx<'a>, item: &'a Dict, at: Location) -> Option<Dest
         cx.bad(at);
         return None;
     };
-    if action
+    match action
         .get(b"S")
         .map(|t| cx.file.deref(t))
         .and_then(Object::as_name)
-        != Some(b"GoTo")
     {
-        return None;
+        Some(b"GoTo") => {}
+        Some(_) => return None,
+        None => {
+            cx.bad(at);
+            return None;
+        }
     }
     match entry(action, b"D") {
         Some(d) => target(cx, d, at),
@@ -266,7 +270,12 @@ fn flatten<'a>(cx: &mut Cx<'a>, root: &'a Object, out: &mut HashMap<&'a [u8], &'
             continue;
         };
         let at = obj.as_ref().map_or(holder, Location::Object);
-        if let Some(names) = entry(node, b"Names").map(|n| file.deref(n)) {
+        let names = entry(node, b"Names").map(|n| file.deref(n));
+        let kids = entry(node, b"Kids").map(|k| file.deref(k));
+        if names.is_none() && kids.is_none() {
+            cx.bad(at);
+        }
+        if let Some(names) = names {
             let Some(names) = names.as_array() else {
                 cx.bad(at);
                 continue;
@@ -284,7 +293,7 @@ fn flatten<'a>(cx: &mut Cx<'a>, root: &'a Object, out: &mut HashMap<&'a [u8], &'
                 }
             }
         }
-        if let Some(kids) = entry(node, b"Kids").map(|k| file.deref(k)) {
+        if let Some(kids) = kids {
             match kids.as_array() {
                 Some(_) if depth >= MAX_TREE_DEPTH => cx.bad(at),
                 Some(kids) => stack.extend(kids.iter().rev().map(|k| (k, at, depth + 1))),
