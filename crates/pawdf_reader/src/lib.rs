@@ -5,6 +5,7 @@
 mod cmap;
 mod content;
 mod data;
+mod dest;
 mod document;
 mod error;
 mod font;
