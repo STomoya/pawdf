@@ -355,3 +355,35 @@ pub struct SoftMask {
     /// The mask data.
     pub data: ImageData,
 }
+
+/// The document outline (bookmarks, §12.3.3).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Outline {
+    /// Top-level items, in `/First` → `/Next` order.
+    pub items: Vec<OutlineItem>,
+    /// Recoveries made while reading the outline.
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// One outline item.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OutlineItem {
+    /// `/Title`, decoded; empty when missing.
+    pub title: String,
+    /// Where the item points in this document, from `/Dest` or a GoTo action. `None` for
+    /// other actions or when the destination cannot be resolved.
+    pub dest: Option<Destination>,
+    /// Child items, in order.
+    pub children: Vec<OutlineItem>,
+}
+
+/// A position in this document (§12.3.2).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Destination {
+    /// 0-based page index.
+    pub page: usize,
+    /// Left edge in default user space, when the destination gives one.
+    pub left: Option<f64>,
+    /// Top edge in default user space, when the destination gives one.
+    pub top: Option<f64>,
+}

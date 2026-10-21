@@ -696,6 +696,105 @@ impl PageContent {
     }
 }
 
+/// A position in this document.
+#[pyclass(frozen, module = "pawdf._core")]
+struct Destination(r::Destination);
+
+fn opt_float(v: Option<f64>) -> String {
+    v.map_or("None".to_owned(), |v| format!("{v:?}"))
+}
+
+#[pymethods]
+impl Destination {
+    #[getter]
+    fn page(&self) -> usize {
+        self.0.page
+    }
+
+    #[getter]
+    fn left(&self) -> Option<f64> {
+        self.0.left
+    }
+
+    #[getter]
+    fn top(&self) -> Option<f64> {
+        self.0.top
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Destination(page={}, left={}, top={})",
+            self.0.page,
+            opt_float(self.0.left),
+            opt_float(self.0.top)
+        )
+    }
+}
+
+/// One outline item.
+#[pyclass(frozen, module = "pawdf._core")]
+struct OutlineItem {
+    #[pyo3(get)]
+    title: String,
+    #[pyo3(get)]
+    dest: Option<Py<Destination>>,
+    #[pyo3(get)]
+    children: Py<PyList>,
+}
+
+/// Recurses once per nesting level, which the reader caps.
+fn outline_items(py: Python<'_>, items: Vec<r::OutlineItem>) -> PyResult<Py<PyList>> {
+    let objs = items
+        .into_iter()
+        .map(|i| {
+            Py::new(
+                py,
+                OutlineItem {
+                    title: i.title,
+                    dest: i.dest.map(|d| Py::new(py, Destination(d))).transpose()?,
+                    children: outline_items(py, i.children)?,
+                },
+            )
+        })
+        .collect::<PyResult<Vec<_>>>()?;
+    Ok(PyList::new(py, objs)?.unbind())
+}
+
+#[pymethods]
+impl OutlineItem {
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        Ok(format!(
+            "OutlineItem(title={}, dest={}, children={})",
+            self.title.clone().into_pyobject(py)?.repr()?,
+            match &self.dest {
+                Some(d) => d.get().__repr__(),
+                None => "None".to_owned(),
+            },
+            self.children.bind(py).len()
+        ))
+    }
+}
+
+/// The document outline (bookmarks).
+#[pyclass(frozen, module = "pawdf._core")]
+struct Outline {
+    #[pyo3(get)]
+    items: Py<PyList>,
+    #[pyo3(get)]
+    diagnostics: Py<PyList>,
+}
+
+#[pymethods]
+impl Outline {
+    fn __repr__(&self, py: Python<'_>) -> String {
+        format!(
+            "Outline(items={}, diagnostics={})",
+            self.items.bind(py).len(),
+            self.diagnostics.bind(py).len()
+        )
+    }
+}
+
 /// One page of a document.
 #[pyclass(frozen, module = "pawdf._core")]
 struct Page(r::Page);
@@ -909,6 +1008,15 @@ impl Document {
         diagnostics(py, self.0.diagnostics())
     }
 
+    /// The document outline (bookmarks). Read on every call. Releases the GIL while parsing.
+    fn outline(&self, py: Python<'_>) -> PyResult<Outline> {
+        let o = py.detach(|| self.0.outline());
+        Ok(Outline {
+            items: outline_items(py, o.items)?,
+            diagnostics: diagnostics(py, o.diagnostics)?,
+        })
+    }
+
     fn __repr__(&self) -> String {
         format!("Document(pages={})", self.0.page_count())
     }
@@ -923,9 +1031,9 @@ mod _core {
 
     #[pymodule_export]
     use super::{
-        Color, Diagnostic, Document, EncryptedError, Encryption, FontInfo, Glyph, Image,
-        MarkedContent, Page, PageContent, PasswordError, Path, PdfError, Permissions, SoftMask,
-        UnsupportedEncryptionError,
+        Color, Destination, Diagnostic, Document, EncryptedError, Encryption, FontInfo, Glyph,
+        Image, MarkedContent, Outline, OutlineItem, Page, PageContent, PasswordError, Path,
+        PdfError, Permissions, SoftMask, UnsupportedEncryptionError,
     };
 
     #[pyfunction]

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from pawdf._core import (
     Color,
+    Destination,
     Diagnostic,
     Document,
     EncryptedError,
@@ -15,6 +16,8 @@ from pawdf._core import (
     Glyph,
     Image,
     MarkedContent,
+    Outline,
+    OutlineItem,
     Page,
     PageContent,
     PasswordError,
@@ -32,6 +35,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     'Color',
+    'Destination',
     'Diagnostic',
     'Document',
     'EncryptedError',
@@ -40,6 +44,8 @@ __all__ = [
     'Glyph',
     'Image',
     'MarkedContent',
+    'Outline',
+    'OutlineItem',
     'Page',
     'PageContent',
     'PasswordError',
