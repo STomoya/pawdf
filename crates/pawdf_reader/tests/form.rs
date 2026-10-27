@@ -489,3 +489,17 @@ fn field_without_widget_entries_has_no_widgets() {
     assert_eq!(field(&f).widgets, []);
     assert_eq!(f.diagnostics, []);
 }
+
+#[test]
+fn empty_string_is_unfilled() {
+    let f = fields(
+        "10 0 R 11 0 R",
+        &[
+            obj(10, "<< /T (t) /FT /Tx /V () >>"),
+            obj(11, "<< /T (l) /FT /Ch /V [() (x)] >>"),
+        ],
+    );
+    let values: Vec<_> = f.items.iter().map(|i| i.values.clone()).collect();
+    assert_eq!(values, [vec![], vec!["x".to_string()]]);
+    assert_eq!(f.diagnostics, []);
+}

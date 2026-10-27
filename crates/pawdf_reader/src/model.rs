@@ -441,7 +441,8 @@ pub struct FormField {
     pub label: Option<String>,
     /// The field type, from the inherited `/FT` and `/Ff`.
     pub kind: FieldKind,
-    /// The value `/V`, decoded; empty when unfilled, off, or not a value-bearing kind. More
+    /// The value `/V`, decoded, without empty strings; empty when unfilled, off, or not a
+    /// value-bearing kind. More
     /// than one only for multi-select list boxes. Password fields are returned as written:
     /// check `flags` bit 14 to filter them.
     pub values: Vec<String>,

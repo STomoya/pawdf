@@ -175,7 +175,12 @@ impl<'a> Walk<'a> {
             name: inh.name.clone().unwrap_or_default(),
             label: text(&mut self.cx, d, b"TU", at),
             kind,
-            values: self.values(kind, inh.v, d, at),
+            // Writers store `()` for a cleared field; it is as unfilled as a missing `/V`.
+            values: {
+                let mut v = self.values(kind, inh.v, d, at);
+                v.retain(|s| !s.is_empty());
+                v
+            },
             flags,
             widgets: widgets
                 .iter()
