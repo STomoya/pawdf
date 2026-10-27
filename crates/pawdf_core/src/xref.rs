@@ -200,7 +200,8 @@ fn read_table(lex: &mut Lexer, diags: &mut Diagnostics) -> (Section, Dict) {
             };
             match (kind.as_slice(), usize::try_from(off)) {
                 (b"n", Ok(offset)) if offset > 0 && offset < data_len && num <= MAX_OBJECT_NUM => {
-                    let generation = generation_or_zero(generation, entry_pos, diags);
+                    let generation =
+                        generation_or_zero(generation, Location::File(entry_pos as u64), diags);
                     section
                         .entries
                         .entry(num)
@@ -221,9 +222,9 @@ fn read_table(lex: &mut Lexer, diags: &mut Diagnostics) -> (Section, Dict) {
 
 /// Generations above 65,535 are invalid (§7.5.4); the entry is kept with generation 0,
 /// since generations are not checked on resolve.
-fn generation_or_zero(generation: i64, at: usize, diags: &mut Diagnostics) -> u16 {
-    u16::try_from(generation).unwrap_or_else(|_| {
-        diags.push(DiagnosticKind::BadXrefEntry, Location::File(at as u64));
+fn generation_or_zero(generation: impl TryInto<u16>, at: Location, diags: &mut Diagnostics) -> u16 {
+    generation.try_into().unwrap_or_else(|_| {
+        diags.push(DiagnosticKind::BadXrefEntry, at);
         0
     })
 }
@@ -314,10 +315,11 @@ fn read_stream(data: &[u8], offset: usize, diags: &mut Diagnostics) -> Option<(S
             let kind = if w0 == 0 { 1 } else { be(f0) };
             // Type 0 is free; §7.5.8.3 treats unknown types as null references.
             let entry = match kind {
-                1 => match (usize::try_from(be(f1)), u16::try_from(be(f2))) {
-                    (Ok(offset), Ok(generation)) if offset > 0 && offset < data.len() => {
-                        Ok(Entry::InFile { offset, generation })
-                    }
+                1 => match usize::try_from(be(f1)) {
+                    Ok(offset) if offset > 0 && offset < data.len() => Ok(Entry::InFile {
+                        offset,
+                        generation: generation_or_zero(be(f2), row_loc, diags),
+                    }),
                     _ => Err(()),
                 },
                 2 => match (u32::try_from(be(f1)), u32::try_from(be(f2))) {
@@ -610,6 +612,22 @@ mod tests {
         assert_eq!(
             section.entries.keys().copied().collect::<Vec<_>>(),
             vec![8388606, 8388607]
+        );
+    }
+
+    /// An oversized generation keeps the entry with generation 0, as in a classic table.
+    #[test]
+    fn oversized_stream_generation_keeps_entry() {
+        let data = xref_stream("/Size 1 /W [1 1 4]", &[1, 5, 0, 1, 0, 0]);
+        let mut d = Diagnostics::new();
+        let (section, _) = read_stream(&data, 0, &mut d).unwrap();
+        assert_eq!(section.entries[&0], at(5));
+        assert_eq!(
+            d.as_slice()
+                .iter()
+                .filter(|x| x.kind == DiagnosticKind::BadXrefEntry)
+                .count(),
+            1
         );
     }
 
