@@ -503,3 +503,46 @@ fn empty_string_is_unfilled() {
     assert_eq!(values, [vec![], vec!["x".to_string()]]);
     assert_eq!(f.diagnostics, []);
 }
+
+#[test]
+fn acroform_without_fields() {
+    assert_eq!(form("/AcroForm << >>", "", "", &[]), FormFields::default());
+}
+
+#[test]
+fn bad_roots() {
+    // 99 dangles (reported by the file, not here); 5 is not a dictionary.
+    let f = fields("99 0 R 5", &[]);
+    assert!(f.items.is_empty());
+    assert_eq!(f.diagnostics, [bad(1)]);
+}
+
+#[test]
+fn null_kid_skipped() {
+    let f = one("/T (a) /FT /Tx /Kids [null]");
+    assert_eq!(names(&f), ["a"]);
+    assert_eq!(f.diagnostics, []);
+}
+
+#[test]
+fn kids_not_array() {
+    let f = one("/T (a) /FT /Tx /Kids 5");
+    assert_eq!(names(&f), ["a"]);
+    assert_eq!(f.diagnostics, [bad(10)]);
+}
+
+#[test]
+fn text_value_image_stream() {
+    let f = fields(
+        "10 0 R",
+        &[
+            obj(10, "<< /T (x) /FT /Tx /V 11 0 R >>"),
+            obj(
+                11,
+                "<< /Length 5 /Filter /DCTDecode >>\nstream\nhello\nendstream",
+            ),
+        ],
+    );
+    assert!(values(&f).is_empty());
+    assert_eq!(f.diagnostics, [bad(10)]);
+}
