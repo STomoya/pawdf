@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use pawdf_core::{DiagnosticKind, Diagnostics, Dict, File, Location, Object};
+use pawdf_core::{DiagnosticKind, Diagnostics, Dict, File, Location, Object, decode_text_string};
 
 use crate::document::{Inner, MAX_TREE_DEPTH, PageInfo};
 use crate::model::Destination;
@@ -62,6 +62,18 @@ impl<'a> Cx<'a> {
 /// `None` for an absent or `null` entry, which §7.3.7 treats alike.
 pub(crate) fn entry<'a>(dict: &'a Dict, key: &[u8]) -> Option<&'a Object> {
     dict.get(key).filter(|o| !matches!(o, Object::Null))
+}
+
+/// A text string entry (§7.9.2.2), decoded; a value of another type is reported.
+pub(crate) fn text(cx: &mut Cx, d: &Dict, key: &[u8], at: Location) -> Option<String> {
+    let v = cx.file.deref(entry(d, key)?);
+    match v.as_string() {
+        Some(s) => Some(decode_text_string(s)),
+        None => {
+            cx.bad(at);
+            None
+        }
+    }
 }
 
 /// The `/Dest` of an outline item or link annotation, else the `/D` of a GoTo `/A` (Tables 151

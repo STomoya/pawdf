@@ -67,6 +67,9 @@ pub enum DiagnosticKind {
     /// An annotation or its destination was malformed; the annotation was skipped, or an entry
     /// was left empty or defaulted.
     BadAnnotation,
+    /// A form field or its widget was malformed; the field was skipped, or an entry was left
+    /// empty or defaulted.
+    BadFormField,
 }
 
 impl DiagnosticKind {
@@ -100,6 +103,7 @@ impl DiagnosticKind {
             DiagnosticKind::WrongPassword => "wrong_password",
             DiagnosticKind::BadOutline => "bad_outline",
             DiagnosticKind::BadAnnotation => "bad_annotation",
+            DiagnosticKind::BadFormField => "bad_form_field",
         }
     }
 }

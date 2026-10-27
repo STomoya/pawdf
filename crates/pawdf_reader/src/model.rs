@@ -421,3 +421,62 @@ pub struct Annotation {
     /// The URI of a URI action.
     pub uri: Option<String>,
 }
+
+/// The interactive form fields of a document (AcroForm, §12.7).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FormFields {
+    /// Terminal fields, in depth-first `/Fields` → `/Kids` order.
+    pub items: Vec<FormField>,
+    /// Recoveries made while reading the form.
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// One terminal form field. Its appearance is not read.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FormField {
+    /// The fully qualified name (§12.7.4.2): the partial names `/T` of the field and its
+    /// ancestors joined with `.`, skipping levels without one. Empty when no level has one.
+    pub name: String,
+    /// `/TU`, decoded: the name shown to users.
+    pub label: Option<String>,
+    /// The field type, from the inherited `/FT` and `/Ff`.
+    pub kind: FieldKind,
+    /// The value `/V`, decoded; empty when unfilled, off, or not a value-bearing kind. More
+    /// than one only for multi-select list boxes. Password fields are returned as written:
+    /// check `flags` bit 14 to filter them.
+    pub values: Vec<String>,
+    /// `/Ff` field flags, inherited (Table 226); 0 when missing or malformed.
+    pub flags: u32,
+    /// Where the field appears, in `/Kids` order.
+    pub widgets: Vec<Widget>,
+}
+
+/// A form field type (§12.7.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldKind {
+    /// `/Tx`.
+    Text,
+    /// `/Btn` without the Radio or Pushbutton flag.
+    CheckBox,
+    /// `/Btn` with the Radio flag.
+    RadioButton,
+    /// `/Btn` with the Pushbutton flag.
+    PushButton,
+    /// `/Ch` with the Combo flag.
+    ComboBox,
+    /// `/Ch` without the Combo flag.
+    ListBox,
+    /// `/Sig`.
+    Signature,
+    /// `/FT` missing or unrecognized.
+    Unknown,
+}
+
+/// One widget annotation of a form field.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Widget {
+    /// 0-based index of the page that holds the widget; `None` when none does.
+    pub page: Option<usize>,
+    /// `/Rect` in default user space, normalized; all zero when missing or malformed.
+    pub rect: Rect,
+}
