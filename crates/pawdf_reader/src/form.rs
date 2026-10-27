@@ -7,7 +7,7 @@ use crate::document::{Inner, MAX_TREE_DEPTH, PageInfo, rect};
 use crate::geom::Rect;
 use crate::model::{FieldKind, FormField, FormFields, Widget};
 
-/// Field flags (Table 227 and §12.7.5).
+/// Field flags (Table 229 for buttons, Table 233 for choices).
 const RADIO: u32 = 1 << 15;
 const PUSHBUTTON: u32 = 1 << 16;
 const COMBO: u32 = 1 << 17;
@@ -133,7 +133,11 @@ impl<'a> Walk<'a> {
                                 fields.push(kid);
                             }
                         }
-                        Object::Dict(k) => widgets.push((kid, k)),
+                        Object::Dict(k) => {
+                            if self.first_visit(kid, at) {
+                                widgets.push((kid, k));
+                            }
+                        }
                         Object::Null => {}
                         _ => self.cx.bad(at),
                     }
@@ -240,16 +244,21 @@ impl<'a> Walk<'a> {
                     return Vec::new();
                 }
                 // §12.7.5.2.3: with `/Opt`, the appearance state names are indices into it.
-                let opt = std::str::from_utf8(n)
+                let index = std::str::from_utf8(n)
                     .ok()
-                    .and_then(|n| n.parse::<usize>().ok())
-                    .and_then(|i| {
-                        entry(d, b"Opt")
-                            .and_then(|o| file.deref(o).as_array())
-                            .and_then(|o| o.get(i))
-                    })
-                    .and_then(|o| file.deref(o).as_string());
-                vec![match opt {
+                    .and_then(|n| n.parse::<usize>().ok());
+                let opts = entry(d, b"Opt").and_then(|o| file.deref(o).as_array());
+                let label = match (index, opts) {
+                    (Some(i), Some(opts)) => {
+                        let s = opts.get(i).and_then(|o| file.deref(o).as_string());
+                        if s.is_none() {
+                            self.cx.bad(at);
+                        }
+                        s
+                    }
+                    _ => None,
+                };
+                vec![match label {
                     Some(s) => decode_text_string(s),
                     None => String::from_utf8_lossy(n).into_owned(),
                 }]

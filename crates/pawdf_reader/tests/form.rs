@@ -323,7 +323,23 @@ fn checkbox_opt_index() {
 
 #[test]
 fn checkbox_opt_out_of_range() {
-    assert_eq!(values(&one("/T (x) /FT /Btn /V /5 /Opt [(a)]")), ["5"]);
+    let f = one("/T (x) /FT /Btn /V /5 /Opt [(a)]");
+    assert_eq!(values(&f), ["5"]);
+    assert_eq!(f.diagnostics, [bad(10)]);
+}
+
+#[test]
+fn checkbox_opt_not_string() {
+    let f = one("/T (x) /FT /Btn /V /0 /Opt [5]");
+    assert_eq!(values(&f), ["0"]);
+    assert_eq!(f.diagnostics, [bad(10)]);
+}
+
+#[test]
+fn checkbox_numeric_state_without_opt() {
+    let f = one("/T (x) /FT /Btn /V /1");
+    assert_eq!(values(&f), ["1"]);
+    assert_eq!(f.diagnostics, []);
 }
 
 #[test]
@@ -425,6 +441,23 @@ fn kid_widgets() {
         ]
     );
     assert_eq!(f.diagnostics, []);
+}
+
+#[test]
+fn widget_listed_twice_read_once() {
+    let f = form(
+        "/AcroForm << /Fields [10 0 R 11 0 R] >>",
+        "/Annots [12 0 R]",
+        "",
+        &[
+            obj(10, "<< /T (a) /FT /Tx /Kids [12 0 R 12 0 R] >>"),
+            obj(11, "<< /T (b) /FT /Tx /Kids [12 0 R] >>"),
+            obj(12, "<< /Subtype /Widget /Rect [0 0 1 1] >>"),
+        ],
+    );
+    let widgets: Vec<_> = f.items.iter().map(|i| i.widgets.len()).collect();
+    assert_eq!(widgets, [1, 0]);
+    assert_eq!(f.diagnostics, [bad(10), bad(11)]);
 }
 
 #[test]
