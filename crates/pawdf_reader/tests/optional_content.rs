@@ -150,12 +150,34 @@ fn untyped_membership_dictionary() {
 }
 
 #[test]
+fn untyped_group_with_null_membership_keys() {
+    let props = "<< /OCGs [20 0 R] /D << /OFF [20 0 R] >> >>";
+    let c = content(
+        props,
+        &format!("/OC /m BDC {} EMC", t("a")),
+        &[obj(20, "<< /Name (G) /OCGs null /VE null >>")],
+    );
+    assert_eq!(glyphs_hidden(&c), [true]);
+    assert_eq!(kinds(&c), []);
+}
+
+#[test]
 fn malformed_memberships_are_visible() {
     let got = under_ocmd("<< /Type /OCMD /OCGs 5 >>", &[]);
     assert_eq!(got, (false, vec![DiagnosticKind::BadOptionalContent]));
     // Not a dictionary: reported as a bad `/Properties` entry only.
     let got = under_ocmd("(x)", &[]);
     assert_eq!(got, (false, vec![DiagnosticKind::MissingResource]));
+    // A group not in `/OCGs` has no effect, so inverting policies do not hide either.
+    let extra = [obj(13, "<< /Type /OCG /Name (U) >>")];
+    for ocmd in [
+        "<< /Type /OCMD /OCGs [13 0 R] /P /AllOff >>",
+        "<< /Type /OCMD /OCGs 13 0 R /P /AnyOff >>",
+        "<< /Type /OCMD /VE [/Not 13 0 R] >>",
+    ] {
+        let want = (false, vec![DiagnosticKind::BadOptionalContent]);
+        assert_eq!(under_ocmd(ocmd, &extra), want, "{ocmd}");
+    }
     // An unknown policy falls back to the default `/AnyOn`.
     let got = under_ocmd("<< /Type /OCMD /OCGs [11 0 R] /P /Most >>", &[]);
     assert_eq!(got, (true, vec![DiagnosticKind::BadOptionalContent]));
@@ -182,11 +204,25 @@ fn visibility_expressions() {
         ("[/Or 11 0 R 10 0 R]", false),
         ("[/Or 11 0 R [/Not 10 0 R]]", true),
         ("40 0 R", true),
+        ("[/Or [/Not 13 0 R] 11 0 R]", true),
+        ("[/And 10 0 R [/Not 13 0 R]]", false),
     ] {
         // `/VE` overrides `/OCGs` and `/P`.
         let ocmd = format!("<< /Type /OCMD /OCGs [11 0 R] /P /AllOff /VE {ve} >>");
-        let extra = [obj(40, "[/And 10 0 R [/Not 12 0 R]]")];
-        assert_eq!(under_ocmd(&ocmd, &extra), (hidden, vec![]), "{ve}");
+        let extra = [
+            obj(40, "[/And 10 0 R [/Not 12 0 R]]"),
+            obj(13, "<< /Type /OCG /Name (U) >>"),
+        ];
+        let (got, kinds) = under_ocmd(&ocmd, &extra);
+        assert_eq!(got, hidden, "{ve}");
+        // 13 is not in `/OCGs`, so it is reported and left out.
+        assert!(
+            kinds
+                .iter()
+                .all(|&k| k == DiagnosticKind::BadOptionalContent),
+            "{ve}"
+        );
+        assert_eq!(kinds.is_empty(), !ve.contains("13"), "{ve}");
     }
 }
 
@@ -214,6 +250,28 @@ fn self_referencing_expression_hits_depth_limit() {
         under_ocmd(ocmd, &extra),
         (false, vec![DiagnosticKind::RecursionLimit])
     );
+}
+
+#[test]
+fn depth_limit_is_retried_at_a_shallower_use() {
+    // 80 is first reached at depth 31 under /m, where its operand exceeds the limit.
+    let mut extra: Vec<(u32, Vec<u8>)> = (40..70)
+        .map(|n| obj(n, &format!("[/And {} 0 R]", n + 1)))
+        .collect();
+    extra.push(obj(70, "[/And 80 0 R]"));
+    extra.push(obj(80, "[/Not [/Not 11 0 R]]"));
+    extra.push(obj(20, "<< /Type /OCMD /VE 40 0 R >>"));
+    let c = content(
+        PROPS,
+        &format!(
+            "/OC /m BDC {} EMC /OC << /Type /OCMD /VE 80 0 R >> BDC {} EMC",
+            t("a"),
+            t("b")
+        ),
+        &extra,
+    );
+    assert_eq!(glyphs_hidden(&c), [false, true]);
+    assert_eq!(kinds(&c), [DiagnosticKind::RecursionLimit]);
 }
 
 #[test]
@@ -255,6 +313,24 @@ fn intents_outside_the_configuration_are_ignored() {
         assert_eq!(glyphs_hidden(&c), want, "{d}");
         assert_eq!(kinds(&c), [], "{d}");
     }
+    // An ignored group has no effect, so inverting policies do not hide either.
+    let props = "<< /OCGs [21 0 R 22 0 R] /D << /OFF [21 0 R] >> >>";
+    let ops = format!(
+        "/OC << /OCGs [21 0 R] /P /AllOff >> BDC {} EMC /OC << /VE [/Not 21 0 R] >> BDC {} EMC",
+        t("a"),
+        t("b")
+    );
+    let c = content(props, &ops, &groups);
+    assert_eq!(glyphs_hidden(&c), [false, false]);
+    assert_eq!(kinds(&c), []);
+}
+
+#[test]
+fn null_entries_in_the_configuration_are_deleted_groups() {
+    let props = "<< /OCGs [10 0 R 11 0 R 12 0 R null] /D << /ON [null] /OFF [11 0 R null] >> >>";
+    let c = content(props, &format!("/OC /off BDC {} EMC", t("a")), &[]);
+    assert_eq!(glyphs_hidden(&c), [true]);
+    assert_eq!(kinds(&c), []);
 }
 
 #[test]
@@ -403,6 +479,25 @@ fn sequences_past_the_depth_limit_still_hide() {
     );
     assert_eq!(glyphs_hidden(&c), [true, false, false]);
     assert_eq!(kinds(&c), [DiagnosticKind::RecursionLimit]);
+}
+
+#[test]
+fn bad_oc_properties_past_the_depth_limit_are_reported() {
+    let open = "/Span BMC ".repeat(256);
+    let close = "EMC ".repeat(256);
+    let c = content(
+        PROPS,
+        &format!("{open}/OC /missing BDC EMC /OC 5 BDC EMC {close}"),
+        &[],
+    );
+    assert_eq!(
+        kinds(&c),
+        [
+            DiagnosticKind::MissingResource,
+            DiagnosticKind::RecursionLimit,
+            DiagnosticKind::BadOperands
+        ]
+    );
 }
 
 #[test]

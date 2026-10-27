@@ -58,11 +58,11 @@ impl Interp<'_> {
 
     /// Opens a sequence. It is opened even when malformed, so that its `EMC` balances.
     fn begin_marked(&mut self, tag: Option<&[u8]>, props: Option<&Object>, at: Location) {
-        let hides = tag == Some(b"OC") && self.marked_oc_hides(props, at);
-        if self.marked.dropped > 0
+        let dropping = self.marked.dropped > 0
             || self.marked.open.len() >= MAX_MARKED_DEPTH
-            || self.out.marked_contents.len() >= MAX_MARKED_CONTENTS
-        {
+            || self.out.marked_contents.len() >= MAX_MARKED_CONTENTS;
+        let hides = tag == Some(b"OC") && self.marked_oc_hides(props, at, dropping);
+        if dropping {
             if hides && self.marked.dropped_hiding.is_none() {
                 self.marked.dropped_hiding = Some(self.marked.dropped);
                 self.hidden += 1;
@@ -105,16 +105,27 @@ impl Interp<'_> {
 
     /// §8.11.3.2: `/OC /name BDC` names an optional content group or membership dictionary in
     /// `/Properties`. An inline dictionary is accepted too. Missing or malformed properties
-    /// are reported by `read_span`.
-    fn marked_oc_hides(&mut self, props: Option<&Object>, at: Location) -> bool {
+    /// are reported by `read_span`, or here when `report`, for a sequence it does not read.
+    fn marked_oc_hides(&mut self, props: Option<&Object>, at: Location, report: bool) -> bool {
+        let file = self.file;
         let oc = match props {
-            Some(Object::Name(n)) => self.resource_entry(b"Properties", n.as_bytes()),
+            Some(Object::Name(n)) => {
+                let oc = self
+                    .resource_entry(b"Properties", n.as_bytes())
+                    .filter(|oc| file.deref(oc).as_dict().is_some());
+                if oc.is_none() && report {
+                    self.diags.push(DiagnosticKind::MissingResource, at);
+                }
+                oc
+            }
             Some(p @ Object::Dict(_)) => Some(p),
+            Some(_) if report => {
+                self.diags.push(DiagnosticKind::BadOperands, at);
+                None
+            }
             _ => None,
         };
-        let file = self.file;
-        oc.filter(|oc| file.deref(oc).as_dict().is_some())
-            .is_some_and(|oc| self.oc_hides(oc, at))
+        oc.is_some_and(|oc| self.oc_hides(oc, at))
     }
 
     fn marked_limit(&mut self, at: Location) {

@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use pawdf_core::{DiagnosticKind, Diagnostics, Dict, File, Location, Object, decode_text_string};
 
-use crate::document::{Inner, MAX_TREE_DEPTH, PageInfo};
+use crate::document::{Inner, MAX_TREE_DEPTH, PageInfo, catalog};
 use crate::model::Destination;
 
 pub(crate) struct Cx<'a> {
@@ -25,17 +25,15 @@ pub(crate) struct Cx<'a> {
 impl<'a> Cx<'a> {
     pub fn new(doc: &'a Inner, kind: DiagnosticKind) -> Self {
         let file = &doc.file;
-        let root = file.trailer().get(b"Root");
+        let (catalog, catalog_at) = catalog(file);
         Cx {
             file,
             doc_pages: &doc.pages,
             pages: None,
             diags: Diagnostics::new(),
             kind,
-            catalog: root.and_then(|c| file.deref(c).as_dict()),
-            catalog_at: root
-                .and_then(Object::as_ref)
-                .map_or(Location::File(0), Location::Object),
+            catalog,
+            catalog_at,
             names: None,
         }
     }

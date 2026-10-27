@@ -5,29 +5,25 @@ use std::collections::{HashMap, HashSet};
 use pawdf_core::{Diagnostic, DiagnosticKind, Diagnostics, Dict, File, Location, Object, Ref};
 
 use crate::dest::entry;
-use crate::document::Inner;
+use crate::document::{self, Inner, catalog};
 
 const MAX_DEPTH: usize = 32;
 
-/// The groups of `/OCProperties` and which of them the default configuration turns off.
+/// The groups of `/OCProperties`, which of them the default configuration turns off, and
+/// which it ignores for their intent.
 #[derive(Default)]
 pub(crate) struct Config {
     groups: HashSet<Ref>,
     off: HashSet<Ref>,
+    ignored: HashSet<Ref>,
 }
 
 /// Reads the catalog's `/OCProperties` (§8.11.4.2) and its `/D` (§8.11.4.3).
 pub(crate) fn read(file: &File) -> (Config, Vec<Diagnostic>) {
     let mut diags = Diagnostics::new();
     let mut config = Config::default();
-    let root = file.trailer().get(b"Root");
-    let at = root
-        .and_then(Object::as_ref)
-        .map_or(Location::File(0), Location::Object);
-    let Some(props) = root
-        .and_then(|r| file.deref(r).as_dict())
-        .and_then(|c| entry(c, b"OCProperties"))
-    else {
+    let (catalog, at) = catalog(file);
+    let Some(props) = catalog.and_then(|c| entry(c, b"OCProperties")) else {
         return (config, Vec::new());
     };
     let bad = |diags: &mut Diagnostics| diags.push(DiagnosticKind::BadOptionalContent, at);
@@ -43,11 +39,10 @@ pub(crate) fn read(file: &File) -> (Config, Vec<Diagnostic>) {
             bad(diags);
             return Vec::new();
         };
-        let refs: Vec<Ref> = items.iter().filter_map(Object::as_ref).collect();
-        if refs.len() < items.len() {
-            bad(diags);
-        }
-        refs
+        // Deleted groups (null) have no effect (Table 99).
+        document::refs(items.iter().filter(|o| !matches!(o, Object::Null)), || {
+            bad(diags)
+        })
     };
     config.groups = refs(props, b"OCGs", &mut diags).into_iter().collect();
     let Some(d) = entry(props, b"D").and_then(|d| file.deref(d).as_dict()) else {
@@ -96,15 +91,19 @@ pub(crate) fn read(file: &File) -> (Config, Vec<Diagnostic>) {
             }
         }
     }
-    // §8.11.4.3: groups whose intent shares nothing with the configuration's are ignored, so
-    // they never hide content.
+    // §8.11.4.3: groups whose intent shares nothing with the configuration's are ignored.
     let wanted = intents(d, &mut diags);
     if !wanted.iter().any(|i| i == b"All") {
-        config.off.retain(|r| {
-            file.resolve(*r)
-                .as_dict()
-                .is_none_or(|g| intents(g, &mut diags).iter().any(|i| wanted.contains(i)))
-        });
+        config.ignored = config
+            .groups
+            .iter()
+            .copied()
+            .filter(|r| {
+                file.resolve(*r)
+                    .as_dict()
+                    .is_some_and(|g| !intents(g, &mut diags).iter().any(|i| wanted.contains(i)))
+            })
+            .collect();
     }
     (config, diags.into_vec())
 }
@@ -116,7 +115,8 @@ pub(crate) struct Visibility<'a> {
     /// Results by object, so a membership dictionary or subexpression shared by reference is
     /// evaluated once per pass. This bounds the work by the size of the file.
     memberships: HashMap<Ref, bool>,
-    exprs: HashMap<Ref, Result<bool, DiagnosticKind>>,
+    /// Expression results with the depth they were evaluated at.
+    exprs: HashMap<Ref, (usize, Result<Option<bool>, DiagnosticKind>)>,
 }
 
 /// Whether the `/OC` value `oc`, an optional content group or membership dictionary, is off.
@@ -169,15 +169,15 @@ impl Visibility<'_> {
         let ocmd = match d.get(b"Type").and_then(|t| self.file.deref(t).as_name()) {
             Some(b"OCMD") => true,
             Some(b"OCG") => false,
-            _ => d.get(b"OCGs").is_some() || d.get(b"VE").is_some(),
+            _ => entry(d, b"OCGs").is_some() || entry(d, b"VE").is_some(),
         };
         if !ocmd {
-            return self.group(oc.as_ref(), at, diags);
+            return self.group(oc.as_ref(), at, diags).unwrap_or(true);
         }
         // §8.11.2.2: `/VE`, when present, overrides `/OCGs` and `/P`.
         if let Some(ve) = entry(d, b"VE") {
             return match self.expr(ve, 0, at, diags) {
-                Ok(on) => on,
+                Ok(on) => on.unwrap_or(true),
                 Err(kind) => {
                     diags.push(kind, at);
                     true
@@ -187,14 +187,14 @@ impl Visibility<'_> {
         let states: Vec<bool> = match entry(d, b"OCGs") {
             None => return true,
             Some(Object::Ref(r)) if self.file.resolve(*r).as_dict().is_some() => {
-                vec![self.group(Some(*r), at, diags)]
+                self.group(Some(*r), at, diags).into_iter().collect()
             }
             Some(g) => match self.file.deref(g) {
                 // Deleted groups (null) have no effect (Table 99).
                 Object::Array(a) => a
                     .iter()
                     .filter(|g| !matches!(self.file.deref(g), Object::Null))
-                    .map(|g| self.group(g.as_ref(), at, diags))
+                    .filter_map(|g| self.group(g.as_ref(), at, diags))
                     .collect(),
                 Object::Null => return true,
                 _ => {
@@ -222,34 +222,41 @@ impl Visibility<'_> {
         }
     }
 
-    /// The state of a group by reference; a group not in `/OCGs` is reported and on.
-    fn group(&self, r: Option<Ref>, at: Location, diags: &mut Diagnostics) -> bool {
+    /// The state of a group by reference, or `None` when it has no effect: ignored for its
+    /// intent, or not in `/OCGs` (reported).
+    fn group(&self, r: Option<Ref>, at: Location, diags: &mut Diagnostics) -> Option<bool> {
         match r {
-            Some(r) if self.config.groups.contains(&r) => !self.config.off.contains(&r),
+            Some(r) if self.config.groups.contains(&r) => {
+                (!self.config.ignored.contains(&r)).then(|| !self.config.off.contains(&r))
+            }
             _ => {
                 Self::bad(diags, at);
-                true
+                None
             }
         }
     }
 
-    /// A visibility expression (§8.11.2.2): a group, or `[/And|/Or|/Not operands…]`.
+    /// A visibility expression (§8.11.2.2): a group, or `[/And|/Or|/Not operands…]`. `None`
+    /// when it has no effect.
     fn expr(
         &mut self,
         e: &Object,
         depth: usize,
         at: Location,
         diags: &mut Diagnostics,
-    ) -> Result<bool, DiagnosticKind> {
+    ) -> Result<Option<bool>, DiagnosticKind> {
         let Some(r) = e.as_ref() else {
             return self.expr_uncached(e, depth, at, diags);
         };
-        // A result is reused at any depth, even a depth limit hit deeper than this use.
-        if let Some(&v) = self.exprs.get(&r) {
+        // A depth limit hit deeper than this use may not recur here, so it is retried. Each
+        // retry is shallower, so an object is evaluated at most `MAX_DEPTH + 1` times.
+        if let Some(&(was, v)) = self.exprs.get(&r)
+            && (v != Err(DiagnosticKind::RecursionLimit) || depth >= was)
+        {
             return v;
         }
         let v = self.expr_uncached(e, depth, at, diags);
-        self.exprs.insert(r, v);
+        self.exprs.insert(r, (depth, v));
         v
     }
 
@@ -259,7 +266,7 @@ impl Visibility<'_> {
         depth: usize,
         at: Location,
         diags: &mut Diagnostics,
-    ) -> Result<bool, DiagnosticKind> {
+    ) -> Result<Option<bool>, DiagnosticKind> {
         if depth > MAX_DEPTH {
             return Err(DiagnosticKind::RecursionLimit);
         }
@@ -271,17 +278,21 @@ impl Visibility<'_> {
         let Some((op, args)) = items.split_first() else {
             return Err(DiagnosticKind::BadOptionalContent);
         };
-        let (mut all, mut any) = (true, false);
+        // Operands without effect are left out; an operator left with none has none either.
+        let (mut all, mut any, mut some) = (true, false, false);
         for a in args {
-            let v = self.expr(a, depth + 1, at, diags)?;
-            all &= v;
-            any |= v;
+            if let Some(v) = self.expr(a, depth + 1, at, diags)? {
+                all &= v;
+                any |= v;
+                some = true;
+            }
         }
-        match (self.file.deref(op).as_name(), args.len()) {
-            (Some(b"Not"), 1) => Ok(!all),
-            (Some(b"And"), 1..) => Ok(all),
-            (Some(b"Or"), 1..) => Ok(any),
-            _ => Err(DiagnosticKind::BadOptionalContent),
-        }
+        let v = match (self.file.deref(op).as_name(), args.len()) {
+            (Some(b"Not"), 1) => !all,
+            (Some(b"And"), 1..) => all,
+            (Some(b"Or"), 1..) => any,
+            _ => return Err(DiagnosticKind::BadOptionalContent),
+        };
+        Ok(some.then_some(v))
     }
 }

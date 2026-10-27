@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use pawdf_core::{
-    Diagnostic, DiagnosticKind, Diagnostics, Encryption, File, Location, Object, Ref,
+    Diagnostic, DiagnosticKind, Diagnostics, Dict, Encryption, File, Location, Object, Ref,
 };
 
 use crate::error::{Error, ErrorKind};
@@ -327,6 +327,35 @@ fn intersect(a: Rect, b: Rect) -> Option<Rect> {
 pub(crate) fn rect(file: &File, obj: &Object) -> Option<Rect> {
     let [x0, y0, x1, y1] = numbers::<4>(file, obj)?;
     Some(Rect::from_corners(x0, y0, x1, y1))
+}
+
+/// The catalog (trailer `/Root`) and where to report problems with it.
+pub(crate) fn catalog(file: &File) -> (Option<&Dict>, Location) {
+    let root = file.trailer().get(b"Root");
+    let at = root
+        .and_then(Object::as_ref)
+        .map_or(Location::File(0), Location::Object);
+    (root.and_then(|c| file.deref(c).as_dict()), at)
+}
+
+/// The references among `items`, calling `bad` once if anything else is dropped.
+pub(crate) fn refs<'o>(
+    items: impl IntoIterator<Item = &'o Object>,
+    bad: impl FnOnce(),
+) -> Vec<Ref> {
+    let mut all = true;
+    let refs = items
+        .into_iter()
+        .filter_map(|o| {
+            let r = o.as_ref();
+            all &= r.is_some();
+            r
+        })
+        .collect();
+    if !all {
+        bad();
+    }
+    refs
 }
 
 /// Exactly `N` finite numbers from an array, resolving indirect elements.

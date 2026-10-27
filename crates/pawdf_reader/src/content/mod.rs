@@ -15,7 +15,7 @@ use pawdf_core::{
 };
 
 use crate::dest::entry;
-use crate::document::{Inner, Page, numbers};
+use crate::document::{Inner, Page, numbers, refs};
 use crate::font::Font;
 use crate::geom::{Matrix, Point, Rect};
 use crate::image::{ImageParts, expand_inline, read_image};
@@ -87,19 +87,13 @@ fn content_streams(file: &File, page: Ref, diags: &mut Diagnostics) -> Vec<Ref> 
     let Some(dict) = file.resolve(page).as_dict() else {
         return Vec::new();
     };
-    let refs = |a: &[Object], diags: &mut Diagnostics| {
-        let refs: Vec<Ref> = a.iter().filter_map(Object::as_ref).collect();
-        if refs.len() < a.len() {
-            diags.push(DiagnosticKind::BadPageTree, Location::Object(page));
-        }
-        refs
-    };
+    let bad = || diags.push(DiagnosticKind::BadPageTree, Location::Object(page));
     match dict.get(b"Contents") {
         Some(Object::Ref(r)) => match file.resolve(*r) {
-            Object::Array(a) => refs(a, diags),
+            Object::Array(a) => refs(a, bad),
             _ => vec![*r],
         },
-        Some(Object::Array(a)) => refs(a, diags),
+        Some(Object::Array(a)) => refs(a, bad),
         _ => Vec::new(),
     }
 }
