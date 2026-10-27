@@ -1,15 +1,12 @@
 //! Optional content (§8.11): visibility under the default configuration only.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use pawdf_core::{Diagnostic, DiagnosticKind, Diagnostics, Dict, File, Location, Object, Ref};
 
 use crate::dest::entry;
 use crate::document::Inner;
 
-/// Groups and expression nodes evaluated per pass. Visibility expressions can share
-/// subexpressions by reference, so the depth limit alone does not bound the work.
-const MAX_NODES: usize = 1 << 22;
 const MAX_DEPTH: usize = 32;
 
 /// The groups of `/OCProperties` and which of them the default configuration turns off.
@@ -57,6 +54,31 @@ pub(crate) fn read(file: &File) -> (Config, Vec<Diagnostic>) {
         bad(&mut diags);
         return (config, diags.into_vec());
     };
+    // §8.11.2.1, §8.11.4.3: a name or an array of names, `View` by default.
+    let intents = |d: &Dict, diags: &mut Diagnostics| -> Vec<Vec<u8>> {
+        let view = vec![b"View".to_vec()];
+        match entry(d, b"Intent").map(|i| file.deref(i)) {
+            None => view,
+            Some(Object::Array(a)) => {
+                let names: Vec<Vec<u8>> = a
+                    .iter()
+                    .filter_map(|n| file.deref(n).as_name())
+                    .map(<[u8]>::to_vec)
+                    .collect();
+                if names.len() < a.len() {
+                    bad(diags);
+                }
+                names
+            }
+            Some(o) => match o.as_name() {
+                Some(n) => vec![n.to_vec()],
+                None => {
+                    bad(diags);
+                    view
+                }
+            },
+        }
+    };
     match entry(d, b"BaseState").map(|b| file.deref(b).as_name()) {
         None | Some(Some(b"ON" | b"Unchanged")) => {}
         Some(Some(b"OFF")) => config.off = config.groups.clone(),
@@ -74,6 +96,16 @@ pub(crate) fn read(file: &File) -> (Config, Vec<Diagnostic>) {
             }
         }
     }
+    // §8.11.4.3: groups whose intent shares nothing with the configuration's are ignored, so
+    // they never hide content.
+    let wanted = intents(d, &mut diags);
+    if !wanted.iter().any(|i| i == b"All") {
+        config.off.retain(|r| {
+            file.resolve(*r)
+                .as_dict()
+                .is_none_or(|g| intents(g, &mut diags).iter().any(|i| wanted.contains(i)))
+        });
+    }
     (config, diags.into_vec())
 }
 
@@ -81,7 +113,10 @@ pub(crate) fn read(file: &File) -> (Config, Vec<Diagnostic>) {
 pub(crate) struct Visibility<'a> {
     file: &'a File,
     config: &'a Config,
-    nodes_left: usize,
+    /// Results by object, so a membership dictionary or subexpression shared by reference is
+    /// evaluated once per pass. This bounds the work by the size of the file.
+    memberships: HashMap<Ref, bool>,
+    exprs: HashMap<Ref, Result<bool, DiagnosticKind>>,
 }
 
 /// Whether the `/OC` value `oc`, an optional content group or membership dictionary, is off.
@@ -102,32 +137,31 @@ pub(crate) fn hides<'a>(
         Visibility {
             file: &doc.file,
             config,
-            nodes_left: MAX_NODES,
+            memberships: HashMap::new(),
+            exprs: HashMap::new(),
         }
     });
-    if vis.nodes_left == 0 {
-        return false;
-    }
-    let on = vis.on(oc, at, diags);
-    if vis.nodes_left == 0 {
-        diags.push(DiagnosticKind::RecursionLimit, at);
-        return false;
-    }
-    !on
+    !vis.on(oc, at, diags)
 }
 
 impl Visibility<'_> {
-    /// Spends one node; `false` once the budget is gone.
-    fn tick(&mut self) -> bool {
-        self.nodes_left = self.nodes_left.saturating_sub(1);
-        self.nodes_left > 0
-    }
-
     fn bad(diags: &mut Diagnostics, at: Location) {
         diags.push(DiagnosticKind::BadOptionalContent, at);
     }
 
     fn on(&mut self, oc: &Object, at: Location, diags: &mut Diagnostics) -> bool {
+        let Some(r) = oc.as_ref() else {
+            return self.on_uncached(oc, at, diags);
+        };
+        if let Some(&on) = self.memberships.get(&r) {
+            return on;
+        }
+        let on = self.on_uncached(oc, at, diags);
+        self.memberships.insert(r, on);
+        on
+    }
+
+    fn on_uncached(&mut self, oc: &Object, at: Location, diags: &mut Diagnostics) -> bool {
         let Some(d) = self.file.deref(oc).as_dict() else {
             Self::bad(diags, at);
             return true;
@@ -189,10 +223,7 @@ impl Visibility<'_> {
     }
 
     /// The state of a group by reference; a group not in `/OCGs` is reported and on.
-    fn group(&mut self, r: Option<Ref>, at: Location, diags: &mut Diagnostics) -> bool {
-        if !self.tick() {
-            return true;
-        }
+    fn group(&self, r: Option<Ref>, at: Location, diags: &mut Diagnostics) -> bool {
         match r {
             Some(r) if self.config.groups.contains(&r) => !self.config.off.contains(&r),
             _ => {
@@ -210,6 +241,25 @@ impl Visibility<'_> {
         at: Location,
         diags: &mut Diagnostics,
     ) -> Result<bool, DiagnosticKind> {
+        let Some(r) = e.as_ref() else {
+            return self.expr_uncached(e, depth, at, diags);
+        };
+        // A result is reused at any depth, even a depth limit hit deeper than this use.
+        if let Some(&v) = self.exprs.get(&r) {
+            return v;
+        }
+        let v = self.expr_uncached(e, depth, at, diags);
+        self.exprs.insert(r, v);
+        v
+    }
+
+    fn expr_uncached(
+        &mut self,
+        e: &Object,
+        depth: usize,
+        at: Location,
+        diags: &mut Diagnostics,
+    ) -> Result<bool, DiagnosticKind> {
         if depth > MAX_DEPTH {
             return Err(DiagnosticKind::RecursionLimit);
         }
@@ -218,9 +268,6 @@ impl Visibility<'_> {
             Object::Dict(_) => return Ok(self.group(e.as_ref(), at, diags)),
             _ => return Err(DiagnosticKind::BadOptionalContent),
         };
-        if !self.tick() {
-            return Ok(true);
-        }
         let Some((op, args)) = items.split_first() else {
             return Err(DiagnosticKind::BadOptionalContent);
         };

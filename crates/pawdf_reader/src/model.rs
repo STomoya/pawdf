@@ -88,8 +88,8 @@ pub struct Glyph {
     /// uses glyph boxes, which real outlines can exceed, so it is approximate.
     pub clip: Option<Rect>,
     /// Whether optional content (§8.11) that is off in the default configuration encloses
-    /// it: a `BDC /OC` sequence or a form or image XObject with `/OC`. Such content is still
-    /// returned; the caller decides whether to drop it.
+    /// it: a `BDC /OC` sequence or a form XObject with `/OC`. Such content is still returned;
+    /// the caller decides whether to drop it.
     pub hidden: bool,
 }
 
@@ -178,8 +178,8 @@ pub struct Path {
     /// Stroke alpha (`CA`).
     pub stroke_alpha: f64,
     /// Whether optional content (§8.11) that is off in the default configuration encloses
-    /// it: a `BDC /OC` sequence or a form or image XObject with `/OC`. Such content is still
-    /// returned; the caller decides whether to drop it.
+    /// it: a `BDC /OC` sequence or a form XObject with `/OC`. Such content is still returned;
+    /// the caller decides whether to drop it.
     pub hidden: bool,
 }
 
@@ -277,8 +277,8 @@ pub struct Image {
     /// `/SMask`, if present.
     pub smask: Option<SoftMask>,
     /// Whether optional content (§8.11) that is off in the default configuration encloses
-    /// it: a `BDC /OC` sequence or a form or image XObject with `/OC`. Such content is still
-    /// returned; the caller decides whether to drop it.
+    /// it: a `BDC /OC` sequence, a form XObject with `/OC`, or the image's own `/OC`. Such
+    /// content is still returned; the caller decides whether to drop it.
     pub hidden: bool,
 }
 

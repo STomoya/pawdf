@@ -25,9 +25,12 @@ struct Open {
 #[derive(Default)]
 pub(super) struct Stack {
     open: Vec<Open>,
-    /// Sequences opened beyond a limit and not stored, by whether they hide. They are always
-    /// the innermost, so `EMC` closes them first.
-    dropped: Vec<bool>,
+    /// Sequences opened beyond a limit and not stored. They are always the innermost, so `EMC`
+    /// closes them first.
+    dropped: usize,
+    /// `dropped` before the outermost dropped sequence that hides was opened. Only that one is
+    /// counted in `Interp::hidden`, so memory stays bounded.
+    dropped_hiding: Option<usize>,
 }
 
 impl Interp<'_> {
@@ -56,15 +59,19 @@ impl Interp<'_> {
     /// Opens a sequence. It is opened even when malformed, so that its `EMC` balances.
     fn begin_marked(&mut self, tag: Option<&[u8]>, props: Option<&Object>, at: Location) {
         let hides = tag == Some(b"OC") && self.marked_oc_hides(props, at);
-        self.hidden += usize::from(hides);
-        if !self.marked.dropped.is_empty()
+        if self.marked.dropped > 0
             || self.marked.open.len() >= MAX_MARKED_DEPTH
             || self.out.marked_contents.len() >= MAX_MARKED_CONTENTS
         {
-            self.marked.dropped.push(hides);
+            if hides && self.marked.dropped_hiding.is_none() {
+                self.marked.dropped_hiding = Some(self.marked.dropped);
+                self.hidden += 1;
+            }
+            self.marked.dropped += 1;
             self.marked_limit(at);
             return;
         }
+        self.hidden += usize::from(hides);
         let mut span = self.read_span(tag, props, at);
         let cost = span.tag.len()
             + [
@@ -195,8 +202,12 @@ impl Interp<'_> {
     }
 
     fn end_marked(&mut self, at: Location) {
-        if let Some(hides) = self.marked.dropped.pop() {
-            self.hidden -= usize::from(hides);
+        if self.marked.dropped > 0 {
+            self.marked.dropped -= 1;
+            if self.marked.dropped_hiding == Some(self.marked.dropped) {
+                self.marked.dropped_hiding = None;
+                self.hidden -= 1;
+            }
             return;
         }
         match self.marked.open.pop() {
@@ -207,12 +218,13 @@ impl Interp<'_> {
 
     /// Closes every sequence still open at the end of the page's content or of a form XObject.
     pub(super) fn close_marked(&mut self, at: Location) {
-        if self.marked.open.is_empty() && self.marked.dropped.is_empty() {
+        if self.marked.open.is_empty() && self.marked.dropped == 0 {
             return;
         }
         self.diags.push(DiagnosticKind::UnbalancedMarkedContent, at);
-        for hides in std::mem::take(&mut self.marked.dropped) {
-            self.hidden -= usize::from(hides);
+        self.marked.dropped = 0;
+        if self.marked.dropped_hiding.take().is_some() {
+            self.hidden -= 1;
         }
         while let Some(open) = self.marked.open.pop() {
             self.close_span(open);

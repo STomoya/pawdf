@@ -217,20 +217,58 @@ fn self_referencing_expression_hits_depth_limit() {
 }
 
 #[test]
-fn shared_subexpressions_hit_node_budget() {
-    // Each level references the next twice: 2^31 nodes, within the depth limit.
+fn shared_subexpressions_are_evaluated_once() {
+    // Each level references the next twice: 2^31 nodes when walked as a tree.
     let mut extra: Vec<(u32, Vec<u8>)> = (40..70)
         .map(|n| obj(n, &format!("[/And {0} 0 R {0} 0 R]", n + 1)))
         .collect();
-    extra.push(obj(70, "[/Not 11 0 R]"));
+    extra.push(obj(70, "[/Not 10 0 R]"));
+    let shown = format!("/OC /m BDC {} EMC ", t("a")).repeat(1000);
     let c = content(
         PROPS,
-        &format!("/OC /m BDC {} EMC /OC /off BDC {} EMC", t("a"), t("b")),
+        &format!("{shown}/OC /off BDC {} EMC", t("b")),
         &[[obj(20, "<< /Type /OCMD /VE 40 0 R >>")].as_slice(), &extra].concat(),
     );
-    // Once the budget is spent, later groups count as visible without more diagnostics.
-    assert_eq!(glyphs_hidden(&c), [false, false]);
-    assert_eq!(kinds(&c), [DiagnosticKind::RecursionLimit]);
+    assert_eq!(glyphs_hidden(&c), [true; 1001]);
+    assert_eq!(kinds(&c), []);
+}
+
+#[test]
+fn intents_outside_the_configuration_are_ignored() {
+    let groups = [
+        obj(21, "<< /Type /OCG /Name (D) /Intent /Design >>"),
+        obj(22, "<< /Type /OCG /Name (V) /Intent [/View /Design] >>"),
+    ];
+    let ops = format!(
+        "/OC << /OCGs 21 0 R >> BDC {} EMC /OC << /OCGs 22 0 R >> BDC {} EMC",
+        t("a"),
+        t("b")
+    );
+    for (d, want) in [
+        ("/OFF [21 0 R 22 0 R]", [false, true]),
+        ("/OFF [21 0 R 22 0 R] /Intent /Design", [true, true]),
+        ("/OFF [21 0 R 22 0 R] /Intent /All", [true, true]),
+        ("/OFF [21 0 R 22 0 R] /Intent [/Other]", [false, false]),
+    ] {
+        let props = format!("<< /OCGs [21 0 R 22 0 R] /D << {d} >> >>");
+        let c = content(&props, &ops, &groups);
+        assert_eq!(glyphs_hidden(&c), want, "{d}");
+        assert_eq!(kinds(&c), [], "{d}");
+    }
+}
+
+#[test]
+fn null_oc_on_an_xobject_is_absent() {
+    let image = stream(
+        "/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 /OC null",
+        b"\x00",
+    );
+    let c = content(PROPS, "/Im Do", &[(31, image)]);
+    assert_eq!(
+        c.images.iter().map(|i| i.hidden).collect::<Vec<_>>(),
+        [false]
+    );
+    assert_eq!(kinds(&c), []);
 }
 
 #[test]
@@ -261,6 +299,8 @@ fn malformed_properties_are_reported_once_per_pass() {
         "<< /OCGs [10 0 R 11 0 R 12 0 R] /D << /BaseState /Maybe /OFF [11 0 R] >> >>",
         "<< /OCGs [10 0 R 11 0 R 12 0 R 7] /D << /OFF [11 0 R] >> >>",
         "<< /OCGs [10 0 R 11 0 R 12 0 R] /D << /OFF [11 0 R 13 0 R] >> >>",
+        "<< /OCGs [10 0 R 11 0 R 12 0 R] /D << /OFF [11 0 R] /Intent 5 >> >>",
+        "<< /OCGs [10 0 R 11 0 R 12 0 R] /D << /OFF [11 0 R] /Intent [/View 5] >> >>",
     ] {
         let d = doc(
             props,
@@ -363,6 +403,24 @@ fn sequences_past_the_depth_limit_still_hide() {
     );
     assert_eq!(glyphs_hidden(&c), [true, false, false]);
     assert_eq!(kinds(&c), [DiagnosticKind::RecursionLimit]);
+}
+
+#[test]
+fn nested_hiding_sequences_past_the_depth_limit() {
+    let open = "/Span BMC ".repeat(256);
+    let close = "EMC ".repeat(256);
+    let c = content(
+        PROPS,
+        &format!(
+            "{open}/OC /on BDC /OC /off BDC /OC /off BDC {} EMC {} EMC {} EMC {} {close}",
+            t("a"),
+            t("b"),
+            t("c"),
+            t("d")
+        ),
+        &[],
+    );
+    assert_eq!(glyphs_hidden(&c), [true, true, false, false]);
 }
 
 #[test]

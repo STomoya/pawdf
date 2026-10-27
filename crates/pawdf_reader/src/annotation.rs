@@ -37,10 +37,10 @@ pub(crate) fn read(doc: &Inner, page: &PageInfo) -> Annotations {
                 match file.deref(a) {
                     Object::Dict(d) => {
                         let at = a.as_ref().map_or(page_at, Location::Object);
-                        let mut a = annotation(&mut cx, d, at);
-                        a.hidden = entry(d, b"OC")
+                        let mut annot = annotation(&mut cx, d, at);
+                        annot.hidden = entry(d, b"OC")
                             .is_some_and(|oc| oc::hides(&mut vis, doc, oc, at, &mut cx.diags));
-                        items.push(a);
+                        items.push(annot);
                     }
                     // A dangling reference is already reported by the file.
                     Object::Null => {}

@@ -14,6 +14,7 @@ use pawdf_core::{
     Ref, Stream, parse_content,
 };
 
+use crate::dest::entry;
 use crate::document::{Inner, Page, numbers};
 use crate::font::Font;
 use crate::geom::{Matrix, Point, Rect};
@@ -478,9 +479,7 @@ impl<'a> Interp<'a> {
             return;
         };
         // §8.11.3.3: `/OC` on a form or image XObject.
-        let hides = s
-            .dict
-            .get(b"OC")
+        let hides = entry(&s.dict, b"OC")
             .is_some_and(|oc| self.oc_hides(oc, Location::Stream { obj: r, offset: 0 }));
         self.hidden += usize::from(hides);
         match s.dict.get(b"Subtype").and_then(Object::as_name) {
