@@ -201,6 +201,72 @@ fn incremental_update_overrides_older_objects() {
     assert!(file.diagnostics().is_empty());
 }
 
+/// Appends an incremental update defining `objects` (number, generation, body) and marking
+/// `free` free, with a classic table chained to the previous one.
+fn append_update(pdf: &mut Vec<u8>, objects: &[(u32, u16, &str)], free: &[u32]) {
+    let prev = xref_offset(pdf);
+    let mut rows = String::new();
+    for &(num, generation, body) in objects {
+        let at = pdf.len();
+        pdf.extend_from_slice(format!("{num} {generation} obj\n{body}\nendobj\n").as_bytes());
+        rows.push_str(&format!("{num} 1\n{at:010} {generation:05} n \n"));
+    }
+    for num in free {
+        rows.push_str(&format!("{num} 1\n0000000000 00001 f \n"));
+    }
+    let xref_at = pdf.len();
+    pdf.extend_from_slice(
+        format!(
+            "xref\n{rows}trailer\n<< /Size 9 /Root 1 0 R /Prev {prev} >>\nstartxref\n{xref_at}\n%%EOF\n"
+        )
+        .as_bytes(),
+    );
+}
+
+/// #17: §7.5.4, an object freed in an update is deleted, not its older revision.
+#[test]
+fn object_freed_in_update_resolves_to_null() {
+    let (mut pdf, _) = build_pdf(&[(1, CATALOG), (2, PAGES), (3, b"(old)")], "/Root 1 0 R");
+    append_update(&mut pdf, &[], &[3]);
+    let file = File::from_bytes(pdf).unwrap();
+    assert_eq!(file.resolve(r(3)), &Object::Null);
+    assert_eq!(file.objects(), vec![r(1), r(2)]);
+    assert!(!kinds(&file).contains(&DiagnosticKind::XrefRepaired));
+}
+
+/// #17: an object freed and then reused keeps the newest revision and its generation.
+#[test]
+fn object_reused_after_free_has_new_generation() {
+    let (mut pdf, _) = build_pdf(&[(1, CATALOG), (2, PAGES), (3, b"(old)")], "/Root 1 0 R");
+    append_update(&mut pdf, &[], &[3]);
+    append_update(&mut pdf, &[(3, 1, "(new)")], &[]);
+    let file = File::from_bytes(pdf).unwrap();
+    assert_eq!(file.resolve(r(3)), &Object::String(b"new".to_vec()));
+    let three = Ref {
+        num: 3,
+        generation: 1,
+    };
+    assert_eq!(file.objects(), vec![r(1), r(2), three]);
+    assert!(file.diagnostics().is_empty(), "{:?}", file.diagnostics());
+}
+
+/// #17: with a damaged xref, `objects()` lists what the repair scan can resolve.
+#[test]
+fn objects_include_repaired_entries_when_xref_damaged() {
+    let body = b"(x)\nendobj\n4 2 obj\n(y)";
+    let (pdf, _) = build_pdf(&[(1, CATALOG), (2, PAGES), (3, body)], "/Root 1 0 R");
+    let text = String::from_utf8(pdf)
+        .unwrap()
+        .replacen("00000 n\ntrailer", "00000 q\ntrailer", 1);
+    let file = File::from_bytes(text.into_bytes()).unwrap();
+    assert!(kinds(&file).contains(&DiagnosticKind::BadXrefEntry));
+    let four = Ref {
+        num: 4,
+        generation: 2,
+    };
+    assert!(file.objects().contains(&four), "{:?}", file.objects());
+}
+
 #[test]
 fn xref_off_by_one_subsection_is_fixed() {
     let (pdf, _) = build_pdf(&[(1, CATALOG), (2, PAGES)], "/Root 1 0 R");
