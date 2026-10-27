@@ -546,3 +546,32 @@ fn text_value_image_stream() {
     assert!(values(&f).is_empty());
     assert_eq!(f.diagnostics, [bad(10)]);
 }
+
+#[test]
+fn shared_kids_array_cycle_is_cut() {
+    let f = form(
+        "/AcroForm << /Fields 10 0 R >>",
+        "",
+        "",
+        &[obj(
+            10,
+            "[<< /T (a) /FT /Tx /Kids 10 0 R >> << /T (b) /FT /Tx /Kids 10 0 R >>]",
+        )],
+    );
+    assert_eq!(names(&f), ["a", "b"]);
+    assert_eq!(f.diagnostics, [bad(1), bad(1)]);
+}
+
+#[test]
+fn shared_kids_array_read_once() {
+    let f = fields(
+        "<< /T (a) /FT /Tx /Kids 11 0 R >> << /T (b) /FT /Tx /Kids 11 0 R >>",
+        &[
+            obj(11, "[12 0 R]"),
+            obj(12, "<< /Subtype /Widget /Rect [0 0 1 1] >>"),
+        ],
+    );
+    let widgets: Vec<_> = f.items.iter().map(|i| i.widgets.len()).collect();
+    assert_eq!(widgets, [1, 0]);
+    assert_eq!(f.diagnostics.len(), 2, "{:?}", f.diagnostics);
+}

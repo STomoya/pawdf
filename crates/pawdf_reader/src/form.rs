@@ -45,7 +45,12 @@ pub(crate) fn read(doc: &Inner) -> FormFields {
     if let Some(a) = catalog.and_then(|c| entry(c, b"AcroForm")) {
         let at = a.as_ref().map_or(catalog_at, Location::Object);
         match file.deref(a).as_dict() {
-            Some(form) => match entry(form, b"Fields").map(|f| file.deref(f)) {
+            Some(form) => match entry(form, b"Fields").map(|f| {
+                if let Some(r) = f.as_ref() {
+                    w.visited.insert(r.num);
+                }
+                file.deref(f)
+            }) {
                 None => {}
                 Some(Object::Array(roots)) => {
                     for root in roots {
@@ -101,7 +106,12 @@ impl<'a> Walk<'a> {
         };
         let mut fields = Vec::new();
         let mut widgets = Vec::new();
-        match entry(d, b"Kids").map(|k| file.deref(k)) {
+        let kids = entry(d, b"Kids");
+        // Direct fields can share an indirect `/Kids` array, even the one holding them: reading
+        // it once keeps such a cycle from recursing and shared widgets from repeating.
+        let shared = kids.is_some_and(|k| !self.first_visit(k, at));
+        match kids.map(|k| file.deref(k)) {
+            _ if shared => {}
             // A field without kids is its own widget when it has widget entries (§12.5.6.19).
             None if entry(d, b"Rect").is_some() || entry(d, b"Subtype").is_some() => {
                 widgets.push((obj, d));
