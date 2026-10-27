@@ -44,7 +44,7 @@ impl<'a> Cx<'a> {
         self.diags.push(self.kind, at);
     }
 
-    fn page_index(&mut self, num: u32) -> Option<usize> {
+    pub fn page_index(&mut self, num: u32) -> Option<usize> {
         let doc_pages = self.doc_pages;
         self.pages
             .get_or_insert_with(|| {

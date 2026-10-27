@@ -2,7 +2,8 @@ mod common;
 
 use common::build_pdf;
 use pawdf_reader::{
-    Diagnostic, DiagnosticKind, Document, FieldKind, FormField, FormFields, Location, Ref,
+    Diagnostic, DiagnosticKind, Document, FieldKind, FormField, FormFields, Location, Rect, Ref,
+    Widget,
 };
 
 fn r(num: u32) -> Ref {
@@ -378,4 +379,113 @@ fn push_and_sig_ignore_v() {
 #[test]
 fn dv_not_used() {
     assert!(values(&one("/T (x) /FT /Tx /DV (d)")).is_empty());
+}
+
+fn widget(page: Option<usize>, x0: f64, y0: f64, x1: f64, y1: f64) -> Widget {
+    Widget {
+        page,
+        rect: Rect::from_corners(x0, y0, x1, y1),
+    }
+}
+
+/// One root field, object 10, with `body`, and `/Annots` arrays for pages 3 and 4.
+fn on_pages(page3: &str, page4: &str, body: &str) -> FormFields {
+    form(
+        "/AcroForm << /Fields [10 0 R] >>",
+        page3,
+        page4,
+        &[obj(10, &format!("<< /T (a) /FT /Tx {body} >>"))],
+    )
+}
+
+#[test]
+fn merged_widget_page_from_annots() {
+    let f = on_pages("", "/Annots [10 0 R]", "/Subtype /Widget /Rect [1 2 3 4]");
+    assert_eq!(field(&f).widgets, [widget(Some(1), 1., 2., 3., 4.)]);
+    assert_eq!(f.diagnostics, []);
+}
+
+#[test]
+fn kid_widgets() {
+    let f = form(
+        "/AcroForm << /Fields [10 0 R] >>",
+        "/Annots [11 0 R]",
+        "/Annots [12 0 R]",
+        &[
+            obj(10, "<< /T (a) /FT /Btn /Ff 32768 /Kids [11 0 R 12 0 R] >>"),
+            obj(11, "<< /Subtype /Widget /Rect [0 0 1 1] >>"),
+            obj(12, "<< /Subtype /Widget /Rect [2 2 3 3] >>"),
+        ],
+    );
+    assert_eq!(
+        field(&f).widgets,
+        [
+            widget(Some(0), 0., 0., 1., 1.),
+            widget(Some(1), 2., 2., 3., 3.)
+        ]
+    );
+    assert_eq!(f.diagnostics, []);
+}
+
+#[test]
+fn widget_on_two_pages_takes_first() {
+    let f = on_pages(
+        "/Annots [10 0 R]",
+        "/Annots [10 0 R]",
+        "/Subtype /Widget /Rect [0 0 1 1]",
+    );
+    assert_eq!(field(&f).widgets, [widget(Some(0), 0., 0., 1., 1.)]);
+}
+
+#[test]
+fn p_fallback() {
+    let f = on_pages("", "", "/Subtype /Widget /Rect [0 0 1 1] /P 4 0 R");
+    assert_eq!(field(&f).widgets[0].page, Some(1));
+    assert_eq!(f.diagnostics, [bad(10)]);
+}
+
+#[test]
+fn no_page() {
+    let f = on_pages("", "", "/Subtype /Widget /Rect [0 0 1 1]");
+    assert_eq!(field(&f).widgets[0].page, None);
+    assert_eq!(f.diagnostics, [bad(10)]);
+}
+
+#[test]
+fn direct_widget_uses_p() {
+    let f = on_pages(
+        "",
+        "",
+        "/Kids [<< /Subtype /Widget /Rect [0 0 1 1] /P 3 0 R >>]",
+    );
+    assert_eq!(field(&f).widgets, [widget(Some(0), 0., 0., 1., 1.)]);
+    assert_eq!(f.diagnostics, [bad(10)]);
+}
+
+#[test]
+fn bad_rect() {
+    let f = on_pages("/Annots [10 0 R]", "", "/Subtype /Widget");
+    assert_eq!(field(&f).widgets, [widget(Some(0), 0., 0., 0., 0.)]);
+    assert_eq!(f.diagnostics, [bad(10)]);
+}
+
+#[test]
+fn no_widget_kids() {
+    let f = fields(
+        "10 0 R",
+        &[
+            obj(10, "<< /T (a) /Kids [11 0 R] >>"),
+            obj(11, "<< /T (b) /FT /Tx /Kids [] >>"),
+        ],
+    );
+    assert_eq!(names(&f), ["a.b"]);
+    assert_eq!(field(&f).widgets, []);
+    assert_eq!(f.diagnostics, []);
+}
+
+#[test]
+fn field_without_widget_entries_has_no_widgets() {
+    let f = one("/T (a) /FT /Tx");
+    assert_eq!(field(&f).widgets, []);
+    assert_eq!(f.diagnostics, []);
 }

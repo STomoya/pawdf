@@ -1,10 +1,11 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use pawdf_core::{DiagnosticKind, Dict, Location, Object, decode_text_string};
 
 use crate::dest::{Cx, entry, text};
-use crate::document::{Inner, MAX_TREE_DEPTH};
-use crate::model::{FieldKind, FormField, FormFields};
+use crate::document::{Inner, MAX_TREE_DEPTH, PageInfo, rect};
+use crate::geom::Rect;
+use crate::model::{FieldKind, FormField, FormFields, Widget};
 
 /// Field flags (Table 227 and §12.7.5).
 const RADIO: u32 = 1 << 15;
@@ -26,6 +27,9 @@ struct Walk<'a> {
     /// Field objects already reached, so a `/Kids` cycle or a shared kid is read once.
     visited: HashSet<u32>,
     items: Vec<FormField>,
+    pages: &'a [PageInfo],
+    /// Page index by the object number of each `/Annots` entry, built on the first lookup.
+    annots: Option<HashMap<u32, usize>>,
 }
 
 pub(crate) fn read(doc: &Inner) -> FormFields {
@@ -35,6 +39,8 @@ pub(crate) fn read(doc: &Inner) -> FormFields {
         cx,
         visited: HashSet::new(),
         items: Vec::new(),
+        pages: &doc.pages,
+        annots: None,
     };
     if let Some(a) = catalog.and_then(|c| entry(c, b"AcroForm")) {
         let at = a.as_ref().map_or(catalog_at, Location::Object);
@@ -96,6 +102,10 @@ impl<'a> Walk<'a> {
         let mut fields = Vec::new();
         let mut widgets = Vec::new();
         match entry(d, b"Kids").map(|k| file.deref(k)) {
+            // A field without kids is its own widget when it has widget entries (§12.5.6.19).
+            None if entry(d, b"Rect").is_some() || entry(d, b"Subtype").is_some() => {
+                widgets.push((obj, d));
+            }
             None => {}
             Some(Object::Array(_)) if depth >= MAX_TREE_DEPTH => {
                 self.cx.bad(at);
@@ -113,7 +123,7 @@ impl<'a> Walk<'a> {
                                 fields.push(kid);
                             }
                         }
-                        Object::Dict(k) => widgets.push(k),
+                        Object::Dict(k) => widgets.push((kid, k)),
                         Object::Null => {}
                         _ => self.cx.bad(at),
                     }
@@ -122,7 +132,7 @@ impl<'a> Walk<'a> {
             Some(_) => self.cx.bad(at),
         }
         if !widgets.is_empty() || fields.is_empty() {
-            let item = self.terminal(d, &inh, at);
+            let item = self.terminal(d, &inh, at, &widgets);
             self.items.push(item);
         }
         for kid in fields {
@@ -130,7 +140,13 @@ impl<'a> Walk<'a> {
         }
     }
 
-    fn terminal(&mut self, d: &'a Dict, inh: &Inherited<'a>, at: Location) -> FormField {
+    fn terminal(
+        &mut self,
+        d: &'a Dict,
+        inh: &Inherited<'a>,
+        at: Location,
+        widgets: &[(&'a Object, &'a Dict)],
+    ) -> FormField {
         let file = self.cx.file;
         let flags = match inh.ff.map(|f| file.deref(f)) {
             None => 0,
@@ -161,7 +177,10 @@ impl<'a> Walk<'a> {
             kind,
             values: self.values(kind, inh.v, d, at),
             flags,
-            widgets: Vec::new(),
+            widgets: widgets
+                .iter()
+                .map(|&(w, wd)| self.widget(w, wd, at))
+                .collect(),
         }
     }
 
@@ -226,5 +245,51 @@ impl<'a> Walk<'a> {
                 Vec::new()
             }
         }
+    }
+
+    fn widget(&mut self, obj: &Object, d: &Dict, holder: Location) -> Widget {
+        let file = self.cx.file;
+        let at = obj.as_ref().map_or(holder, Location::Object);
+        let rect = match entry(d, b"Rect").and_then(|r| rect(file, r)) {
+            Some(r) => r,
+            None => {
+                self.cx.bad(at);
+                Rect::from_corners(0., 0., 0., 0.)
+            }
+        };
+        Widget {
+            page: self.page(obj, d, at),
+            rect,
+        }
+    }
+
+    /// The page whose `/Annots` lists the widget, else its `/P`, which is optional and less
+    /// reliable (Table 166).
+    fn page(&mut self, obj: &Object, d: &Dict, at: Location) -> Option<usize> {
+        let file = self.cx.file;
+        let pages = self.pages;
+        let annots = self.annots.get_or_insert_with(|| {
+            let mut map = HashMap::new();
+            for (i, p) in pages.iter().enumerate() {
+                let Some(list) = file
+                    .resolve(p.obj)
+                    .as_dict()
+                    .and_then(|p| entry(p, b"Annots"))
+                    .and_then(|a| file.deref(a).as_array())
+                else {
+                    continue;
+                };
+                for r in list.iter().filter_map(Object::as_ref) {
+                    map.entry(r.num).or_insert(i);
+                }
+            }
+            map
+        });
+        if let Some(&i) = obj.as_ref().and_then(|r| annots.get(&r.num)) {
+            return Some(i);
+        }
+        self.cx.bad(at);
+        let p = entry(d, b"P")?.as_ref()?;
+        self.cx.page_index(p.num)
     }
 }
