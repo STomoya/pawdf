@@ -258,3 +258,124 @@ fn depth_is_capped() {
     assert!(!f.diagnostics.is_empty());
     assert!(f.items.is_empty());
 }
+
+fn values(f: &FormFields) -> Vec<&str> {
+    field(f).values.iter().map(String::as_str).collect()
+}
+
+#[test]
+fn text_value() {
+    let f = one("/T (x) /FT /Tx /V (hello)");
+    assert_eq!(values(&f), ["hello"]);
+    assert_eq!(f.diagnostics, []);
+}
+
+#[test]
+fn unfilled_text() {
+    let f = one("/T (x) /FT /Tx");
+    assert!(values(&f).is_empty());
+    assert_eq!(f.diagnostics, []);
+}
+
+#[test]
+fn text_value_stream() {
+    let f = fields(
+        "10 0 R",
+        &[
+            obj(10, "<< /T (x) /FT /Tx /V 11 0 R >>"),
+            obj(11, "<< /Length 5 >>\nstream\nhello\nendstream"),
+        ],
+    );
+    assert_eq!(values(&f), ["hello"]);
+    assert_eq!(f.diagnostics, []);
+}
+
+#[test]
+fn text_value_wrong_type() {
+    let f = one("/T (x) /FT /Tx /V 5");
+    assert!(values(&f).is_empty());
+    assert_eq!(f.diagnostics, [bad(10)]);
+}
+
+#[test]
+fn password_returned() {
+    let f = one("/T (x) /FT /Tx /Ff 8192 /V (secret)");
+    assert_eq!(values(&f), ["secret"]);
+}
+
+#[test]
+fn checkbox_on() {
+    assert_eq!(values(&one("/T (x) /FT /Btn /V /Yes")), ["Yes"]);
+}
+
+#[test]
+fn checkbox_off() {
+    let f = one("/T (x) /FT /Btn /V /Off");
+    assert!(values(&f).is_empty());
+    assert_eq!(f.diagnostics, []);
+}
+
+#[test]
+fn checkbox_opt_index() {
+    assert_eq!(values(&one("/T (x) /FT /Btn /V /1 /Opt [(a) (b)]")), ["b"]);
+}
+
+#[test]
+fn checkbox_opt_out_of_range() {
+    assert_eq!(values(&one("/T (x) /FT /Btn /V /5 /Opt [(a)]")), ["5"]);
+}
+
+#[test]
+fn radio_value_inherited_from_parent() {
+    let f = fields(
+        "10 0 R",
+        &[
+            obj(
+                10,
+                "<< /T (r) /FT /Btn /Ff 32768 /V /B /Kids [11 0 R 12 0 R] >>",
+            ),
+            obj(11, "<< /Subtype /Widget /Rect [0 0 1 1] /AS /B >>"),
+            obj(12, "<< /Subtype /Widget /Rect [2 2 3 3] /AS /Off >>"),
+        ],
+    );
+    assert_eq!(names(&f), ["r"]);
+    assert_eq!(values(&f), ["B"]);
+}
+
+#[test]
+fn choice_single() {
+    assert_eq!(values(&one("/T (x) /FT /Ch /V (x)")), ["x"]);
+}
+
+#[test]
+fn choice_multi() {
+    let f = one("/T (x) /FT /Ch /Ff 2097152 /V [(x) 5 (y)]");
+    assert_eq!(values(&f), ["x", "y"]);
+    assert_eq!(f.diagnostics, [bad(10)]);
+}
+
+#[test]
+fn choice_keeps_export_value() {
+    assert_eq!(
+        values(&one("/T (x) /FT /Ch /V (e1) /Opt [[(e1) (Shown)]]")),
+        ["e1"]
+    );
+}
+
+#[test]
+fn push_and_sig_ignore_v() {
+    let f = fields(
+        "10 0 R 11 0 R",
+        &[
+            obj(10, "<< /T (p) /FT /Btn /Ff 65536 /V /X >>"),
+            obj(11, "<< /T (s) /FT /Sig /V << >> >>"),
+        ],
+    );
+    assert!(f.items.iter().all(|i| i.values.is_empty()));
+    assert_eq!(f.diagnostics, []);
+}
+
+#[test]
+fn dv_not_used() {
+    assert!(values(&one("/T (x) /FT /Tx /DV (d)")).is_empty());
+}

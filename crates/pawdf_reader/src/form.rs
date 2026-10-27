@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use pawdf_core::{DiagnosticKind, Dict, Location, Object};
+use pawdf_core::{DiagnosticKind, Dict, Location, Object, decode_text_string};
 
 use crate::dest::{Cx, entry, text};
 use crate::document::{Inner, MAX_TREE_DEPTH};
@@ -159,9 +159,72 @@ impl<'a> Walk<'a> {
             name: inh.name.clone().unwrap_or_default(),
             label: text(&mut self.cx, d, b"TU", at),
             kind,
-            values: Vec::new(),
+            values: self.values(kind, inh.v, d, at),
             flags,
             widgets: Vec::new(),
+        }
+    }
+
+    /// `/V` by field type (§12.7.5). `/DV` is not a fallback: it is the reset value.
+    fn values(
+        &mut self,
+        kind: FieldKind,
+        v: Option<&Object>,
+        d: &Dict,
+        at: Location,
+    ) -> Vec<String> {
+        let file = self.cx.file;
+        let Some(v) = v.map(|v| file.deref(v)) else {
+            return Vec::new();
+        };
+        match (kind, v) {
+            (FieldKind::Text | FieldKind::ComboBox | FieldKind::ListBox, Object::String(s)) => {
+                vec![decode_text_string(s)]
+            }
+            // §12.7.5.3: a text field's value may be a text stream.
+            (FieldKind::Text, Object::Stream(s)) => {
+                let decoded = s.decode(at, &mut self.cx.diags);
+                if decoded.codec.is_some() {
+                    self.cx.bad(at);
+                    return Vec::new();
+                }
+                vec![decode_text_string(&decoded.data)]
+            }
+            (FieldKind::ComboBox | FieldKind::ListBox, Object::Array(items)) => items
+                .iter()
+                .filter_map(|i| match file.deref(i) {
+                    Object::String(s) => Some(decode_text_string(s)),
+                    _ => {
+                        self.cx.bad(at);
+                        None
+                    }
+                })
+                .collect(),
+            (FieldKind::CheckBox | FieldKind::RadioButton, Object::Name(n)) => {
+                let n = n.as_bytes();
+                if n == b"Off" {
+                    return Vec::new();
+                }
+                // §12.7.5.2.3: with `/Opt`, the appearance state names are indices into it.
+                let opt = std::str::from_utf8(n)
+                    .ok()
+                    .and_then(|n| n.parse::<usize>().ok())
+                    .and_then(|i| {
+                        entry(d, b"Opt")
+                            .and_then(|o| file.deref(o).as_array())
+                            .and_then(|o| o.get(i))
+                    })
+                    .and_then(|o| file.deref(o).as_string());
+                vec![match opt {
+                    Some(s) => decode_text_string(s),
+                    None => String::from_utf8_lossy(n).into_owned(),
+                }]
+            }
+            (FieldKind::PushButton | FieldKind::Signature | FieldKind::Unknown, _) => Vec::new(),
+            _ => {
+                self.cx.bad(at);
+                Vec::new()
+            }
         }
     }
 }
