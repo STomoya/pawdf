@@ -476,7 +476,7 @@ pub enum FieldKind {
 /// One widget annotation of a form field.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Widget {
-    /// 0-based index of the page that holds the widget; `None` when none does.
+    /// 0-based page index from `/Annots`, else the widget's `/P`; `None` when neither resolves.
     pub page: Option<usize>,
     /// `/Rect` in default user space, normalized; all zero when missing or malformed.
     pub rect: Rect,

@@ -428,7 +428,7 @@ class Widget:
 
     @property
     def page(self) -> int | None:
-        """0-based index of the page that holds the widget; ``None`` when none does."""
+        """0-based page index from ``/Annots``, else the widget's ``/P``; ``None`` when neither resolves."""
     @property
     def rect(self) -> Rect:
         """``/Rect`` in default user space, normalized; all zero when missing or malformed."""

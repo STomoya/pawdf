@@ -24,7 +24,8 @@ struct Inherited<'a> {
 
 struct Walk<'a> {
     cx: Cx<'a>,
-    /// Field objects already reached, so a `/Kids` cycle or a shared kid is read once.
+    /// Fields, widgets, and `/Fields` or `/Kids` arrays already reached, so a cycle or a shared
+    /// object is read once.
     visited: HashSet<u32>,
     items: Vec<FormField>,
     pages: &'a [PageInfo],
