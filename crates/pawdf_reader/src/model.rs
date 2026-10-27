@@ -444,7 +444,7 @@ pub struct FormField {
     /// The value `/V`, decoded, without empty strings; empty when unfilled, off, or not a
     /// value-bearing kind. More
     /// than one only for multi-select list boxes. Password fields are returned as written:
-    /// check `flags` bit 14 to filter them.
+    /// check `flags & 0x2000` (Table 228 bit 14, 1-based) to filter them.
     pub values: Vec<String>,
     /// `/Ff` field flags, inherited (Table 226); 0 when missing or malformed.
     pub flags: u32,

@@ -451,7 +451,7 @@ class FormField:
         """The value, decoded; empty when unfilled or off.
 
         More than one only for multi-select list boxes. Password fields are returned as
-        written: check ``flags`` bit 14 to filter them.
+        written: check ``flags & 0x2000`` (Table 228 bit 14, 1-based) to filter them.
         """
     @property
     def flags(self) -> int:
