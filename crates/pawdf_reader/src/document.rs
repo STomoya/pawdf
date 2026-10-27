@@ -8,7 +8,7 @@ use pawdf_core::{
 use crate::error::{Error, ErrorKind};
 use crate::font::{Font, Shared, load_font};
 use crate::geom::{Matrix, Rect, Rotation};
-use crate::model::{Annotations, Outline};
+use crate::model::{Annotations, FormFields, Outline};
 
 pub(crate) const MAX_TREE_DEPTH: usize = 64;
 
@@ -126,6 +126,11 @@ impl Document {
     /// The document outline (§12.3.3), read on every call.
     pub fn outline(&self) -> Outline {
         crate::outline::read(&self.0)
+    }
+
+    /// The interactive form fields (§12.7), read on every call.
+    pub fn form_fields(&self) -> FormFields {
+        crate::form::read(&self.0)
     }
 
     /// Structural diagnostics: file-level recoveries plus page-tree problems.

@@ -10,6 +10,7 @@ mod dest;
 mod document;
 mod error;
 mod font;
+mod form;
 mod geom;
 mod image;
 mod model;
@@ -23,8 +24,9 @@ pub use error::{Error, ErrorKind};
 pub use geom::{Matrix, Point, Rect, Rotation};
 pub use model::{
     Annotation, Annotations, CcittParams, Color, ColorSpace, ColorSpaceFamily, Destination,
-    FillRule, FontInfo, FontKind, Glyph, Image, ImageData, MarkedContent, Outline, OutlineItem,
-    PageContent, Path, RenderMode, Segment, SoftMask, WritingMode,
+    FieldKind, FillRule, FontInfo, FontKind, FormField, FormFields, Glyph, Image, ImageData,
+    MarkedContent, Outline, OutlineItem, PageContent, Path, RenderMode, Segment, SoftMask, Widget,
+    WritingMode,
 };
 pub use pawdf_core::{
     Diagnostic, DiagnosticKind, Encryption, Error as CoreError, ErrorKind as CoreErrorKind,

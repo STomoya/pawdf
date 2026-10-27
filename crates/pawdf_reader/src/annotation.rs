@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use pawdf_core::{DiagnosticKind, Dict, Location, Object, decode_text_string};
 
-use crate::dest::{Cx, destination, entry};
+use crate::dest::{Cx, destination, entry, text};
 use crate::document::{Inner, PageInfo, rect};
 use crate::geom::{Point, Rect};
 use crate::model::{Annotation, Annotations};
@@ -98,17 +98,6 @@ fn annotation<'a>(cx: &mut Cx<'a>, d: &'a Dict, at: Location) -> Annotation {
         quad_points: quad_points(cx, d, at),
         dest: destination(cx, d, at),
         uri: uri(cx, d, at),
-    }
-}
-
-fn text(cx: &mut Cx, d: &Dict, key: &[u8], at: Location) -> Option<String> {
-    let v = cx.file.deref(entry(d, key)?);
-    match v.as_string() {
-        Some(s) => Some(decode_text_string(s)),
-        None => {
-            cx.bad(at);
-            None
-        }
     }
 }
 
