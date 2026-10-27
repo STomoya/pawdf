@@ -4,6 +4,9 @@ Matrix: TypeAlias = tuple[float, float, float, float, float, float]
 Rect: TypeAlias = tuple[float, float, float, float]
 Point: TypeAlias = tuple[float, float]
 ImageKind: TypeAlias = Literal['samples', 'jpeg', 'jpx', 'jbig2', 'ccitt']
+FieldKind: TypeAlias = Literal[
+    'text', 'checkbox', 'radio', 'push_button', 'combo_box', 'list_box', 'signature', 'unknown'
+]
 SpaceFamily: TypeAlias = Literal['cal_gray', 'cal_rgb', 'lab', 'separation', 'device_n', 'indexed', 'unknown']
 
 def hello_from_bin() -> str: ...
@@ -420,6 +423,55 @@ class Outline:
         """Recoveries made while reading the outline."""
 
 @final
+class Widget:
+    """One widget annotation of a form field."""
+
+    @property
+    def page(self) -> int | None:
+        """0-based index of the page that holds the widget; ``None`` when none does."""
+    @property
+    def rect(self) -> Rect:
+        """``/Rect`` in default user space, normalized; all zero when missing or malformed."""
+
+@final
+class FormField:
+    """One terminal form field. Its appearance is not read."""
+
+    @property
+    def name(self) -> str:
+        """The fully qualified name: partial names joined with ``.``; empty when none has one."""
+    @property
+    def label(self) -> str | None:
+        """``/TU``, decoded: the name shown to users."""
+    @property
+    def kind(self) -> FieldKind:
+        """The field type."""
+    @property
+    def values(self) -> list[str]:
+        """The value, decoded; empty when unfilled or off.
+
+        More than one only for multi-select list boxes. Password fields are returned as
+        written: check ``flags`` bit 14 to filter them.
+        """
+    @property
+    def flags(self) -> int:
+        """``/Ff`` field flags, inherited; 0 when missing or malformed."""
+    @property
+    def widgets(self) -> list[Widget]:
+        """Where the field appears, in ``/Kids`` order."""
+
+@final
+class FormFields:
+    """The form fields of a document."""
+
+    @property
+    def items(self) -> list[FormField]:
+        """Terminal fields, in depth-first order."""
+    @property
+    def diagnostics(self) -> list[Diagnostic]:
+        """Recoveries made while reading the form."""
+
+@final
 class Annotation:
     """One annotation. Its appearance is not read."""
 
@@ -493,3 +545,5 @@ class Document:
         """How the file was decrypted, or ``None`` if it is not encrypted."""
     def outline(self) -> Outline:
         """The document outline (bookmarks). Read on every call. Releases the GIL while parsing."""
+    def form_fields(self) -> FormFields:
+        """The interactive form fields. Read on every call. Releases the GIL while parsing."""

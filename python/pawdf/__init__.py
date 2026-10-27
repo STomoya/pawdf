@@ -15,6 +15,8 @@ from pawdf._core import (
     EncryptedError,
     Encryption,
     FontInfo,
+    FormField,
+    FormFields,
     Glyph,
     Image,
     MarkedContent,
@@ -28,6 +30,7 @@ from pawdf._core import (
     Permissions,
     SoftMask,
     UnsupportedEncryptionError,
+    Widget,
     hello_from_bin,
 )
 from pawdf._version import __version__
@@ -45,6 +48,8 @@ __all__ = [
     'EncryptedError',
     'Encryption',
     'FontInfo',
+    'FormField',
+    'FormFields',
     'Glyph',
     'Image',
     'MarkedContent',
@@ -58,6 +63,7 @@ __all__ = [
     'Permissions',
     'SoftMask',
     'UnsupportedEncryptionError',
+    'Widget',
     '__version__',
     'open',
 ]

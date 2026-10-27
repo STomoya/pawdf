@@ -885,6 +885,103 @@ impl Annotations {
     }
 }
 
+/// One widget annotation of a form field.
+#[pyclass(frozen, module = "pawdf._core")]
+struct Widget(r::Widget);
+
+#[pymethods]
+impl Widget {
+    #[getter]
+    fn page(&self) -> Option<usize> {
+        self.0.page
+    }
+
+    #[getter]
+    fn rect(&self) -> Rect4 {
+        rect(self.0.rect)
+    }
+
+    fn __repr__(&self) -> String {
+        let page = self.0.page.map_or("None".to_owned(), |p| p.to_string());
+        format!("Widget(page={page}, rect={:?})", self.rect())
+    }
+}
+
+/// One terminal form field. Its appearance is not read.
+#[pyclass(frozen, module = "pawdf._core")]
+struct FormField(r::FormField);
+
+#[pymethods]
+impl FormField {
+    #[getter]
+    fn name(&self) -> &str {
+        &self.0.name
+    }
+
+    #[getter]
+    fn label(&self) -> Option<&str> {
+        self.0.label.as_deref()
+    }
+
+    #[getter]
+    fn kind(&self) -> &'static str {
+        match self.0.kind {
+            r::FieldKind::Text => "text",
+            r::FieldKind::CheckBox => "checkbox",
+            r::FieldKind::RadioButton => "radio",
+            r::FieldKind::PushButton => "push_button",
+            r::FieldKind::ComboBox => "combo_box",
+            r::FieldKind::ListBox => "list_box",
+            r::FieldKind::Signature => "signature",
+            r::FieldKind::Unknown => "unknown",
+        }
+    }
+
+    #[getter]
+    fn values(&self) -> Vec<String> {
+        self.0.values.clone()
+    }
+
+    #[getter]
+    fn flags(&self) -> u32 {
+        self.0.flags
+    }
+
+    #[getter]
+    fn widgets(&self) -> Vec<Widget> {
+        self.0.widgets.iter().cloned().map(Widget).collect()
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        Ok(format!(
+            "FormField(name={}, kind={}, values={})",
+            self.name().into_pyobject(py)?.repr()?,
+            self.kind().into_pyobject(py)?.repr()?,
+            self.values().into_pyobject(py)?.repr()?
+        ))
+    }
+}
+
+/// The form fields of a document.
+#[pyclass(frozen, module = "pawdf._core")]
+struct FormFields {
+    #[pyo3(get)]
+    items: Py<PyList>,
+    #[pyo3(get)]
+    diagnostics: Py<PyList>,
+}
+
+#[pymethods]
+impl FormFields {
+    fn __repr__(&self, py: Python<'_>) -> String {
+        format!(
+            "FormFields(items={}, diagnostics={})",
+            self.items.bind(py).len(),
+            self.diagnostics.bind(py).len()
+        )
+    }
+}
+
 /// One page of a document.
 #[pyclass(frozen, module = "pawdf._core")]
 struct Page(r::Page);
@@ -1116,6 +1213,15 @@ impl Document {
         })
     }
 
+    /// The interactive form fields. Read on every call. Releases the GIL while parsing.
+    fn form_fields(&self, py: Python<'_>) -> PyResult<FormFields> {
+        let f = py.detach(|| self.0.form_fields());
+        Ok(FormFields {
+            items: list(py, f.items, FormField)?,
+            diagnostics: diagnostics(py, f.diagnostics)?,
+        })
+    }
+
     fn __repr__(&self) -> String {
         format!("Document(pages={})", self.0.page_count())
     }
@@ -1131,8 +1237,9 @@ mod _core {
     #[pymodule_export]
     use super::{
         Annotation, Annotations, Color, Destination, Diagnostic, Document, EncryptedError,
-        Encryption, FontInfo, Glyph, Image, MarkedContent, Outline, OutlineItem, Page, PageContent,
-        PasswordError, Path, PdfError, Permissions, SoftMask, UnsupportedEncryptionError,
+        Encryption, FontInfo, FormField, FormFields, Glyph, Image, MarkedContent, Outline,
+        OutlineItem, Page, PageContent, PasswordError, Path, PdfError, Permissions, SoftMask,
+        UnsupportedEncryptionError, Widget,
     };
 
     #[pyfunction]
