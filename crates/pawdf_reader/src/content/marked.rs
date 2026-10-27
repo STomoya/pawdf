@@ -18,14 +18,16 @@ struct Open {
     /// Index into `PageContent::marked_contents`.
     slot: usize,
     actual: bool,
+    /// An `/OC` sequence that is off, counted in `Interp::hidden`.
+    hides: bool,
 }
 
 #[derive(Default)]
 pub(super) struct Stack {
     open: Vec<Open>,
-    /// Sequences opened beyond a limit and not stored. They are always the innermost, so
-    /// `EMC` closes them first.
-    dropped: usize,
+    /// Sequences opened beyond a limit and not stored, by whether they hide. They are always
+    /// the innermost, so `EMC` closes them first.
+    dropped: Vec<bool>,
 }
 
 impl Interp<'_> {
@@ -53,11 +55,13 @@ impl Interp<'_> {
 
     /// Opens a sequence. It is opened even when malformed, so that its `EMC` balances.
     fn begin_marked(&mut self, tag: Option<&[u8]>, props: Option<&Object>, at: Location) {
-        if self.marked.dropped > 0
+        let hides = tag == Some(b"OC") && self.marked_oc_hides(props, at);
+        self.hidden += usize::from(hides);
+        if !self.marked.dropped.is_empty()
             || self.marked.open.len() >= MAX_MARKED_DEPTH
             || self.out.marked_contents.len() >= MAX_MARKED_CONTENTS
         {
-            self.marked.dropped += 1;
+            self.marked.dropped.push(hides);
             self.marked_limit(at);
             return;
         }
@@ -87,8 +91,23 @@ impl Interp<'_> {
         self.marked.open.push(Open {
             slot: self.out.marked_contents.len(),
             actual,
+            hides,
         });
         self.out.marked_contents.push(span);
+    }
+
+    /// §8.11.3.2: `/OC /name BDC` names an optional content group or membership dictionary in
+    /// `/Properties`. An inline dictionary is accepted too. Missing or malformed properties
+    /// are reported by `read_span`.
+    fn marked_oc_hides(&mut self, props: Option<&Object>, at: Location) -> bool {
+        let oc = match props {
+            Some(Object::Name(n)) => self.resource_entry(b"Properties", n.as_bytes()),
+            Some(p @ Object::Dict(_)) => Some(p),
+            _ => None,
+        };
+        let file = self.file;
+        oc.filter(|oc| file.deref(oc).as_dict().is_some())
+            .is_some_and(|oc| self.oc_hides(oc, at))
     }
 
     fn marked_limit(&mut self, at: Location) {
@@ -176,8 +195,8 @@ impl Interp<'_> {
     }
 
     fn end_marked(&mut self, at: Location) {
-        if self.marked.dropped > 0 {
-            self.marked.dropped -= 1;
+        if let Some(hides) = self.marked.dropped.pop() {
+            self.hidden -= usize::from(hides);
             return;
         }
         match self.marked.open.pop() {
@@ -188,11 +207,13 @@ impl Interp<'_> {
 
     /// Closes every sequence still open at the end of the page's content or of a form XObject.
     pub(super) fn close_marked(&mut self, at: Location) {
-        if self.marked.open.is_empty() && self.marked.dropped == 0 {
+        if self.marked.open.is_empty() && self.marked.dropped.is_empty() {
             return;
         }
         self.diags.push(DiagnosticKind::UnbalancedMarkedContent, at);
-        self.marked.dropped = 0;
+        for hides in std::mem::take(&mut self.marked.dropped) {
+            self.hidden -= usize::from(hides);
+        }
         while let Some(open) = self.marked.open.pop() {
             self.close_span(open);
         }
@@ -208,6 +229,7 @@ impl Interp<'_> {
         if open.actual {
             self.actual_open = self.actual_open.saturating_sub(1);
         }
+        self.hidden -= usize::from(open.hides);
     }
 
     fn counts(&self) -> (usize, usize, usize) {

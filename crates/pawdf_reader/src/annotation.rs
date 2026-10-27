@@ -6,6 +6,7 @@ use crate::dest::{Cx, destination, entry, text};
 use crate::document::{Inner, PageInfo, rect};
 use crate::geom::{Point, Rect};
 use crate::model::{Annotation, Annotations};
+use crate::oc;
 
 pub(crate) fn read(doc: &Inner, page: &PageInfo) -> Annotations {
     let file = &doc.file;
@@ -19,6 +20,7 @@ pub(crate) fn read(doc: &Inner, page: &PageInfo) -> Annotations {
         return Annotations::default();
     };
     let mut cx = Cx::new(doc, DiagnosticKind::BadAnnotation);
+    let mut vis = None;
     let mut items = Vec::new();
     match annots {
         Object::Array(annots) => {
@@ -35,7 +37,10 @@ pub(crate) fn read(doc: &Inner, page: &PageInfo) -> Annotations {
                 match file.deref(a) {
                     Object::Dict(d) => {
                         let at = a.as_ref().map_or(page_at, Location::Object);
-                        items.push(annotation(&mut cx, d, at));
+                        let mut a = annotation(&mut cx, d, at);
+                        a.hidden = entry(d, b"OC")
+                            .is_some_and(|oc| oc::hides(&mut vis, doc, oc, at, &mut cx.diags));
+                        items.push(a);
                     }
                     // A dangling reference is already reported by the file.
                     Object::Null => {}
@@ -98,6 +103,7 @@ fn annotation<'a>(cx: &mut Cx<'a>, d: &'a Dict, at: Location) -> Annotation {
         quad_points: quad_points(cx, d, at),
         dest: destination(cx, d, at),
         uri: uri(cx, d, at),
+        hidden: false,
     }
 }
 

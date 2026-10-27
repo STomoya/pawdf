@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use pawdf_core::{
     Diagnostic, DiagnosticKind, Diagnostics, Encryption, File, Location, Object, Ref,
@@ -9,6 +9,7 @@ use crate::error::{Error, ErrorKind};
 use crate::font::{Font, Shared, load_font};
 use crate::geom::{Matrix, Rect, Rotation};
 use crate::model::{Annotations, FormFields, Outline};
+use crate::oc;
 
 pub(crate) const MAX_TREE_DEPTH: usize = 64;
 
@@ -33,6 +34,8 @@ pub(crate) struct Inner {
     /// Fonts by object, parsed once per document, with the diagnostics loading them gave.
     fonts: Mutex<HashMap<Ref, LoadedFont>>,
     pub shared: Shared,
+    /// `/OCProperties`, read on the first `/OC` lookup, with the diagnostics reading it gave.
+    oc: OnceLock<(oc::Config, Vec<Diagnostic>)>,
 }
 
 impl Inner {
@@ -54,6 +57,11 @@ impl Inner {
         let entry = (Arc::new(font), diags.into_vec());
         fonts.insert(r, entry.clone());
         entry
+    }
+
+    /// The default optional content configuration, read on first use.
+    pub fn optional_content(&self) -> &(oc::Config, Vec<Diagnostic>) {
+        self.oc.get_or_init(|| oc::read(&self.file))
     }
 }
 
@@ -93,6 +101,7 @@ impl Document {
             tree_diags: diags.into_vec(),
             fonts: Mutex::new(HashMap::new()),
             shared: Shared::default(),
+            oc: OnceLock::new(),
         }))
     }
 

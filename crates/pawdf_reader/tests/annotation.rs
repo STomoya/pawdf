@@ -89,6 +89,7 @@ fn fields_in_order() {
                 quad_points: vec![],
                 dest: None,
                 uri: None,
+                hidden: false,
             },
             Annotation {
                 subtype: "Popup".into(),
@@ -105,6 +106,7 @@ fn fields_in_order() {
                 quad_points: vec![],
                 dest: None,
                 uri: None,
+                hidden: false,
             },
         ]
     );
