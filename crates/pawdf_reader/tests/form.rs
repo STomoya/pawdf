@@ -608,3 +608,33 @@ fn shared_kids_array_read_once() {
     assert_eq!(widgets, [1, 0]);
     assert_eq!(f.diagnostics.len(), 2, "{:?}", f.diagnostics);
 }
+
+#[test]
+fn radio_opt_inherited_from_parent() {
+    let f = fields(
+        "10 0 R",
+        &[
+            obj(
+                10,
+                "<< /T (r) /FT /Btn /Ff 32768 /Opt [(a) (b)] /Kids [11 0 R] >>",
+            ),
+            obj(11, "<< /T (k) /V /1 /Kids [12 0 R] >>"),
+            obj(12, "<< /Subtype /Widget /Rect [0 0 1 1] >>"),
+        ],
+    );
+    assert_eq!(values(&f), ["b"]);
+}
+
+#[test]
+fn empty_partial_name_adds_no_segment() {
+    let f = fields(
+        "10 0 R",
+        &[
+            obj(10, "<< /T (a) /Kids [11 0 R] >>"),
+            obj(11, "<< /T () /Kids [12 0 R] >>"),
+            obj(12, "<< /T (c) /FT /Tx >>"),
+        ],
+    );
+    assert_eq!(names(&f), ["a.c"]);
+    assert_eq!(f.diagnostics, []);
+}

@@ -12,7 +12,7 @@ const RADIO: u32 = 1 << 15;
 const PUSHBUTTON: u32 = 1 << 16;
 const COMBO: u32 = 1 << 17;
 
-/// Entries a field takes from its ancestors (Table 226), plus its name so far.
+/// Entries a field takes from its ancestors (Tables 226 and 230), plus its name so far.
 #[derive(Default, Clone)]
 struct Inherited<'a> {
     /// `None` until some level has a `/T`.
@@ -20,6 +20,7 @@ struct Inherited<'a> {
     ft: Option<&'a Object>,
     ff: Option<&'a Object>,
     v: Option<&'a Object>,
+    opt: Option<&'a Object>,
 }
 
 struct Walk<'a> {
@@ -95,15 +96,17 @@ impl<'a> Walk<'a> {
         };
         let at = obj.as_ref().map_or(holder, Location::Object);
         let name = match (&parent.name, text(&mut self.cx, d, b"T", at)) {
-            (Some(p), Some(t)) => Some(format!("{p}.{t}")),
-            (_, Some(t)) => Some(t),
-            (p, None) => p.clone(),
+            // pdfium likewise drops an empty `/T` rather than adding an empty segment.
+            (Some(p), Some(t)) if !t.is_empty() => Some(format!("{p}.{t}")),
+            (None, Some(t)) if !t.is_empty() => Some(t),
+            (p, _) => p.clone(),
         };
         let inh = Inherited {
             name,
             ft: entry(d, b"FT").or(parent.ft),
             ff: entry(d, b"Ff").or(parent.ff),
             v: entry(d, b"V").or(parent.v),
+            opt: entry(d, b"Opt").or(parent.opt),
         };
         let mut fields = Vec::new();
         let mut widgets = Vec::new();
@@ -192,7 +195,7 @@ impl<'a> Walk<'a> {
             kind,
             // Writers store `()` for a cleared field; it is as unfilled as a missing `/V`.
             values: {
-                let mut v = self.values(kind, inh.v, d, at);
+                let mut v = self.values(kind, inh, at);
                 v.retain(|s| !s.is_empty());
                 v
             },
@@ -205,15 +208,9 @@ impl<'a> Walk<'a> {
     }
 
     /// `/V` by field type (§12.7.5). `/DV` is not a fallback: it is the reset value.
-    fn values(
-        &mut self,
-        kind: FieldKind,
-        v: Option<&Object>,
-        d: &Dict,
-        at: Location,
-    ) -> Vec<String> {
+    fn values(&mut self, kind: FieldKind, inh: &Inherited<'a>, at: Location) -> Vec<String> {
         let file = self.cx.file;
-        let Some(v) = v.map(|v| file.deref(v)) else {
+        let Some(v) = inh.v.map(|v| file.deref(v)) else {
             return Vec::new();
         };
         match (kind, v) {
@@ -248,7 +245,7 @@ impl<'a> Walk<'a> {
                 let index = std::str::from_utf8(n)
                     .ok()
                     .and_then(|n| n.parse::<usize>().ok());
-                let opts = entry(d, b"Opt").and_then(|o| file.deref(o).as_array());
+                let opts = inh.opt.and_then(|o| file.deref(o).as_array());
                 let label = match (index, opts) {
                     (Some(i), Some(opts)) => {
                         let s = opts.get(i).and_then(|o| file.deref(o).as_string());
