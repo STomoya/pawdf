@@ -1,5 +1,5 @@
 use std::cell::OnceCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 use std::thread::ThreadId;
 
@@ -187,12 +187,17 @@ impl File {
         &self.data
     }
 
-    /// All object references known to the cross-reference data, in-use entries only.
+    /// All in-use object references with their generations. If the cross-reference data
+    /// was damaged, this includes objects only a repair scan finds, running it if needed.
     pub fn objects(&self) -> Vec<Ref> {
-        self.table
-            .entries
-            .keys()
-            .map(|&num| Ref { num, generation: 0 })
+        let mut all: BTreeMap<u32, u16> = generations(&self.table.entries).collect();
+        if self.xref_damaged {
+            for (num, generation) in generations(&self.repaired_table().entries) {
+                all.entry(num).or_insert(generation);
+            }
+        }
+        all.into_iter()
+            .map(|(num, generation)| Ref { num, generation })
             .collect()
     }
 
@@ -280,7 +285,7 @@ impl File {
         // Computed outside the OnceLock: resolution can re-enter (indirect /Length, object
         // streams), and `get_or_init` must not be called re-entrantly.
         let obj = match *table.entries.get(&r.num)? {
-            Entry::InFile { offset } => self.load_in_file(r.num, offset, depth)?,
+            Entry::InFile { offset, .. } => self.load_in_file(r.num, offset, depth)?,
             Entry::InStream { stream, .. } => {
                 let key = (stream, std::thread::current().id());
                 if !lock(&table.loaded_streams).contains(&stream)
@@ -331,7 +336,7 @@ impl File {
     /// An indirect stream `/Length`. Only direct objects in the main table are consulted,
     /// so this cannot recurse.
     fn length_of(&self, r: Ref) -> Option<i64> {
-        let Some(Entry::InFile { offset }) = self.table.entries.get(&r.num).copied() else {
+        let Some(Entry::InFile { offset, .. }) = self.table.entries.get(&r.num).copied() else {
             return None;
         };
         let mut lex = Lexer::at(&self.data, offset);
@@ -430,7 +435,7 @@ struct RawObjects<'a> {
 impl RawObjects<'_> {
     fn get(&self, num: u32) -> Option<Object> {
         let at = |entries: &Entries| match entries.get(&num) {
-            Some(Entry::InFile { offset }) => {
+            Some(Entry::InFile { offset, .. }) => {
                 parse_indirect(self.data, *offset, &|_| None, &mut Diagnostics::new())
                     .filter(|(found, _)| found.num == num)
                     .map(|(_, o)| o)
@@ -505,13 +510,17 @@ fn crypt_handler(
     Ok(Some((handler, value.as_ref(), id)))
 }
 
+fn generations(entries: &Entries) -> impl Iterator<Item = (u32, u16)> + '_ {
+    entries.iter().map(|(&num, e)| (num, e.generation()))
+}
+
 /// The trailer's `/Root` exists and its xref entry points at a real object.
 fn root_ok(data: &[u8], entries: &Entries, trailer: &Dict) -> bool {
     let Some(Object::Ref(root)) = trailer.get(b"Root") else {
         return false;
     };
     match entries.get(&root.num) {
-        Some(Entry::InFile { offset }) => xref::header_matches(data, *offset, root.num),
+        Some(Entry::InFile { offset, .. }) => xref::header_matches(data, *offset, root.num),
         Some(Entry::InStream { .. }) => true,
         _ => false,
     }
