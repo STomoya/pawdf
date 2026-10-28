@@ -810,6 +810,148 @@ impl Outline {
     }
 }
 
+/// One structure element of a tagged PDF.
+#[pyclass(frozen, module = "pawdf._core")]
+struct StructElement {
+    #[pyo3(get)]
+    role: String,
+    #[pyo3(get)]
+    standard: String,
+    #[pyo3(get)]
+    title: Option<String>,
+    #[pyo3(get)]
+    alt: Option<String>,
+    #[pyo3(get)]
+    actual_text: Option<String>,
+    #[pyo3(get)]
+    lang: Option<String>,
+    #[pyo3(get)]
+    expansion: Option<String>,
+    #[pyo3(get)]
+    page: Option<usize>,
+    #[pyo3(get)]
+    children: Py<PyList>,
+}
+
+/// Recurses once per nesting level, which the reader caps.
+fn struct_element(py: Python<'_>, e: r::StructElement) -> PyResult<StructElement> {
+    let kids = e
+        .children
+        .into_iter()
+        .map(|k| match k {
+            r::StructKid::Element(e) => Ok(Py::new(py, struct_element(py, e)?)?.into_any()),
+            r::StructKid::MarkedContent(m) => Ok(Py::new(py, MarkedContentRef(m))?.into_any()),
+            r::StructKid::Object(o) => Ok(Py::new(py, ObjectRef(o))?.into_any()),
+        })
+        .collect::<PyResult<Vec<_>>>()?;
+    Ok(StructElement {
+        role: e.role,
+        standard: e.standard,
+        title: e.title,
+        alt: e.alt,
+        actual_text: e.actual_text,
+        lang: e.lang,
+        expansion: e.expansion,
+        page: e.page,
+        children: PyList::new(py, kids)?.unbind(),
+    })
+}
+
+fn opt_usize(v: Option<usize>) -> String {
+    v.map_or("None".to_owned(), |v| v.to_string())
+}
+
+#[pymethods]
+impl StructElement {
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        Ok(format!(
+            "StructElement(role={}, standard={}, page={}, children={})",
+            self.role.clone().into_pyobject(py)?.repr()?,
+            self.standard.clone().into_pyobject(py)?.repr()?,
+            opt_usize(self.page),
+            self.children.bind(py).len()
+        ))
+    }
+}
+
+/// A marked-content sequence of a structure element.
+#[pyclass(frozen, module = "pawdf._core")]
+struct MarkedContentRef(r::MarkedContentRef);
+
+#[pymethods]
+impl MarkedContentRef {
+    #[getter]
+    fn page(&self) -> Option<usize> {
+        self.0.page
+    }
+
+    #[getter]
+    fn mcid(&self) -> u32 {
+        self.0.mcid
+    }
+
+    #[getter]
+    fn stream(&self) -> Option<(u32, u16)> {
+        self.0.stream.map(|r| (r.num, r.generation))
+    }
+
+    fn __repr__(&self) -> String {
+        let stream = self
+            .stream()
+            .map_or("None".to_owned(), |(n, g)| format!("({n}, {g})"));
+        format!(
+            "MarkedContentRef(page={}, mcid={}, stream={stream})",
+            opt_usize(self.0.page),
+            self.0.mcid
+        )
+    }
+}
+
+/// A PDF object of a structure element.
+#[pyclass(frozen, module = "pawdf._core")]
+struct ObjectRef(r::ObjectRef);
+
+#[pymethods]
+impl ObjectRef {
+    #[getter]
+    fn page(&self) -> Option<usize> {
+        self.0.page
+    }
+
+    #[getter]
+    fn annotation(&self) -> Option<usize> {
+        self.0.annotation
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ObjectRef(page={}, annotation={})",
+            opt_usize(self.0.page),
+            opt_usize(self.0.annotation)
+        )
+    }
+}
+
+/// The logical structure tree of a tagged PDF.
+#[pyclass(frozen, module = "pawdf._core")]
+struct StructTree {
+    #[pyo3(get)]
+    roots: Py<PyList>,
+    #[pyo3(get)]
+    diagnostics: Py<PyList>,
+}
+
+#[pymethods]
+impl StructTree {
+    fn __repr__(&self, py: Python<'_>) -> String {
+        format!(
+            "StructTree(roots={}, diagnostics={})",
+            self.roots.bind(py).len(),
+            self.diagnostics.bind(py).len()
+        )
+    }
+}
+
 /// One annotation. Its appearance is not read.
 #[pyclass(frozen, module = "pawdf._core")]
 struct Annotation(r::Annotation);
@@ -1233,6 +1375,21 @@ impl Document {
         })
     }
 
+    /// The logical structure tree of a tagged PDF; empty when untagged. Read on every call.
+    /// Releases the GIL while parsing.
+    fn structure_tree(&self, py: Python<'_>) -> PyResult<StructTree> {
+        let t = py.detach(|| self.0.structure_tree());
+        let roots = t
+            .roots
+            .into_iter()
+            .map(|e| Py::new(py, struct_element(py, e)?))
+            .collect::<PyResult<Vec<_>>>()?;
+        Ok(StructTree {
+            roots: PyList::new(py, roots)?.unbind(),
+            diagnostics: diagnostics(py, t.diagnostics)?,
+        })
+    }
+
     /// The interactive form fields. Read on every call. Releases the GIL while parsing.
     fn form_fields(&self, py: Python<'_>) -> PyResult<FormFields> {
         let f = py.detach(|| self.0.form_fields());
@@ -1257,9 +1414,9 @@ mod _core {
     #[pymodule_export]
     use super::{
         Annotation, Annotations, Color, Destination, Diagnostic, Document, EncryptedError,
-        Encryption, FontInfo, FormField, FormFields, Glyph, Image, MarkedContent, Outline,
-        OutlineItem, Page, PageContent, PasswordError, Path, PdfError, Permissions, SoftMask,
-        UnsupportedEncryptionError, Widget,
+        Encryption, FontInfo, FormField, FormFields, Glyph, Image, MarkedContent, MarkedContentRef,
+        ObjectRef, Outline, OutlineItem, Page, PageContent, PasswordError, Path, PdfError,
+        Permissions, SoftMask, StructElement, StructTree, UnsupportedEncryptionError, Widget,
     };
 
     #[pyfunction]

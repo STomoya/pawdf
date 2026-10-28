@@ -8,7 +8,7 @@ use pawdf_core::{
 use crate::error::{Error, ErrorKind};
 use crate::font::{Font, Shared, load_font};
 use crate::geom::{Matrix, Rect, Rotation};
-use crate::model::{Annotations, FormFields, Outline};
+use crate::model::{Annotations, FormFields, Outline, StructTree};
 use crate::oc;
 
 pub(crate) const MAX_TREE_DEPTH: usize = 64;
@@ -140,6 +140,12 @@ impl Document {
     /// The interactive form fields (§12.7), read on every call.
     pub fn form_fields(&self) -> FormFields {
         crate::form::read(&self.0)
+    }
+
+    /// The logical structure tree of a tagged PDF (§14.7), read on every call. Empty when
+    /// the document is untagged.
+    pub fn structure_tree(&self) -> StructTree {
+        crate::structure::read(&self.0)
     }
 
     /// Structural diagnostics: file-level recoveries plus page-tree problems.

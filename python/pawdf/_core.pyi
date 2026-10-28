@@ -441,6 +441,74 @@ class Outline:
         """Recoveries made while reading the outline."""
 
 @final
+class StructElement:
+    """One structure element of a tagged PDF. Attribute objects and classes are not read."""
+
+    @property
+    def role(self) -> str:
+        """``/S`` as written, e.g. ``P``, ``H1``, or a custom name; empty when missing."""
+    @property
+    def standard(self) -> str:
+        """``role`` after following ``/RoleMap``, which applies even to standard names."""
+    @property
+    def title(self) -> str | None:
+        """``/T``, decoded."""
+    @property
+    def alt(self) -> str | None:
+        """``/Alt``, decoded: alternate description, e.g. of a figure."""
+    @property
+    def actual_text(self) -> str | None:
+        """``/ActualText``, decoded: replacement text."""
+    @property
+    def lang(self) -> str | None:
+        """``/Lang``, decoded."""
+    @property
+    def expansion(self) -> str | None:
+        """``/E``, decoded: expansion of an abbreviation."""
+    @property
+    def page(self) -> int | None:
+        """0-based page index of its own ``/Pg``."""
+    @property
+    def children(self) -> list[StructElement | MarkedContentRef | ObjectRef]:
+        """Kids, in ``/K`` order."""
+
+@final
+class MarkedContentRef:
+    """A marked-content sequence of a structure element."""
+
+    @property
+    def page(self) -> int | None:
+        """0-based page index the content is on."""
+    @property
+    def mcid(self) -> int:
+        """Matches ``MarkedContent.mcid`` on that page, unless ``stream`` is set."""
+    @property
+    def stream(self) -> tuple[int, int] | None:
+        """``/Stm`` as (object number, generation): the content stream holding the sequence, when not the page's."""
+
+@final
+class ObjectRef:
+    """A PDF object of a structure element, such as an annotation."""
+
+    @property
+    def page(self) -> int | None:
+        """0-based page index."""
+    @property
+    def annotation(self) -> int | None:
+        """Index into that page's ``Annotations.items`` when the object is one of them."""
+
+@final
+class StructTree:
+    """The logical structure tree of a tagged PDF. ``/ParentTree`` is not read."""
+
+    @property
+    def roots(self) -> list[StructElement]:
+        """The children of ``/StructTreeRoot``, in order."""
+    @property
+    def diagnostics(self) -> list[Diagnostic]:
+        """Recoveries made while reading the tree."""
+
+@final
 class Widget:
     """One widget annotation of a form field."""
 
@@ -566,5 +634,10 @@ class Document:
         """How the file was decrypted, or ``None`` if it is not encrypted."""
     def outline(self) -> Outline:
         """The document outline (bookmarks). Read on every call. Releases the GIL while parsing."""
+    def structure_tree(self) -> StructTree:
+        """The logical structure tree of a tagged PDF; empty when untagged. Read on every call.
+
+        Releases the GIL while parsing.
+        """
     def form_fields(self) -> FormFields:
         """The interactive form fields. Read on every call. Releases the GIL while parsing."""

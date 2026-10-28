@@ -3,7 +3,7 @@
 
 use std::ops::Range;
 
-use pawdf_core::Diagnostic;
+use pawdf_core::{Diagnostic, Ref};
 
 use crate::geom::{Matrix, Point, Rect};
 
@@ -495,4 +495,71 @@ pub struct Widget {
     pub page: Option<usize>,
     /// `/Rect` in default user space, normalized; all zero when missing or malformed.
     pub rect: Rect,
+}
+
+/// The logical structure of a tagged PDF (§14.7). `/ParentTree` is not read: the `/K` walk is
+/// authoritative.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct StructTree {
+    /// The children of `/StructTreeRoot`, in `/K` order.
+    pub roots: Vec<StructElement>,
+    /// Recoveries made while reading the tree.
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// One structure element (§14.7.2). Attribute objects and classes are not read.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StructElement {
+    /// `/S` as written, e.g. `P`, `H1`, or a custom name; empty when missing.
+    pub role: String,
+    /// [`StructElement::role`] after following `/RoleMap` (§14.7.3), which applies even to
+    /// standard names. Not checked against the standard types; PDF 2.0 namespaces are ignored.
+    pub standard: String,
+    /// `/T`, decoded.
+    pub title: Option<String>,
+    /// `/Alt`, decoded: alternate description, e.g. of a figure (§14.9.3).
+    pub alt: Option<String>,
+    /// `/ActualText`, decoded: replacement text (§14.9.4).
+    pub actual_text: Option<String>,
+    /// `/Lang`, decoded (§14.9.2).
+    pub lang: Option<String>,
+    /// `/E`, decoded: expansion of an abbreviation (§14.9.5).
+    pub expansion: Option<String>,
+    /// 0-based page index of its own `/Pg`.
+    pub page: Option<usize>,
+    /// Kids, in `/K` order.
+    pub children: Vec<StructKid>,
+}
+
+/// One kid of a structure element.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StructKid {
+    /// A child element.
+    Element(StructElement),
+    /// A marked-content sequence, from an integer `/MCID` or an `/MCR` dictionary.
+    MarkedContent(MarkedContentRef),
+    /// A PDF object, from an `/OBJR` dictionary.
+    Object(ObjectRef),
+}
+
+/// A marked-content sequence of a structure element (§14.7.5.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarkedContentRef {
+    /// 0-based page index the content is on: its own `/Pg`, else its element's, else (reported)
+    /// the nearest ancestor's.
+    pub page: Option<usize>,
+    /// Matches [`MarkedContent::mcid`] on that page, unless [`MarkedContentRef::stream`] is set.
+    pub mcid: u32,
+    /// `/Stm`: the content stream (e.g. a form XObject) holding the sequence, when not the
+    /// page's. Its MCIDs are numbered separately from the page's.
+    pub stream: Option<Ref>,
+}
+
+/// A PDF object of a structure element (§14.7.5.3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectRef {
+    /// 0-based page index, found as for [`MarkedContentRef::page`].
+    pub page: Option<usize>,
+    /// Index into that page's [`Annotations::items`] when `/Obj` is one of them.
+    pub annotation: Option<usize>,
 }
