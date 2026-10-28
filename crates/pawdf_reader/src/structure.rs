@@ -18,7 +18,10 @@ struct Pg {
 struct Walk<'a> {
     cx: Cx<'a>,
     pages: &'a [PageInfo],
-    role_map: Option<&'a Dict>,
+    /// `/RoleMap` (§14.7.3), read once: each name's target, `None` when it is not a name.
+    role_map: HashMap<&'a [u8], Option<&'a [u8]>>,
+    /// Each name's standard type, `None` when its chain is broken (a cycle or a bad value).
+    standard: HashMap<&'a [u8], Option<&'a [u8]>>,
     /// Elements and `/K` arrays already reached, so a cycle or a shared element is read once.
     visited: HashSet<u32>,
     /// Index into `Annotations::items` by object number, per page, built on the first lookup.
@@ -31,7 +34,8 @@ pub(crate) fn read(doc: &Inner) -> StructTree {
     let mut w = Walk {
         cx,
         pages: &doc.pages,
-        role_map: None,
+        role_map: HashMap::new(),
+        standard: HashMap::new(),
         visited: HashSet::new(),
         annots: HashMap::new(),
     };
@@ -43,14 +47,19 @@ pub(crate) fn read(doc: &Inner) -> StructTree {
                 if let Some(r) = t.as_ref() {
                     w.visited.insert(r.num);
                 }
-                w.role_map = match entry(root, b"RoleMap").map(|m| file.deref(m)) {
-                    None => None,
-                    Some(Object::Dict(m)) => Some(m),
-                    Some(_) => {
-                        w.cx.bad(at);
-                        None
+                match entry(root, b"RoleMap").map(|m| file.deref(m)) {
+                    None => {}
+                    Some(Object::Dict(m)) => {
+                        w.role_map = m
+                            .iter()
+                            .map(|(k, v)| (k.as_bytes(), file.deref(v)))
+                            // §7.3.7: a null value is the same as no entry.
+                            .filter(|(_, v)| !matches!(v, Object::Null))
+                            .map(|(k, v)| (k, v.as_name()))
+                            .collect();
                     }
-                };
+                    Some(_) => w.cx.bad(at),
+                }
                 let pg = Pg {
                     page: None,
                     inherited: true,
@@ -129,14 +138,17 @@ impl<'a> Walk<'a> {
                             out.push(StructKid::Object(o));
                         }
                     }
-                    // Table 355: a dictionary without `/Type` is a structure element.
+                    // Table 355: any other dictionary is a structure element (its `/Type`, if
+                    // present, shall be `StructElem`).
                     _ => {
-                        if let Some(r) = item.as_ref()
+                        // A cut element is not read, so it stays unvisited for a shallower
+                        // reference elsewhere.
+                        if depth >= MAX_TREE_DEPTH {
+                            self.cx.bad(item_at);
+                        } else if let Some(r) = item.as_ref()
                             && !self.visited.insert(r.num)
                         {
                             self.cx.bad(at);
-                        } else if depth >= MAX_TREE_DEPTH {
-                            self.cx.bad(item_at);
                         } else {
                             let e = self.element(kd, item_at, item.as_ref(), me, pg, depth + 1);
                             out.push(StructKid::Element(e));
@@ -161,6 +173,9 @@ impl<'a> Walk<'a> {
         depth: usize,
     ) -> StructElement {
         let file = self.cx.file;
+        if entry(d, b"Type").is_some_and(|t| file.deref(t).as_name() != Some(b"StructElem")) {
+            self.cx.bad(at);
+        }
         // Table 355: `/P` is required and indirect. Generations are ignored, as `File::resolve` does.
         match (entry(d, b"P").and_then(Object::as_ref), parent) {
             (Some(p), Some(q)) if p.num == q.num => {}
@@ -199,25 +214,36 @@ impl<'a> Walk<'a> {
         }
     }
 
-    /// Follows `/RoleMap` from `role` until a name is not mapped.
+    /// Follows `/RoleMap` from `role` until a name is not mapped. A broken chain leaves `role`
+    /// as written. Every name on the way is memoized, so the whole map is followed once.
     fn standard(&mut self, role: &'a [u8], at: Location) -> String {
-        let file = self.cx.file;
+        let mut path = Vec::new();
         let mut name = role;
-        if let Some(map) = self.role_map {
-            // After as many steps as there are keys, a still-mapped name is in a cycle.
-            let mut steps = 0;
-            while let Some(v) = map.get(name) {
-                match file.deref(v).as_name() {
-                    Some(n) if steps < map.len() => name = n,
-                    _ => {
-                        self.cx.bad(at);
-                        break;
-                    }
+        let resolved = loop {
+            if let Some(&r) = self.standard.get(name) {
+                break r;
+            }
+            match self.role_map.get(name) {
+                None => break Some(name),
+                Some(None) => break None,
+                Some(&Some(next)) => {
+                    // Marked broken while in progress, so reaching it again ends a cycle.
+                    self.standard.insert(name, None);
+                    path.push(name);
+                    name = next;
                 }
-                steps += 1;
+            }
+        };
+        for n in path {
+            self.standard.insert(n, resolved);
+        }
+        match resolved {
+            Some(n) => String::from_utf8_lossy(n).into_owned(),
+            None => {
+                self.cx.bad(at);
+                String::from_utf8_lossy(role).into_owned()
             }
         }
-        String::from_utf8_lossy(name).into_owned()
     }
 
     /// The page index of a `/Pg` entry; `None` and reported when it is not a page here.

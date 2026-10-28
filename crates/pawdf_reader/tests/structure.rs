@@ -387,3 +387,65 @@ fn annotation_generation_is_ignored() {
         })]
     );
 }
+
+#[test]
+fn long_role_map_chain_is_followed_once() {
+    // R0 → R1 → … → R2999 → P, used by 3000 elements: followed per element, with each step a
+    // linear `Dict::get`, this took about 3 × 10^10 comparisons.
+    let n = 3000;
+    let mut map: String = (0..n - 1).map(|i| format!("/R{i} /R{} ", i + 1)).collect();
+    map.push_str(&format!("/R{} /P", n - 1));
+    let kids: String = (0..n).map(|_| "<< /S /R0 /P 10 0 R >> ").collect();
+    let t = tree(&[obj(10, &format!("<< /RoleMap << {map} >> /K [{kids}] >>"))]);
+    assert_eq!(t.diagnostics, []);
+    assert_eq!(t.roots.len(), n);
+    assert!(t.roots.iter().all(|e| e.role == "R0" && e.standard == "P"));
+}
+
+#[test]
+fn null_role_map_value_is_unmapped() {
+    // §7.3.7: a null value is the same as no entry.
+    let t = tree(&[
+        obj(
+            10,
+            "<< /RoleMap << /Foo null /Bar 5 0 R >> /K [11 0 R 12 0 R] >>",
+        ),
+        obj(11, "<< /S /Foo /P 10 0 R >>"),
+        obj(12, "<< /S /Bar /P 10 0 R >>"),
+    ]);
+    let standard: Vec<_> = t.roots.iter().map(|e| e.standard.as_str()).collect();
+    assert_eq!(standard, ["Foo", "Bar"]);
+    assert_eq!(t.diagnostics, []);
+}
+
+#[test]
+fn other_type_is_read_as_element_and_reported() {
+    let t = tree(&[
+        obj(10, "<< /K [11 0 R 12 0 R] >>"),
+        obj(11, "<< /Type /Foo /S /P /P 10 0 R >>"),
+        obj(12, "<< /Type 5 /S /Span /P 10 0 R >>"),
+    ]);
+    let roles: Vec<_> = t.roots.iter().map(|e| e.role.as_str()).collect();
+    assert_eq!(roles, ["P", "Span"]);
+    assert_eq!(t.diagnostics, [bad(11), bad(12)]);
+}
+
+#[test]
+fn element_cut_for_depth_is_read_where_shallower() {
+    // 100 … 163 nest 64 deep; their kid 200 is cut there but also listed at the root.
+    let mut objects = vec![obj(10, "<< /K [100 0 R 200 0 R] >>")];
+    for i in 0..64u32 {
+        let parent = if i == 0 { 10 } else { 99 + i };
+        let kid = if i == 63 { 200 } else { 101 + i };
+        objects.push(obj(
+            100 + i,
+            &format!("<< /S /Div /P {parent} 0 R /K {kid} 0 R >>"),
+        ));
+    }
+    objects.push(obj(200, "<< /S /Note /P 163 0 R >>"));
+    let t = tree(&objects);
+    let roles: Vec<_> = t.roots.iter().map(|e| e.role.as_str()).collect();
+    assert_eq!(roles, ["Div", "Note"]);
+    // The cut, and `/P` naming 163, not the root.
+    assert_eq!(t.diagnostics, [bad(200), bad(200)]);
+}
