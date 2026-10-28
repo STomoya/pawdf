@@ -307,12 +307,18 @@ fn intents_outside_the_configuration_are_ignored() {
         ("/OFF [21 0 R 22 0 R] /Intent /Design", [true, true]),
         ("/OFF [21 0 R 22 0 R] /Intent /All", [true, true]),
         ("/OFF [21 0 R 22 0 R] /Intent [/Other]", [false, false]),
+        ("/OFF [21 0 R 22 0 R] /Intent []", [false, false]),
     ] {
         let props = format!("<< /OCGs [21 0 R 22 0 R] /D << {d} >> >>");
         let c = content(&props, &ops, &groups);
         assert_eq!(glyphs_hidden(&c), want, "{d}");
         assert_eq!(kinds(&c), [], "{d}");
     }
+    // An array without a single name falls back to `View`.
+    let props = "<< /OCGs [21 0 R 22 0 R] /D << /OFF [21 0 R 22 0 R] /Intent [5] >> >>";
+    let c = content(props, &ops, &groups);
+    assert_eq!(glyphs_hidden(&c), [false, true]);
+    assert_eq!(kinds(&c), [DiagnosticKind::BadOptionalContent]);
     // An ignored group has no effect, so inverting policies do not hide either.
     let props = "<< /OCGs [21 0 R 22 0 R] /D << /OFF [21 0 R] >> >>";
     let ops = format!(
@@ -368,6 +374,14 @@ fn malformed_properties_are_reported_once_per_pass() {
     let bad = DiagnosticKind::BadOptionalContent;
     // Not a dictionary: no group is known either, so each lookup is reported too.
     let d = doc("5", &format!("/OC /on BDC {} EMC", t("a")), "", &[]);
+    assert_eq!(kinds(&d.page(0).unwrap().content()), [bad, bad]);
+    // `/OCGs` is required (Table 98).
+    let d = doc(
+        "<< /D << >> >>",
+        &format!("/OC /on BDC {} EMC", t("a")),
+        "",
+        &[],
+    );
     assert_eq!(kinds(&d.page(0).unwrap().content()), [bad, bad]);
     for props in [
         "<< /OCGs [10 0 R 11 0 R] >>",

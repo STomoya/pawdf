@@ -44,12 +44,16 @@ pub(crate) fn read(file: &File) -> (Config, Vec<Diagnostic>) {
             bad(diags)
         })
     };
+    if entry(props, b"OCGs").is_none() {
+        bad(&mut diags);
+    }
     config.groups = refs(props, b"OCGs", &mut diags).into_iter().collect();
     let Some(d) = entry(props, b"D").and_then(|d| file.deref(d).as_dict()) else {
         bad(&mut diags);
         return (config, diags.into_vec());
     };
-    // §8.11.2.1, §8.11.4.3: a name or an array of names, `View` by default.
+    // §8.11.2.1, §8.11.4.3: a name or an array of names, `View` by default. An empty array is
+    // meaningful (§8.11.2.3: no group is used), but one without a single name is malformed.
     let intents = |d: &Dict, diags: &mut Diagnostics| -> Vec<Vec<u8>> {
         let view = vec![b"View".to_vec()];
         match entry(d, b"Intent").map(|i| file.deref(i)) {
@@ -63,7 +67,11 @@ pub(crate) fn read(file: &File) -> (Config, Vec<Diagnostic>) {
                 if names.len() < a.len() {
                     bad(diags);
                 }
-                names
+                if names.is_empty() && !a.is_empty() {
+                    view
+                } else {
+                    names
+                }
             }
             Some(o) => match o.as_name() {
                 Some(n) => vec![n.to_vec()],
