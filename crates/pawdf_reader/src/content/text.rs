@@ -360,6 +360,7 @@ impl<'a> Interp<'a> {
                 fill_alpha: self.gs.fill_alpha,
                 stroke_alpha: self.gs.stroke_alpha,
                 clip: self.gs.clip,
+                hidden: self.hidden > 0,
             });
             self.tm = shift.concat(&self.tm);
         }

@@ -70,6 +70,10 @@ pub enum DiagnosticKind {
     /// A form field or its widget was malformed; the field was skipped, or an entry was left
     /// empty or defaulted.
     BadFormField,
+    /// Optional content (§8.11) was malformed: a bad `/OCProperties` or default configuration,
+    /// a group not listed in `/OCGs`, or a bad membership dictionary or visibility expression.
+    /// The content was treated as visible.
+    BadOptionalContent,
 }
 
 impl DiagnosticKind {
@@ -104,6 +108,7 @@ impl DiagnosticKind {
             DiagnosticKind::BadOutline => "bad_outline",
             DiagnosticKind::BadAnnotation => "bad_annotation",
             DiagnosticKind::BadFormField => "bad_form_field",
+            DiagnosticKind::BadOptionalContent => "bad_optional_content",
         }
     }
 }

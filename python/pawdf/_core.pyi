@@ -177,6 +177,12 @@ class Glyph:
         A zero-area rect means fully clipped. Content outside it is certainly clipped; content
         inside may still be. Under a text clip the bound uses glyph boxes and is approximate.
         """
+    @property
+    def hidden(self) -> bool:
+        """Whether optional content that is off in the default configuration encloses it.
+
+        Hidden content is still returned; the caller decides whether to drop it.
+        """
 
 @final
 class Path:
@@ -215,6 +221,12 @@ class Path:
 
         A zero-area rect means fully clipped. Content outside it is certainly clipped; content
         inside may still be. Under a text clip the bound uses glyph boxes and is approximate.
+        """
+    @property
+    def hidden(self) -> bool:
+        """Whether optional content that is off in the default configuration encloses it.
+
+        Hidden content is still returned; the caller decides whether to drop it.
         """
 
 @final
@@ -298,6 +310,12 @@ class Image:
 
         A zero-area rect means fully clipped. Content outside it is certainly clipped; content
         inside may still be. Under a text clip the bound uses glyph boxes and is approximate.
+        """
+    @property
+    def hidden(self) -> bool:
+        """Whether optional content that is off in the default configuration encloses it.
+
+        Hidden content is still returned; the caller decides whether to drop it.
         """
 
 @final
@@ -505,6 +523,9 @@ class Annotation:
     @property
     def uri(self) -> str | None:
         """The URI of a URI action."""
+    @property
+    def hidden(self) -> bool:
+        """Whether its ``/OC`` is off in the default configuration. Hidden annotations are still returned."""
 
 @final
 class Annotations:

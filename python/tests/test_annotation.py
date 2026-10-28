@@ -61,3 +61,10 @@ def test_no_annotations() -> None:
     a = pawdf.Document(_pdf())[0].annotations()
     assert a.items == []
     assert a.diagnostics == []
+
+
+def test_annotation_hidden() -> None:
+    """An annotation whose /OC is not a known group stays visible and is reported."""
+    a = pawdf.Document(_pdf(b'[<< /Subtype /Text /Rect [0 0 1 1] /OC << /Type /OCG >> >>]'))[0].annotations()
+    assert not a.items[0].hidden
+    assert [d.kind for d in a.diagnostics] == ['bad_optional_content']

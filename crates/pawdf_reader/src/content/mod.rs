@@ -14,11 +14,13 @@ use pawdf_core::{
     Ref, Stream, parse_content,
 };
 
-use crate::document::{Inner, Page, numbers};
+use crate::dest::entry;
+use crate::document::{Inner, Page, numbers, refs};
 use crate::font::Font;
 use crate::geom::{Matrix, Point, Rect};
 use crate::image::{ImageParts, expand_inline, read_image};
 use crate::model::{FillRule, Image, PageContent, Path, Segment};
+use crate::oc;
 use color::{Space, device_space, resolve_space};
 use state::{FontKey, GraphicsState, matrix, name, nums};
 
@@ -85,19 +87,13 @@ fn content_streams(file: &File, page: Ref, diags: &mut Diagnostics) -> Vec<Ref> 
     let Some(dict) = file.resolve(page).as_dict() else {
         return Vec::new();
     };
-    let refs = |a: &[Object], diags: &mut Diagnostics| {
-        let refs: Vec<Ref> = a.iter().filter_map(Object::as_ref).collect();
-        if refs.len() < a.len() {
-            diags.push(DiagnosticKind::BadPageTree, Location::Object(page));
-        }
-        refs
-    };
+    let bad = || diags.push(DiagnosticKind::BadPageTree, Location::Object(page));
     match dict.get(b"Contents") {
         Some(Object::Ref(r)) => match file.resolve(*r) {
-            Object::Array(a) => refs(a, diags),
+            Object::Array(a) => refs(a, bad),
             _ => vec![*r],
         },
-        Some(Object::Array(a)) => refs(a, diags),
+        Some(Object::Array(a)) => refs(a, bad),
         _ => Vec::new(),
     }
 }
@@ -150,6 +146,9 @@ pub(crate) struct Interp<'a> {
     pending_clip: bool,
     /// Union of the glyph boxes shown in a clip render mode in the current text object.
     pub text_clip: Option<Rect>,
+    oc: Option<oc::Visibility<'a>>,
+    /// Open optional content scopes that are off: `BDC /OC` sequences and XObjects with `/OC`.
+    pub hidden: usize,
 }
 
 impl<'a> Interp<'a> {
@@ -191,6 +190,8 @@ impl<'a> Interp<'a> {
             marked_text_left: marked::MAX_MARKED_TEXT,
             pending_clip: false,
             text_clip: None,
+            oc: None,
+            hidden: 0,
         }
     }
 
@@ -471,6 +472,10 @@ impl<'a> Interp<'a> {
             self.bad(DiagnosticKind::MissingResource, op);
             return;
         };
+        // §8.11.3.3: `/OC` on a form or image XObject.
+        let hides = entry(&s.dict, b"OC")
+            .is_some_and(|oc| self.oc_hides(oc, Location::Stream { obj: r, offset: 0 }));
+        self.hidden += usize::from(hides);
         match s.dict.get(b"Subtype").and_then(Object::as_name) {
             Some(b"Image") => {
                 let name = String::from_utf8_lossy(key).into_owned();
@@ -487,6 +492,12 @@ impl<'a> Interp<'a> {
                 Location::Stream { obj: r, offset: 0 },
             ),
         }
+        self.hidden -= usize::from(hides);
+    }
+
+    /// Whether the `/OC` value `oc` turns its content off (§8.11.2).
+    fn oc_hides(&mut self, oc: &Object, at: Location) -> bool {
+        oc::hides(&mut self.oc, self.doc, oc, at, &mut self.diags)
     }
 
     /// Decodes an image stream, resolving named color spaces in the current resources.
@@ -553,6 +564,7 @@ impl<'a> Interp<'a> {
             decode: p.decode,
             data: p.data,
             smask: p.smask,
+            hidden: self.hidden > 0,
         });
     }
 
@@ -698,6 +710,7 @@ impl<'a> Interp<'a> {
                 stroke_color: self.gs.stroke.clone(),
                 fill_alpha: self.gs.fill_alpha,
                 stroke_alpha: self.gs.stroke_alpha,
+                hidden: self.hidden > 0,
             });
         }
         if let Some(r) = new_clip {

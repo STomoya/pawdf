@@ -320,6 +320,11 @@ impl Glyph {
         self.0.clip.map(rect)
     }
 
+    #[getter]
+    fn hidden(&self) -> bool {
+        self.0.hidden
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "Glyph(text={:?}, origin={:?}, font={})",
@@ -401,6 +406,11 @@ impl Path {
     #[getter]
     fn clip(&self) -> Option<Rect4> {
         self.0.clip.map(rect)
+    }
+
+    #[getter]
+    fn hidden(&self) -> bool {
+        self.0.hidden
     }
 
     fn __repr__(&self) -> String {
@@ -580,6 +590,11 @@ impl Image {
     #[getter]
     fn clip(&self) -> Option<Rect4> {
         self.0.clip.map(rect)
+    }
+
+    #[getter]
+    fn hidden(&self) -> bool {
+        self.0.hidden
     }
 
     fn __repr__(&self) -> String {
@@ -854,6 +869,11 @@ impl Annotation {
     #[getter]
     fn uri(&self) -> Option<&str> {
         self.0.uri.as_deref()
+    }
+
+    #[getter]
+    fn hidden(&self) -> bool {
+        self.0.hidden
     }
 
     fn __repr__(&self, py: Python<'_>) -> PyResult<String> {

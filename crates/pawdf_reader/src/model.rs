@@ -87,6 +87,10 @@ pub struct Glyph {
     /// certainly clipped; content inside may still be. Under a text clip (§9.3.6) the bound
     /// uses glyph boxes, which real outlines can exceed, so it is approximate.
     pub clip: Option<Rect>,
+    /// Whether optional content (§8.11) that is off in the default configuration encloses
+    /// it: a `BDC /OC` sequence or a form XObject with `/OC`. Such content is still returned;
+    /// the caller decides whether to drop it.
+    pub hidden: bool,
 }
 
 /// Writing mode (§9.7.4.3).
@@ -173,6 +177,10 @@ pub struct Path {
     pub fill_alpha: f64,
     /// Stroke alpha (`CA`).
     pub stroke_alpha: f64,
+    /// Whether optional content (§8.11) that is off in the default configuration encloses
+    /// it: a `BDC /OC` sequence or a form XObject with `/OC`. Such content is still returned;
+    /// the caller decides whether to drop it.
+    pub hidden: bool,
 }
 
 /// A path segment.
@@ -268,6 +276,10 @@ pub struct Image {
     pub data: ImageData,
     /// `/SMask`, if present.
     pub smask: Option<SoftMask>,
+    /// Whether optional content (§8.11) that is off in the default configuration encloses
+    /// it: a `BDC /OC` sequence, a form XObject with `/OC`, or the image's own `/OC`. Such
+    /// content is still returned; the caller decides whether to drop it.
+    pub hidden: bool,
 }
 
 /// An image color space.
@@ -420,6 +432,9 @@ pub struct Annotation {
     pub dest: Option<Destination>,
     /// The URI of a URI action.
     pub uri: Option<String>,
+    /// Whether its `/OC` (§8.11.3.4) is off in the default configuration. Such annotations are
+    /// still returned.
+    pub hidden: bool,
 }
 
 /// The interactive form fields of a document (AcroForm, §12.7).

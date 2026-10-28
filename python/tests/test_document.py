@@ -19,11 +19,15 @@ def _stream(data: bytes) -> bytes:
 
 
 def _pdf(
-    content: bytes, resources: bytes = b'<< >>', trailer_extra: bytes = b'', extra: tuple[bytes, ...] = ()
+    content: bytes,
+    resources: bytes = b'<< >>',
+    trailer_extra: bytes = b'',
+    extra: tuple[bytes, ...] = (),
+    catalog_extra: bytes = b'',
 ) -> bytes:
     """Build a one-page PDF with correct xref offsets; object 5 is Helvetica, `extra` follows from 6."""
     objects = [
-        b'<< /Type /Catalog /Pages 2 0 R >>',
+        b'<< /Type /Catalog /Pages 2 0 R ' + catalog_extra + b' >>',
         b'<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
         b'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources ' + resources + b' >>',
         _stream(content),
@@ -202,3 +206,24 @@ def test_unbalanced_marked_content() -> None:
     """A stray EMC is reported."""
     c = pawdf.Document(_pdf(b'EMC'))[0].content()
     assert c.diagnostics[0].kind == 'unbalanced_marked_content'
+
+
+def test_optional_content() -> None:
+    """Content in an optional content group that is off is flagged hidden, not dropped."""
+    ops = b'/OC /L BDC BT /F1 10 Tf (a) Tj ET 0 0 1 1 re f EMC /Im Do BT /F1 10 Tf (b) Tj ET'
+    image = (
+        b'<< /Length 1 /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 /OC 6 0 R >>'
+        b'\nstream\n\x00\nendstream'
+    )
+    c = pawdf.Document(
+        _pdf(
+            ops,
+            b'<< /Font << /F1 5 0 R >> /Properties << /L 6 0 R >> /XObject << /Im 7 0 R >> >>',
+            extra=(b'<< /Type /OCG /Name (L) >>', image),
+            catalog_extra=b'/OCProperties << /OCGs [6 0 R] /D << /OFF [6 0 R] >> >>',
+        )
+    )[0].content()
+    assert [g.hidden for g in c.glyphs] == [True, False]
+    assert c.paths[0].hidden
+    assert c.images[0].hidden
+    assert c.diagnostics == []

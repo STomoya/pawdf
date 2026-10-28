@@ -14,6 +14,7 @@ mod form;
 mod geom;
 mod image;
 mod model;
+mod oc;
 mod outline;
 mod ranges;
 #[cfg(test)]
