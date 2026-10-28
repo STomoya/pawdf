@@ -74,6 +74,12 @@ pub enum DiagnosticKind {
     /// a group not listed in `/OCGs`, or a bad membership dictionary or visibility expression.
     /// The content was treated as visible.
     BadOptionalContent,
+    /// The structure tree (§14.7) was malformed: a bad `/StructTreeRoot`, element, `/K` kid, or
+    /// `/Type`, `/P` that is not the element's parent, `/Pg` that is not a page, a content item
+    /// whose page came from an ancestor or is missing, a role map cycle or bad value, or an
+    /// element reached twice or nested too deep. The element or kid was kept with the entry left
+    /// empty or defaulted, or cut.
+    BadStructTree,
 }
 
 impl DiagnosticKind {
@@ -109,6 +115,7 @@ impl DiagnosticKind {
             DiagnosticKind::BadAnnotation => "bad_annotation",
             DiagnosticKind::BadFormField => "bad_form_field",
             DiagnosticKind::BadOptionalContent => "bad_optional_content",
+            DiagnosticKind::BadStructTree => "bad_struct_tree",
         }
     }
 }

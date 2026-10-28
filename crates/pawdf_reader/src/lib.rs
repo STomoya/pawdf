@@ -17,6 +17,7 @@ mod model;
 mod oc;
 mod outline;
 mod ranges;
+mod structure;
 #[cfg(test)]
 mod testutil;
 
@@ -26,8 +27,8 @@ pub use geom::{Matrix, Point, Rect, Rotation};
 pub use model::{
     Annotation, Annotations, CcittParams, Color, ColorSpace, ColorSpaceFamily, Destination,
     FieldKind, FillRule, FontInfo, FontKind, FormField, FormFields, Glyph, Image, ImageData,
-    MarkedContent, Outline, OutlineItem, PageContent, Path, RenderMode, Segment, SoftMask, Widget,
-    WritingMode,
+    MarkedContent, MarkedContentRef, ObjectRef, Outline, OutlineItem, PageContent, Path,
+    RenderMode, Segment, SoftMask, StructElement, StructKid, StructTree, Widget, WritingMode,
 };
 pub use pawdf_core::{
     Diagnostic, DiagnosticKind, Encryption, Error as CoreError, ErrorKind as CoreErrorKind,

@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use pawdf_core::{DiagnosticKind, Dict, Location, Object, decode_text_string};
+use pawdf_core::{DiagnosticKind, Dict, File, Location, Object, decode_text_string};
 
 use crate::dest::{Cx, destination, entry, text};
 use crate::document::{Inner, PageInfo, rect};
@@ -8,15 +8,47 @@ use crate::geom::{Point, Rect};
 use crate::model::{Annotation, Annotations};
 use crate::oc;
 
-pub(crate) fn read(doc: &Inner, page: &PageInfo) -> Annotations {
-    let file = &doc.file;
-    let page_at = Location::Object(page.obj);
-    let Some(annots) = file
-        .resolve(page.obj)
+/// The page's `/Annots`, resolved.
+pub(crate) fn annots<'a>(file: &'a File, page: &PageInfo) -> Option<&'a Object> {
+    file.resolve(page.obj)
         .as_dict()
         .and_then(|p| entry(p, b"Annots"))
         .map(|a| file.deref(a))
-    else {
+}
+
+/// The `/Annots` entries that become [`Annotations::items`], in order, calling `bad` for each
+/// malformed entry skipped.
+pub(crate) fn listed<'a>(
+    file: &'a File,
+    annots: &'a [Object],
+    mut bad: impl FnMut(),
+) -> Vec<(&'a Object, &'a Dict)> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for a in annots {
+        // §12.5.2 lists an annotation in one `/Annots` only; following a repeated
+        // reference would duplicate the object in the output for every listing. Generations
+        // are ignored, as `File::resolve` does.
+        if let Some(r) = a.as_ref()
+            && !seen.insert(r.num)
+        {
+            bad();
+            continue;
+        }
+        match file.deref(a) {
+            Object::Dict(d) => out.push((a, d)),
+            // A dangling reference is already reported by the file.
+            Object::Null => {}
+            _ => bad(),
+        }
+    }
+    out
+}
+
+pub(crate) fn read(doc: &Inner, page: &PageInfo) -> Annotations {
+    let file = &doc.file;
+    let page_at = Location::Object(page.obj);
+    let Some(annots) = annots(file, page) else {
         return Annotations::default();
     };
     let mut cx = Cx::new(doc, DiagnosticKind::BadAnnotation);
@@ -24,28 +56,12 @@ pub(crate) fn read(doc: &Inner, page: &PageInfo) -> Annotations {
     let mut items = Vec::new();
     match annots {
         Object::Array(annots) => {
-            let mut seen = HashSet::new();
-            for a in annots {
-                // §12.5.2 lists an annotation in one `/Annots` only; following a repeated
-                // reference would duplicate the object in the output for every listing.
-                if let Some(r) = a.as_ref()
-                    && !seen.insert(r)
-                {
-                    cx.bad(page_at);
-                    continue;
-                }
-                match file.deref(a) {
-                    Object::Dict(d) => {
-                        let at = a.as_ref().map_or(page_at, Location::Object);
-                        let mut annot = annotation(&mut cx, d, at);
-                        annot.hidden = entry(d, b"OC")
-                            .is_some_and(|oc| oc::hides(&mut vis, doc, oc, at, &mut cx.diags));
-                        items.push(annot);
-                    }
-                    // A dangling reference is already reported by the file.
-                    Object::Null => {}
-                    _ => cx.bad(page_at),
-                }
+            for (a, d) in listed(file, annots, || cx.bad(page_at)) {
+                let at = a.as_ref().map_or(page_at, Location::Object);
+                let mut annot = annotation(&mut cx, d, at);
+                annot.hidden = entry(d, b"OC")
+                    .is_some_and(|oc| oc::hides(&mut vis, doc, oc, at, &mut cx.diags));
+                items.push(annot);
             }
         }
         _ => cx.bad(page_at),
