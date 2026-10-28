@@ -333,6 +333,17 @@ fn repeated_reference_is_skipped() {
 }
 
 #[test]
+fn repeated_reference_with_other_generation_is_skipped() {
+    // `File::resolve` ignores generations, so both entries are the same object.
+    let a = annots(
+        "/Annots [10 0 R 10 1 R]",
+        &[obj(10, "<< /Subtype /Text /Rect [0 0 1 1] >>")],
+    );
+    assert_eq!(a.diagnostics, [bad(3)]);
+    assert_eq!(a.items.len(), 1);
+}
+
+#[test]
 fn widget_has_no_author() {
     let a = one("/Subtype /Widget /Rect [0 0 1 1] /T (email)");
     assert_eq!(a.diagnostics, []);

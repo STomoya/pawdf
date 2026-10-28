@@ -146,10 +146,12 @@ fn nested_tree_with_content_items() {
         [
             mc(Some(0), 3),
             StructKid::Object(ObjectRef {
+                object: r(22),
                 page: Some(0),
                 annotation: Some(1),
             }),
             StructKid::Object(ObjectRef {
+                object: r(4),
                 page: Some(1),
                 annotation: None,
             }),
@@ -279,22 +281,10 @@ fn malformed_kids_are_skipped() {
     let e = &t.roots[0];
     assert_eq!((e.role.as_str(), e.alt.as_deref()), ("", None));
     assert_eq!(e.children, [mc(Some(0), 2)]);
-    // /S, /Alt, -1, (x), the empty MCR and OBJR, /Stm, then the root's MCID: no page, not an
-    // element.
-    assert_eq!(
-        t.diagnostics,
-        [
-            bad(11),
-            bad(11),
-            bad(11),
-            bad(11),
-            bad(11),
-            bad(11),
-            bad(11),
-            bad(10),
-            bad(10),
-        ]
-    );
+    // /S, /Alt, -1, (x), the empty MCR and OBJR, /Stm, then the root's MCID: not an element.
+    let mut want = vec![bad(11); 7];
+    want.push(bad(10));
+    assert_eq!(t.diagnostics, want);
 }
 
 #[test]
@@ -320,4 +310,80 @@ fn bad_role_map_dangling_kid_and_direct_parent() {
     // A direct parent has no reference to check `/P` against.
     assert_eq!(roles(&sect.children), ["P"]);
     assert_eq!(t.diagnostics, [bad(10)]);
+}
+
+#[test]
+fn shared_kids_array_is_walked_once() {
+    // Each direct Span re-enters array 30: without a guard the walk doubles per level.
+    let t = tree(&[
+        obj(10, "<< /K 11 0 R >>"),
+        obj(11, "<< /S /P /P 10 0 R /K 30 0 R >>"),
+        obj(
+            30,
+            "[<< /S /Span /P 11 0 R /K 30 0 R >> << /S /Span /P 11 0 R /K 30 0 R >>]",
+        ),
+    ]);
+    let p = &t.roots[0];
+    assert_eq!(roles(&p.children), ["Span", "Span"]);
+    assert!(p.children.iter().all(|k| match k {
+        StructKid::Element(e) => e.children.is_empty(),
+        _ => false,
+    }));
+    assert_eq!(t.diagnostics, [bad(11), bad(11)]);
+}
+
+#[test]
+fn bad_item_page_falls_back_to_element_page() {
+    let t = tree(&[
+        obj(10, "<< /K 11 0 R >>"),
+        obj(
+            11,
+            "<< /S /Link /P 10 0 R /Pg 3 0 R /K [<< /Type /MCR /Pg 20 0 R /MCID 0 >> << /Type /OBJR /Pg 20 0 R /Obj 22 0 R >>] >>",
+        ),
+    ]);
+    assert_eq!(
+        t.roots[0].children,
+        [
+            mc(Some(0), 0),
+            StructKid::Object(ObjectRef {
+                object: r(22),
+                page: Some(0),
+                annotation: Some(1),
+            }),
+        ]
+    );
+    assert_eq!(t.diagnostics, [bad(11), bad(11)]);
+}
+
+#[test]
+fn root_content_items_are_reported_once() {
+    let t = tree(&[obj(
+        10,
+        "<< /K [0 << /Type /MCR /MCID 1 >> << /Type /OBJR /Obj 22 0 R >>] >>",
+    )]);
+    assert_eq!(t.roots, []);
+    assert_eq!(t.diagnostics, [bad(10), bad(10), bad(10)]);
+}
+
+#[test]
+fn annotation_generation_is_ignored() {
+    // `File::resolve` ignores generations, so `20 1 R` is a repeat of `20 0 R`.
+    let t = tree(&[
+        obj(10, "<< /K 11 0 R >>"),
+        obj(
+            11,
+            "<< /S /Link /P 10 0 R /Pg 3 0 R /K << /Type /OBJR /Obj 22 1 R >> >>",
+        ),
+    ]);
+    assert_eq!(
+        t.roots[0].children,
+        [StructKid::Object(ObjectRef {
+            object: Ref {
+                num: 22,
+                generation: 1
+            },
+            page: Some(0),
+            annotation: Some(1),
+        })]
+    );
 }

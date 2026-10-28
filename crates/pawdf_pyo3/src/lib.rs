@@ -914,6 +914,11 @@ struct ObjectRef(r::ObjectRef);
 #[pymethods]
 impl ObjectRef {
     #[getter]
+    fn object(&self) -> (u32, u16) {
+        (self.0.object.num, self.0.object.generation)
+    }
+
+    #[getter]
     fn page(&self) -> Option<usize> {
         self.0.page
     }
@@ -924,8 +929,9 @@ impl ObjectRef {
     }
 
     fn __repr__(&self) -> String {
+        let (n, g) = self.object();
         format!(
-            "ObjectRef(page={}, annotation={})",
+            "ObjectRef(object=({n}, {g}), page={}, annotation={})",
             opt_usize(self.0.page),
             opt_usize(self.0.annotation)
         )

@@ -19,7 +19,7 @@ struct Walk<'a> {
     cx: Cx<'a>,
     pages: &'a [PageInfo],
     role_map: Option<&'a Dict>,
-    /// Elements already reached, so a cycle or a shared element is read once.
+    /// Elements and `/K` arrays already reached, so a cycle or a shared element is read once.
     visited: HashSet<u32>,
     /// Index into `Annotations::items` by object number, per page, built on the first lookup.
     annots: HashMap<usize, HashMap<u32, usize>>,
@@ -55,12 +55,14 @@ pub(crate) fn read(doc: &Inner) -> StructTree {
                     page: None,
                     inherited: true,
                 };
-                for kid in w.kids(root, at, t.as_ref(), pg, 0) {
-                    match kid {
-                        StructKid::Element(e) => roots.push(e),
-                        _ => w.cx.bad(at),
-                    }
-                }
+                roots = w
+                    .kids(root, at, t.as_ref(), pg, 0)
+                    .into_iter()
+                    .filter_map(|k| match k {
+                        StructKid::Element(e) => Some(e),
+                        _ => None,
+                    })
+                    .collect();
             }
             None => w.cx.bad(catalog_at),
         }
@@ -72,8 +74,8 @@ pub(crate) fn read(doc: &Inner) -> StructTree {
 }
 
 impl<'a> Walk<'a> {
-    /// The kids in `/K` of `d`, held by the object at `at` (`me` when indirect). Only nesting
-    /// (capped) recurses.
+    /// The kids in `/K` of `d`, held by the object at `at` (`me` when indirect); only elements
+    /// at depth 0, the root. Only nesting (capped) recurses.
     fn kids(
         &mut self,
         d: &'a Dict,
@@ -87,14 +89,23 @@ impl<'a> Walk<'a> {
             return Vec::new();
         };
         let items = match file.deref(k) {
-            Object::Array(a) => a.as_slice(),
+            Object::Array(a) => {
+                // Direct elements in a shared array would otherwise each walk it again.
+                if let Some(r) = k.as_ref()
+                    && !self.visited.insert(r.num)
+                {
+                    self.cx.bad(at);
+                    return Vec::new();
+                }
+                a.as_slice()
+            }
             _ => std::slice::from_ref(k),
         };
         let mut out = Vec::new();
         for item in items {
             let item_at = item.as_ref().map_or(at, Location::Object);
             match file.deref(item) {
-                Object::Int(n) => match u32::try_from(*n) {
+                Object::Int(n) if depth > 0 => match u32::try_from(*n) {
                     Ok(mcid) => out.push(StructKid::MarkedContent(MarkedContentRef {
                         page: self.item_page(None, pg, at),
                         mcid,
@@ -107,6 +118,7 @@ impl<'a> Walk<'a> {
                     .map(|t| file.deref(t))
                     .and_then(Object::as_name)
                 {
+                    Some(b"MCR" | b"OBJR") if depth == 0 => self.cx.bad(at),
                     Some(b"MCR") => {
                         if let Some(m) = self.mcr(kd, pg, item_at) {
                             out.push(StructKid::MarkedContent(m));
@@ -221,7 +233,7 @@ impl<'a> Walk<'a> {
     /// else its element's. An ancestor's is a recovery, as Table 355 requires the element's.
     fn item_page(&mut self, d: Option<&Dict>, pg: Pg, at: Location) -> Option<usize> {
         if let Some(p) = d.and_then(|d| entry(d, b"Pg")) {
-            return self.page(p, at);
+            return self.page(p, at).or(pg.page);
         }
         if pg.inherited || pg.page.is_none() {
             self.cx.bad(at);
@@ -259,6 +271,7 @@ impl<'a> Walk<'a> {
         };
         let page = self.item_page(Some(d), pg, at);
         Some(ObjectRef {
+            object: obj,
             page,
             annotation: page.and_then(|p| self.annotation(p, obj.num)),
         })

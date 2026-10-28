@@ -52,12 +52,12 @@ def test_structure_tree() -> None:
     assert isinstance(mcr, pawdf.MarkedContentRef)
     assert mcr.stream == (9, 0)
     assert isinstance(objr, pawdf.ObjectRef)
-    assert (objr.page, objr.annotation) == (0, 0)
+    assert (objr.object, objr.page, objr.annotation) == ((4, 0), 0, 0)
     assert isinstance(span, pawdf.StructElement)
     assert span.title is None
     assert repr(p) == "StructElement(role='Para', standard='P', page=0, children=4)"
     assert repr(mcr) == 'MarkedContentRef(page=0, mcid=1, stream=(9, 0))'
-    assert repr(objr) == 'ObjectRef(page=0, annotation=0)'
+    assert repr(objr) == 'ObjectRef(object=(4, 0), page=0, annotation=0)'
     assert repr(t) == 'StructTree(roots=1, diagnostics=0)'
 
 

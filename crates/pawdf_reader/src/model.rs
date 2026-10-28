@@ -558,6 +558,8 @@ pub struct MarkedContentRef {
 /// A PDF object of a structure element (§14.7.5.3).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObjectRef {
+    /// `/Obj`: the object, e.g. an annotation or an image XObject.
+    pub object: Ref,
     /// 0-based page index, found as for [`MarkedContentRef::page`].
     pub page: Option<usize>,
     /// Index into that page's [`Annotations::items`] when `/Obj` is one of them.

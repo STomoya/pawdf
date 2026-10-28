@@ -27,9 +27,10 @@ pub(crate) fn listed<'a>(
     let mut out = Vec::new();
     for a in annots {
         // §12.5.2 lists an annotation in one `/Annots` only; following a repeated
-        // reference would duplicate the object in the output for every listing.
+        // reference would duplicate the object in the output for every listing. Generations
+        // are ignored, as `File::resolve` does.
         if let Some(r) = a.as_ref()
-            && !seen.insert(r)
+            && !seen.insert(r.num)
         {
             bad();
             continue;

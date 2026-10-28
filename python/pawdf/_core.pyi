@@ -491,6 +491,9 @@ class ObjectRef:
     """A PDF object of a structure element, such as an annotation."""
 
     @property
+    def object(self) -> tuple[int, int]:
+        """``/Obj`` as (object number, generation), e.g. an annotation or an image XObject."""
+    @property
     def page(self) -> int | None:
         """0-based page index."""
     @property
