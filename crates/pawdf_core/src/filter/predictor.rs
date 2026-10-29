@@ -1,17 +1,28 @@
 use super::{Failure, FilterResult};
-use crate::object::Dict;
+use crate::object::{Dict, Object};
 
 /// §7.4.4.4. Applies the `/Predictor` from Flate or LZW `/DecodeParms`.
 pub(crate) fn apply(data: Vec<u8>, params: &Dict) -> FilterResult {
-    let get =
-        |key: &[u8], default: i64| params.get(key).and_then(|o| o.as_int()).unwrap_or(default);
-    let predictor = get(b"Predictor", 1);
-    if predictor < 2 {
-        return Ok(data);
+    // `None` for a present value that is not an integer.
+    let get = |key: &[u8], default: i64| match params.get(key) {
+        None | Some(Object::Null) => Some(default),
+        Some(o) => o.as_int(),
+    };
+    let Some(predictor) = get(b"Predictor", 1) else {
+        return Err(Failure::Corrupt(data));
+    };
+    match predictor {
+        1 => return Ok(data),
+        2 | 10..=15 => {}
+        _ => return Err(Failure::Corrupt(data)),
     }
-    let colors = get(b"Colors", 1);
-    let bpc = get(b"BitsPerComponent", 8);
-    let columns = get(b"Columns", 1);
+    let (Some(colors), Some(bpc), Some(columns)) = (
+        get(b"Colors", 1),
+        get(b"BitsPerComponent", 8),
+        get(b"Columns", 1),
+    ) else {
+        return Err(Failure::Corrupt(data));
+    };
     if !(1..=32).contains(&colors)
         || ![1, 2, 4, 8, 16].contains(&bpc)
         || !(1..=1 << 20).contains(&columns)
@@ -105,7 +116,7 @@ fn tiff(mut data: Vec<u8>, row_len: usize, colors: usize, bpc: i64) -> FilterRes
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::object::{Name, Object};
+    use crate::object::Name;
 
     fn params(pairs: &[(&str, i64)]) -> Dict {
         let mut d = Dict::new();
@@ -171,6 +182,20 @@ mod tests {
     #[test]
     fn bad_params_are_corrupt() {
         let p = params(&[("Predictor", 12), ("Colors", 0)]);
+        assert!(matches!(apply(vec![1], &p), Err(Failure::Corrupt(_))));
+    }
+
+    #[test]
+    fn invalid_predictor_and_non_integer_params_are_corrupt() {
+        for predictor in [0, -1, 3, 9, 16] {
+            let p = params(&[("Predictor", predictor)]);
+            assert!(matches!(apply(vec![1], &p), Err(Failure::Corrupt(_))));
+        }
+        let mut p = params(&[("Predictor", 12)]);
+        p.insert(Name::from("Columns"), Object::Real(2.5));
+        assert!(matches!(apply(vec![1], &p), Err(Failure::Corrupt(_))));
+        let mut p = Dict::new();
+        p.insert(Name::from("Predictor"), Object::Name(Name::from("PNG")));
         assert!(matches!(apply(vec![1], &p), Err(Failure::Corrupt(_))));
     }
 }

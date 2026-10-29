@@ -88,10 +88,20 @@ fn inline_image(lex: &mut Lexer, bi: usize, origin: Origin, diags: &mut Diagnost
         match tok {
             Token::Keyword(k) if k == b"ID" => break,
             Token::Name(key) => {
+                // `/BPC ID`: the value is missing, so `ID` still starts the data.
+                if let Some((_, Token::Keyword(k))) = lex.peek_token()
+                    && k == b"ID"
+                {
+                    diags.push(DiagnosticKind::BadObject, origin.at(start));
+                    continue;
+                }
                 let Some((vstart, vtok)) = lex.next_token() else {
                     continue;
                 };
                 let value = parse_object_from(lex, vstart, vtok, origin, diags);
+                if dict.contains_key(&key) {
+                    diags.push(DiagnosticKind::BadObject, origin.at(start));
+                }
                 dict.insert(Name(key), value);
             }
             tok => {
@@ -235,6 +245,30 @@ mod tests {
         assert_eq!(s.raw(), b"\x01\x02");
         assert_eq!(kinds(&d), [DiagnosticKind::BadImage]);
         assert_eq!(d.as_slice()[0].location, Location::File(2));
+    }
+
+    #[test]
+    fn inline_image_key_before_id_has_no_value() {
+        let (v, d) = ops(b"BI /W 1 /H 1 /BPC ID \x00 EI 0 0 m 1 1 l S");
+        assert_eq!(names(&v), [b"BI".as_slice(), b"m", b"l", b"S"]);
+        let Object::Stream(s) = &v[0].operands[0] else {
+            panic!("not a stream")
+        };
+        assert_eq!(s.dict.get(b"BPC"), None);
+        assert_eq!(s.raw(), b"\x00");
+        assert_eq!(kinds(&d), [DiagnosticKind::BadObject]);
+        assert_eq!(d.as_slice()[0].location, Location::File(13));
+    }
+
+    #[test]
+    fn inline_image_duplicate_key_is_reported() {
+        let (v, d) = ops(b"BI /W 1 /W 2 /H 1 ID \x00 EI");
+        let Object::Stream(s) = &v[0].operands[0] else {
+            panic!("not a stream")
+        };
+        assert_eq!(s.dict.get(b"W"), Some(&Object::Int(2)));
+        assert_eq!(kinds(&d), [DiagnosticKind::BadObject]);
+        assert_eq!(d.as_slice()[0].location, Location::File(8));
     }
 
     #[test]

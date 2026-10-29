@@ -64,16 +64,15 @@ fn lookup(name: &[u8]) -> Option<Filter> {
 }
 
 /// The `/Filter` names paired with their `/DecodeParms`, accepting both the single-value
-/// and array forms. `F`/`DP` are the inline-image abbreviations.
+/// and array forms. Inline-image abbreviations (`F`, `DP`) must already be expanded: in a
+/// regular stream `/F` is a file specification.
 fn chain(dict: &Dict) -> Vec<(Vec<u8>, Dict)> {
-    let filters = dict.get(b"Filter").or_else(|| dict.get(b"F"));
-    let params = dict.get(b"DecodeParms").or_else(|| dict.get(b"DP"));
-    let names: Vec<&Object> = match filters {
+    let names: Vec<&Object> = match dict.get(b"Filter") {
         Some(Object::Array(a)) => a.iter().collect(),
+        Some(Object::Null) | None => vec![],
         Some(o) => vec![o],
-        None => vec![],
     };
-    let params: Vec<&Object> = match params {
+    let params: Vec<&Object> = match dict.get(b"DecodeParms") {
         Some(Object::Array(a)) => a.iter().collect(),
         Some(o) => vec![o],
         None => vec![],
@@ -245,5 +244,21 @@ mod tests {
         let out = s.decode(Location::File(0), &mut d);
         assert_eq!(out.data, b"AB");
         assert_eq!(d.as_slice()[0].kind, DiagnosticKind::FilterError);
+    }
+
+    #[test]
+    fn null_filter_is_no_filter() {
+        let mut d = Diagnostics::new();
+        let s = stream(&[("Filter", Object::Null)], b"xyz");
+        assert_eq!(s.decode(Location::File(0), &mut d).data, b"xyz");
+        assert!(d.is_empty());
+    }
+
+    #[test]
+    fn file_specification_is_not_a_filter() {
+        let mut d = Diagnostics::new();
+        let s = stream(&[("F", Object::String(b"ext.dat".to_vec()))], b"xyz");
+        assert_eq!(s.decode(Location::File(0), &mut d).data, b"xyz");
+        assert!(d.is_empty());
     }
 }

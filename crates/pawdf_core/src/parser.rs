@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::diag::{DiagnosticKind, Diagnostics, Origin};
 use crate::lexer::{Lexer, Token, is_whitespace};
 use crate::object::{Dict, Name, Object, Ref, Stream};
@@ -111,6 +113,7 @@ fn parse_array(lex: &mut Lexer, origin: Origin, diags: &mut Diagnostics, depth: 
 
 fn parse_dict(lex: &mut Lexer, origin: Origin, diags: &mut Diagnostics, depth: usize) -> Dict {
     let mut entries = Vec::new();
+    let mut seen = HashSet::new();
     loop {
         let Some((start, tok)) = lex.next_token() else {
             diags.push(DiagnosticKind::BadObject, origin.at(lex.pos()));
@@ -138,6 +141,9 @@ fn parse_dict(lex: &mut Lexer, origin: Origin, diags: &mut Diagnostics, depth: u
                     break;
                 };
                 let value = parse_with_depth(lex, vstart, vtok, origin, diags, depth);
+                if !seen.insert(key.clone()) {
+                    diags.push(DiagnosticKind::BadObject, origin.at(start));
+                }
                 entries.push((Name(key), value));
             }
             // A stray keyword such as `endobj` means the closing `>>` is missing.
@@ -345,6 +351,17 @@ mod tests {
         let (o, d) = parse(b"<< 5 /A >>");
         assert_eq!(o.as_dict().unwrap().get(b"A"), Some(&Object::Null));
         assert_eq!(d.as_slice().len(), 2);
+    }
+
+    #[test]
+    fn duplicate_key_is_reported_and_last_wins() {
+        let (o, d) = parse(b"<< /A 1 /B 2 /A 3 >>");
+        let dict = o.as_dict().unwrap();
+        assert_eq!(dict.get(b"A"), Some(&Object::Int(3)));
+        assert_eq!(dict.len(), 2);
+        assert_eq!(d.as_slice().len(), 1);
+        assert_eq!(d.as_slice()[0].kind, DiagnosticKind::BadObject);
+        assert_eq!(d.as_slice()[0].location, crate::diag::Location::File(13));
     }
 
     #[test]
