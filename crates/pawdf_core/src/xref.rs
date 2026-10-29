@@ -88,19 +88,24 @@ fn apply(into: &mut Entries, section: Section) {
     into.extend(section.entries);
 }
 
-/// Sorted, disjoint runs of object numbers that some section marks free.
+/// Sorted, disjoint runs of object numbers that a trusted section marks free.
 pub(crate) type Free = Vec<Range<u32>>;
 
 /// Loads the xref chain starting at `startxref`. Returns `None` if the first section is
 /// unreadable, so the caller can repair. The free runs include numbers a newer section
-/// reuses; only their absence from the entries makes them free.
+/// reuses; only their absence from the entries makes them free. They come only from the
+/// sections loaded before the first one with a problem: damage there or in a newer section
+/// may have hidden the entry that reuses a number.
 pub(crate) fn load(data: &[u8], diags: &mut Diagnostics) -> Option<(Entries, Free, Dict, usize)> {
     let start = find_startxref(data)?;
     let mut sections = Vec::new();
     let mut trailers = Vec::new();
     let mut seen = HashSet::new();
     let mut next = Some(start);
+    let mut trusted = 0;
+    let mut clean = true;
     while let Some(offset) = next.take() {
+        let before = diags.as_slice().len();
         if seen.len() >= MAX_SECTIONS || !seen.insert(offset) {
             diags.push(DiagnosticKind::BadXrefEntry, Location::File(offset as u64));
             break;
@@ -125,8 +130,12 @@ pub(crate) fn load(data: &[u8], diags: &mut Diagnostics) -> Option<(Entries, Fre
         next = offset_entry(&sec_trailer, b"Prev", offset, diags);
         sections.push(section);
         trailers.push(sec_trailer);
+        clean &= diags.as_slice().len() == before;
+        if clean {
+            trusted = sections.len();
+        }
     }
-    let mut free: Free = sections
+    let mut free: Free = sections[..trusted]
         .iter()
         .flat_map(|s| s.free.iter().cloned())
         .collect();

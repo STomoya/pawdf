@@ -1018,3 +1018,35 @@ fn free_object_stays_null_in_damaged_xref() {
     assert_eq!(file.resolve(r(5)), &Object::Null);
     assert_eq!(file.objects(), vec![r(1), r(2)]);
 }
+
+/// #41 review: free rows of a hybrid table whose `/XRefStm` is unreadable do not block
+/// the repair scan from finding the compressed objects.
+#[test]
+fn damaged_hybrid_free_rows_do_not_block_repair() {
+    let objstm = b"<< /Type /ObjStm /N 1 /First 4 /Length 8 >>\nstream\n3 0 (hi)\nendstream";
+    let objects: [(u32, &[u8]); 3] = [(1, CATALOG), (2, PAGES), (4, objstm)];
+    let (pdf, _) = build_pdf(&objects, "/Root 1 0 R /XRefStm 99999");
+    let file = File::from_bytes(pdf).unwrap();
+    assert_eq!(file.resolve(r(3)), &Object::String(b"hi".to_vec()));
+    assert!(file.objects().contains(&r(3)));
+}
+
+/// #41 review: an older revision's free row does not hide an object a damaged newer table
+/// lost.
+#[test]
+fn older_free_row_does_not_block_repair_of_damaged_update() {
+    let (mut pdf, _) = build_pdf(&[(1, CATALOG), (2, PAGES), (4, b"null")], "/Root 1 0 R");
+    let prev = xref_offset(&pdf);
+    let at = pdf.len();
+    pdf.extend_from_slice(b"3 0 obj (new) endobj\n");
+    let xref_at = pdf.len();
+    pdf.extend_from_slice(
+        format!(
+            "xref\n0 1\n0000000000 65535 f \n2 2\nGARBAGEROW\n{at:010} 00000 n \ntrailer\n<< /Size 5 /Root 1 0 R /Prev {prev} >>\nstartxref\n{xref_at}\n%%EOF\n"
+        )
+        .as_bytes(),
+    );
+    let file = File::from_bytes(pdf).unwrap();
+    assert_eq!(file.resolve(r(3)), &Object::String(b"new".to_vec()));
+    assert!(file.objects().contains(&r(3)));
+}
