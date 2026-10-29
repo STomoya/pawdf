@@ -9,7 +9,7 @@ use crate::error::{Error, ErrorKind};
 use crate::lexer::Lexer;
 use crate::object::{Dict, Object, Ref};
 use crate::parser::{find, parse_indirect, parse_object};
-use crate::xref::{self, Entries, Entry};
+use crate::xref::{self, Entries, Entry, Free};
 
 /// Bounds reference chains and nested resolution (object streams, indirect filter values).
 const MAX_RESOLVE_DEPTH: usize = 32;
@@ -64,6 +64,9 @@ pub struct File {
     /// Loading the xref reported problems, so an absent object may have been lost with a
     /// damaged section and is worth looking for in the repaired table.
     xref_damaged: bool,
+    /// Numbers the xref marks free. Even in a damaged xref they stay null rather than
+    /// resolving to an old revision the repair scan finds.
+    free: Free,
     crypt: Option<Crypt>,
 }
 
@@ -91,15 +94,21 @@ impl File {
         }
         let before = diags.as_slice().len();
         let loaded = xref::load(&data, &mut diags)
-            .filter(|(entries, trailer, _)| root_ok(&data, entries, trailer));
+            .filter(|(entries, _, trailer, _)| root_ok(&data, entries, trailer));
         let xref_damaged = diags.as_slice().len() > before;
-        let (mut entries, mut trailer, offset, repaired) = match loaded {
-            Some((entries, trailer, offset)) => (entries, trailer, offset, None),
+        let (mut entries, free, mut trailer, offset, repaired) = match loaded {
+            Some((entries, free, trailer, offset)) => (entries, free, trailer, offset, None),
             None => {
                 diags.push(DiagnosticKind::XrefRepaired, Location::File(0));
                 let (entries, trailer) = xref::repair(&data, None);
                 // The main table is already the repaired one; an empty fallback avoids a rescan.
-                (entries, trailer, 0, Some(Table::new(Entries::new())))
+                (
+                    entries,
+                    Free::new(),
+                    trailer,
+                    0,
+                    Some(Table::new(Entries::new())),
+                )
             }
         };
         let fail = |kind| Error::new(kind, offset as u64);
@@ -139,6 +148,7 @@ impl File {
             failed: Mutex::new(HashSet::new()),
             missing: Mutex::new(HashSet::new()),
             xref_damaged,
+            free,
             crypt,
         };
         if let Some(t) = repaired {
@@ -163,6 +173,7 @@ impl File {
             }
             file.table = Table::new(entries);
             file.trailer = trailer;
+            file.free.clear();
             // The failed check may have marked objects missing or failed against the old
             // table, or built a fallback table from it.
             file.repaired = OnceLock::from(Table::new(Entries::new()));
@@ -193,7 +204,9 @@ impl File {
         let mut all: BTreeMap<u32, u16> = generations(&self.table.entries).collect();
         if self.xref_damaged {
             for (num, generation) in generations(&self.repaired_table().entries) {
-                all.entry(num).or_insert(generation);
+                if !xref::is_free(&self.free, num) {
+                    all.entry(num).or_insert(generation);
+                }
             }
         }
         all.into_iter()
@@ -241,9 +254,9 @@ impl File {
         }
     }
 
-    /// The object for `r.num`. In an undamaged xref, a number that is absent (or free) is
+    /// The object for `r.num`. A number that is free, or absent from an undamaged xref, is
     /// simply missing, without a repair scan (§7.3.10); only an entry that proves wrong, or
-    /// any absence in a damaged xref, falls back to the repaired table. Each failure is
+    /// any other absence in a damaged xref, falls back to the repaired table. Each failure is
     /// diagnosed once.
     fn find(&self, r: Ref, depth: usize) -> Option<&Object> {
         if lock(&self.missing).contains(&r.num) {
@@ -256,7 +269,7 @@ impl File {
             }
             lock(&self.failed).insert(r.num);
         }
-        if (listed || self.xref_damaged)
+        if (listed || self.xref_damaged && !xref::is_free(&self.free, r.num))
             && let Some(o) = self.lookup(self.repaired_table(), r, depth)
         {
             return Some(o);
@@ -285,7 +298,7 @@ impl File {
         // Computed outside the OnceLock: resolution can re-enter (indirect /Length, object
         // streams), and `get_or_init` must not be called re-entrantly.
         let obj = match *table.entries.get(&r.num)? {
-            Entry::InFile { offset, .. } => self.load_in_file(r.num, offset, depth)?,
+            Entry::InFile { offset, .. } => self.load_in_file(table, r.num, offset, depth)?,
             Entry::InStream { stream, .. } => {
                 let key = (stream, std::thread::current().id());
                 if !lock(&table.loaded_streams).contains(&stream)
@@ -301,7 +314,7 @@ impl File {
         slot.get()
     }
 
-    fn load_in_file(&self, num: u32, offset: usize, depth: usize) -> Option<Object> {
+    fn load_in_file(&self, table: &Table, num: u32, offset: usize, depth: usize) -> Option<Object> {
         if !xref::header_matches(&self.data, offset, num) {
             self.report(
                 DiagnosticKind::ObjectMismatch,
@@ -310,7 +323,7 @@ impl File {
             return None;
         }
         let mut diags = Diagnostics::new();
-        let length_of = |len_ref: Ref| self.length_of(len_ref);
+        let length_of = |len_ref: Ref| self.length_of(table, len_ref);
         let (header, mut obj) = parse_indirect(&self.data, offset, &length_of, &mut diags)?;
         let at = Location::File(offset as u64);
         // §7.6.2: the key comes from the `N G obj` header, since references' generations
@@ -333,10 +346,10 @@ impl File {
         Some(obj)
     }
 
-    /// An indirect stream `/Length`. Only direct objects in the main table are consulted,
-    /// so this cannot recurse.
-    fn length_of(&self, r: Ref) -> Option<i64> {
-        let Some(Entry::InFile { offset, .. }) = self.table.entries.get(&r.num).copied() else {
+    /// An indirect stream `/Length`. Only direct objects in `table`, the one the stream is
+    /// loaded from, are consulted, so this cannot recurse.
+    fn length_of(&self, table: &Table, r: Ref) -> Option<i64> {
+        let Some(Entry::InFile { offset, .. }) = table.entries.get(&r.num).copied() else {
             return None;
         };
         let mut lex = Lexer::at(&self.data, offset);
@@ -372,9 +385,21 @@ impl File {
             num: stream_num,
             generation: 0,
         };
-        let Object::Stream(stream) = self.resolve_depth(stream_ref, depth + 1) else {
-            if lock(&table.loaded_streams).insert(stream_num) {
-                self.report(DiagnosticKind::ObjectNotFound, Location::Object(stream_ref));
+        // The container is looked up in `table` first: the repaired table's members may live
+        // in an object stream the main table does not list.
+        let container = match self.repaired.get() {
+            Some(repaired) if std::ptr::eq(table, repaired) => {
+                self.lookup(table, stream_ref, depth + 1)
+            }
+            _ => None,
+        };
+        let container = container.unwrap_or_else(|| self.resolve_depth(stream_ref, depth + 1));
+        let Object::Stream(stream) = container else {
+            // A missing container was already reported when it was resolved.
+            if lock(&table.loaded_streams).insert(stream_num)
+                && !lock(&self.missing).contains(&stream_num)
+            {
+                self.report(DiagnosticKind::BadObject, Location::Object(stream_ref));
             }
             return;
         };
@@ -398,7 +423,7 @@ impl File {
             diags.push(DiagnosticKind::BadObject, origin.at(0));
             0
         });
-        for (num, off) in xref::objstm_header(&stream.dict, &decoded) {
+        for (num, off) in xref::objstm_header(&stream.dict, &decoded, origin, &mut diags) {
             let belongs = matches!(table.entries.get(&num), Some(Entry::InStream { stream, .. }) if *stream == stream_num);
             let Some(slot) = table.cache.get(&num).filter(|_| belongs) else {
                 continue;

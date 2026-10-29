@@ -837,3 +837,216 @@ fn object_stream_without_first_is_diagnosed() {
         file.diagnostics()
     );
 }
+
+/// #32 F5: a too-large count or a stray token must not consume the `trailer` keyword.
+#[test]
+fn table_overrun_keeps_trailer_without_repair() {
+    let (pdf, _) = build_pdf(&[(1, CATALOG), (2, PAGES)], "/Root 1 0 R");
+    let text = String::from_utf8(pdf).unwrap();
+    for bad in [
+        text.replacen("xref\n0 3\n", "xref\n0 4\n", 1),
+        text.replacen("trailer\n", "7\ntrailer\n", 1),
+    ] {
+        let file = File::from_bytes(bad.into_bytes()).unwrap();
+        assert!(file.resolve(r(2)).as_dict().is_some());
+        assert_eq!(kinds(&file), vec![DiagnosticKind::BadXrefEntry]);
+    }
+}
+
+/// #32 F5: a subsection whose object numbers do not fit in `u32` is diagnosed.
+#[test]
+fn table_subsection_past_u32_is_diagnosed() {
+    let (pdf, _) = build_pdf(&[(1, CATALOG), (2, PAGES)], "/Root 1 0 R");
+    let text = String::from_utf8(pdf).unwrap().replacen(
+        "trailer\n",
+        "4294967296 1\n0000000009 00000 n\ntrailer\n",
+        1,
+    );
+    let file = File::from_bytes(text.into_bytes()).unwrap();
+    assert_eq!(kinds(&file), vec![DiagnosticKind::BadXrefEntry]);
+}
+
+/// #32 F6: `trailer` inside a comment must not swallow the object after it.
+#[test]
+fn repair_ignores_trailer_in_comment() {
+    let pdf = b"%PDF-1.4\n% trailer\n1 0 obj << /Type /Catalog >> endobj\n";
+    let file = File::from_bytes(pdf.to_vec()).unwrap();
+    assert_eq!(file.trailer().get(b"Root"), Some(&Object::Ref(r(1))));
+}
+
+/// Object 3 is listed in object stream 4, and the xref stream's rows are `rows_after_3`
+/// for object 4 onwards. Object 4 is the object stream holding `3 0 (hi)` unless `objstm`
+/// replaces it.
+fn objstm_member_pdf(objstm: Option<&str>, rows_after_3: usize) -> Vec<u8> {
+    let mut pdf = b"%PDF-1.7\n".to_vec();
+    let cat_at = pdf.len();
+    pdf.extend_from_slice(b"1 0 obj << /Type /Catalog >> endobj\n");
+    let stm_at = pdf.len();
+    let body = objstm
+        .unwrap_or("<< /Type /ObjStm /N 1 /First 4 /Length 8 >>\nstream\n3 0 (hi)\nendstream");
+    pdf.extend_from_slice(format!("4 0 obj\n{body}\nendobj\n").as_bytes());
+    let xref_at = pdf.len();
+    let mut rows: Vec<[u8; 4]> = vec![
+        [0, 0, 0, 0],
+        [1, 0, cat_at as u8, 0],
+        [0, 0, 0, 0],
+        [2, 0, 4, 0],
+    ];
+    rows.extend([[1, 0, stm_at as u8, 0]].repeat(rows_after_3));
+    let data: Vec<u8> = rows.concat();
+    pdf.extend_from_slice(
+        format!(
+            "9 0 obj\n<< /Type /XRef /Size {} /W [1 2 1] /Root 1 0 R /Length {} >>\nstream\n",
+            rows.len(),
+            data.len()
+        )
+        .as_bytes(),
+    );
+    pdf.extend_from_slice(&data);
+    pdf.extend_from_slice(format!("\nendstream\nendobj\nstartxref\n{xref_at}\n%%EOF\n").as_bytes());
+    pdf
+}
+
+/// #32 F7: a member's object stream missing from the xref is found by the repair scan.
+#[test]
+fn member_of_unlisted_object_stream_is_repaired() {
+    let file = File::from_bytes(objstm_member_pdf(None, 0)).unwrap();
+    assert_eq!(file.resolve(r(3)), &Object::String(b"hi".to_vec()));
+}
+
+/// #32 F7: a container that is not a stream is a bad object, not a missing one.
+#[test]
+fn non_stream_object_stream_is_bad_object() {
+    let file = File::from_bytes(objstm_member_pdf(Some("5"), 1)).unwrap();
+    assert_eq!(file.resolve(r(3)), &Object::Null);
+    let d = file.diagnostics();
+    assert!(
+        d.iter()
+            .any(|d| d.kind == DiagnosticKind::BadObject && d.location == Location::Object(r(4))),
+        "{d:?}"
+    );
+    assert!(
+        !d.iter()
+            .any(|d| d.location == Location::Object(r(4))
+                && d.kind == DiagnosticKind::ObjectNotFound)
+    );
+}
+
+/// #32 F8: an unusable `/Prev` or `/XRefStm` is diagnosed, so absent objects are looked
+/// for by repair.
+#[test]
+fn bad_prev_and_xrefstm_are_diagnosed() {
+    for extra in ["/Prev /bad", "/XRefStm -1"] {
+        let (pdf, _) = build_pdf(&[(1, CATALOG), (2, PAGES)], &format!("/Root 1 0 R {extra}"));
+        let mut pdf = pdf;
+        pdf.extend_from_slice(b"3 0 obj (lost) endobj\n");
+        let file = File::from_bytes(pdf).unwrap();
+        assert_eq!(count(&file, DiagnosticKind::BadXrefEntry), 1, "{extra}");
+        assert_eq!(file.resolve(r(3)), &Object::String(b"lost".to_vec()));
+    }
+}
+
+/// #32 F8: an object stream header with fewer than `/N` pairs is diagnosed.
+#[test]
+fn truncated_object_stream_header_is_diagnosed() {
+    let pdf = objstm_pdf("/Root 1 0 R");
+    let at = pdf.windows(4).position(|w| w == b"/N 2").unwrap();
+    let mut pdf = pdf;
+    pdf[at + 3] = b'3';
+    let file = File::from_bytes(pdf).unwrap();
+    assert!(file.resolve(r(2)).as_dict().is_some());
+    assert_eq!(kinds(&file), vec![DiagnosticKind::BadObject]);
+}
+
+/// #32 F9: a repaired trailer's `/Root` that is not a dictionary is replaced by the
+/// catalog the scan found.
+#[test]
+fn repair_replaces_non_dict_root_with_catalog() {
+    let pdf = b"%PDF-1.7\n1 0 obj << /Type /Catalog >> endobj\n3 0 obj 5 endobj\ntrailer << /Root 3 0 R >>\n";
+    let file = File::from_bytes(pdf.to_vec()).unwrap();
+    assert_eq!(file.trailer().get(b"Root"), Some(&Object::Ref(r(1))));
+}
+
+/// #32 F37: in repair, a later object stream's member beats an earlier one's.
+#[test]
+fn repair_prefers_later_object_stream_member() {
+    let mut pdf = b"%PDF-1.7\n1 0 obj << /Type /Catalog >> endobj\n".to_vec();
+    for (num, member) in [(4, "(old)"), (5, "(new)")] {
+        let members = format!("3 0 {member}");
+        pdf.extend_from_slice(
+            format!(
+                "{num} 0 obj << /Type /ObjStm /N 1 /First 4 /Length {} >>\nstream\n{members}\nendstream\nendobj\n",
+                members.len()
+            )
+            .as_bytes(),
+        );
+    }
+    let file = File::from_bytes(pdf).unwrap();
+    assert_eq!(file.resolve(r(3)), &Object::String(b"new".to_vec()));
+}
+
+/// #32 F10a: a stream loaded from the repaired table reads its indirect `/Length` there.
+#[test]
+fn repaired_stream_reads_length_from_repaired_table() {
+    let objects: [(u32, &[u8]); 4] = [
+        (1, CATALOG),
+        (2, PAGES),
+        (3, b"<< /Length 4 0 R >>\nstream\nhello\nendstream"),
+        (4, b"5"),
+    ];
+    let (pdf, offsets) = build_pdf(&objects, "/Root 1 0 R");
+    let row = |n: usize| format!("{:010} 00000 n", offsets[n].1);
+    let pdf = String::from_utf8(pdf)
+        .unwrap()
+        .replacen(&row(2), &row(1), 1)
+        .replacen(&row(3), "0000000000 00001 f", 1);
+    let file = File::from_bytes(pdf.into_bytes()).unwrap();
+    assert_eq!(file.resolve(r(3)).as_stream().unwrap().raw(), b"hello");
+    assert_eq!(count(&file, DiagnosticKind::BadStreamLength), 0);
+}
+
+/// #32 F44: a damaged xref does not resurrect an object it marks free.
+#[test]
+fn free_object_stays_null_in_damaged_xref() {
+    let objects: [(u32, &[u8]); 3] = [(1, CATALOG), (2, PAGES), (5, b"(five)")];
+    let (pdf, offsets) = build_pdf(&objects, "/Root 1 0 R /Prev 99999");
+    let row = format!("{:010} 00000 n", offsets[2].1);
+    let pdf = String::from_utf8(pdf)
+        .unwrap()
+        .replacen(&row, "0000000000 00001 f", 1);
+    let file = File::from_bytes(pdf.into_bytes()).unwrap();
+    assert_eq!(file.resolve(r(5)), &Object::Null);
+    assert_eq!(file.objects(), vec![r(1), r(2)]);
+}
+
+/// #41 review: free rows of a hybrid table whose `/XRefStm` is unreadable do not block
+/// the repair scan from finding the compressed objects.
+#[test]
+fn damaged_hybrid_free_rows_do_not_block_repair() {
+    let objstm = b"<< /Type /ObjStm /N 1 /First 4 /Length 8 >>\nstream\n3 0 (hi)\nendstream";
+    let objects: [(u32, &[u8]); 3] = [(1, CATALOG), (2, PAGES), (4, objstm)];
+    let (pdf, _) = build_pdf(&objects, "/Root 1 0 R /XRefStm 99999");
+    let file = File::from_bytes(pdf).unwrap();
+    assert_eq!(file.resolve(r(3)), &Object::String(b"hi".to_vec()));
+    assert!(file.objects().contains(&r(3)));
+}
+
+/// #41 review: an older revision's free row does not hide an object a damaged newer table
+/// lost.
+#[test]
+fn older_free_row_does_not_block_repair_of_damaged_update() {
+    let (mut pdf, _) = build_pdf(&[(1, CATALOG), (2, PAGES), (4, b"null")], "/Root 1 0 R");
+    let prev = xref_offset(&pdf);
+    let at = pdf.len();
+    pdf.extend_from_slice(b"3 0 obj (new) endobj\n");
+    let xref_at = pdf.len();
+    pdf.extend_from_slice(
+        format!(
+            "xref\n0 1\n0000000000 65535 f \n2 2\nGARBAGEROW\n{at:010} 00000 n \ntrailer\n<< /Size 5 /Root 1 0 R /Prev {prev} >>\nstartxref\n{xref_at}\n%%EOF\n"
+        )
+        .as_bytes(),
+    );
+    let file = File::from_bytes(pdf).unwrap();
+    assert_eq!(file.resolve(r(3)), &Object::String(b"new".to_vec()));
+    assert!(file.objects().contains(&r(3)));
+}
