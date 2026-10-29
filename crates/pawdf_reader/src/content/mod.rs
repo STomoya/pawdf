@@ -10,8 +10,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use pawdf_core::{
-    DiagnosticKind, Diagnostics, Dict, File, Location, MAX_DECODED_LEN, Object, Operation, Origin,
-    Ref, Stream, parse_content,
+    DiagnosticKind, Diagnostics, Dict, File, Location, MAX_DECODED_LEN, MAX_OPERANDS, Object,
+    Operation, Origin, Ref, Stream, parse_content,
 };
 
 use crate::dest::entry;
@@ -35,6 +35,9 @@ const MAX_IMAGE_BYTES: usize = MAX_DECODED_LEN;
 /// Glyphs returned per pass. One `Tj` costs one operation but emits a glyph per code, so
 /// a form showing a long string drawn many times would otherwise ask for unbounded memory.
 const MAX_GLYPHS: usize = 1 << 20;
+/// Path segments built per pass. One `re` costs one operation but adds five segments, and
+/// every painted path keeps its own copy.
+const MAX_SEGMENTS: usize = 1 << 21;
 
 impl Page {
     /// Extracts glyphs, painted paths, and images. Never fails: problems become
@@ -49,6 +52,7 @@ impl Page {
             .map(|&obj| Location::Stream { obj, offset: 0 });
         let mut carry: Vec<Object> = Vec::new();
         let mut carry_at = None;
+        let mut carry_capped = false;
         for r in streams {
             let Some(parsed) = interp.parse_stream(r) else {
                 continue;
@@ -69,6 +73,14 @@ impl Page {
             {
                 carry = last.operands;
                 carry_at = Some(last.location);
+                // Operands-only streams referenced many times would grow the carry without bound.
+                if carry.len() > MAX_OPERANDS {
+                    carry.truncate(MAX_OPERANDS);
+                    if !carry_capped {
+                        carry_capped = true;
+                        interp.diags.push(DiagnosticKind::BadObject, last.location);
+                    }
+                }
             }
             interp.run(&ops);
         }
@@ -113,6 +125,8 @@ pub(crate) struct Interp<'a> {
     /// `BX`/`EX` nesting: unknown operators are expected inside (§8.2).
     compat: usize,
     q_limit_reported: bool,
+    /// `q`s past [`MAX_Q_DEPTH`] that saved nothing, so their `Q`s must not pop.
+    q_dropped: usize,
     pub in_text: bool,
     pub tm: Matrix,
     pub tlm: Matrix,
@@ -130,6 +144,8 @@ pub(crate) struct Interp<'a> {
     /// Parsed streams by object, so repeated forms and `/Contents` entries decode once.
     parsed: HashMap<Ref, Option<Rc<Vec<Operation>>>>,
     ops_left: usize,
+    segments_left: usize,
+    segment_budget_reported: bool,
     /// Decoded image XObjects by object, so repeated placements decode once.
     images: HashMap<Ref, Option<Rc<ImageParts>>>,
     image_bytes_left: usize,
@@ -166,6 +182,7 @@ impl<'a> Interp<'a> {
             subpath_start: None,
             compat: 0,
             q_limit_reported: false,
+            q_dropped: 0,
             in_text: false,
             tm: Matrix::IDENTITY,
             tlm: Matrix::IDENTITY,
@@ -179,6 +196,8 @@ impl<'a> Interp<'a> {
             stack_floor: 0,
             parsed: HashMap::new(),
             ops_left: MAX_OPERATIONS,
+            segments_left: MAX_SEGMENTS,
+            segment_budget_reported: false,
             images: HashMap::new(),
             image_bytes_left: MAX_IMAGE_BYTES,
             image_budget_reported: false,
@@ -315,10 +334,17 @@ impl<'a> Interp<'a> {
             b"q" => {
                 if self.stack.len() < MAX_Q_DEPTH {
                     self.stack.push(self.gs.clone());
-                } else if !self.q_limit_reported {
-                    self.q_limit_reported = true;
-                    self.bad(DiagnosticKind::RecursionLimit, op);
+                } else {
+                    self.q_dropped += 1;
+                    if !self.q_limit_reported {
+                        self.q_limit_reported = true;
+                        self.bad(DiagnosticKind::RecursionLimit, op);
+                    }
                 }
+                true
+            }
+            b"Q" if self.q_dropped > 0 => {
+                self.q_dropped -= 1;
                 true
             }
             b"Q" => {
@@ -386,7 +412,7 @@ impl<'a> Interp<'a> {
             b"m" => nums::<2>(args)
                 .map(|[x, y]| {
                     let p = Point { x, y };
-                    self.path.push(Segment::MoveTo(p));
+                    self.push_path(&[Segment::MoveTo(p)], op.location);
                     self.current = Some(p);
                     self.subpath_start = Some(p);
                 })
@@ -394,16 +420,16 @@ impl<'a> Interp<'a> {
             b"l" => match (nums::<2>(args), self.current) {
                 (Some([x, y]), Some(_)) => {
                     let p = Point { x, y };
-                    self.path.push(Segment::LineTo(p));
+                    self.push_path(&[Segment::LineTo(p)], op.location);
                     self.current = Some(p);
                     true
                 }
                 _ => false,
             },
-            b"c" | b"v" | b"y" => self.curve(op.operator[0], args),
+            b"c" | b"v" | b"y" => self.curve(op.operator[0], args, op.location),
             b"h" => {
                 if self.current.is_some() {
-                    self.path.push(Segment::Close);
+                    self.push_path(&[Segment::Close], op.location);
                     self.current = self.subpath_start;
                 }
                 true
@@ -411,13 +437,16 @@ impl<'a> Interp<'a> {
             b"re" => nums::<4>(args)
                 .map(|[x, y, w, h]| {
                     let p = |x, y| Point { x, y };
-                    self.path.extend([
-                        Segment::MoveTo(p(x, y)),
-                        Segment::LineTo(p(x + w, y)),
-                        Segment::LineTo(p(x + w, y + h)),
-                        Segment::LineTo(p(x, y + h)),
-                        Segment::Close,
-                    ]);
+                    self.push_path(
+                        &[
+                            Segment::MoveTo(p(x, y)),
+                            Segment::LineTo(p(x + w, y)),
+                            Segment::LineTo(p(x + w, y + h)),
+                            Segment::LineTo(p(x, y + h)),
+                            Segment::Close,
+                        ],
+                        op.location,
+                    );
                     self.current = Some(p(x, y));
                     self.subpath_start = Some(p(x, y));
                 })
@@ -606,6 +635,7 @@ impl<'a> Interp<'a> {
             self.tm,
             self.tlm,
             self.compat,
+            std::mem::take(&mut self.q_dropped),
             std::mem::take(&mut self.marked),
             std::mem::take(&mut self.pending_clip),
             self.text_clip.take(),
@@ -640,13 +670,14 @@ impl<'a> Interp<'a> {
             self.tm,
             self.tlm,
             self.compat,
+            self.q_dropped,
             self.marked,
             self.pending_clip,
             self.text_clip,
         ) = saved;
     }
 
-    fn curve(&mut self, kind: u8, args: &[Object]) -> bool {
+    fn curve(&mut self, kind: u8, args: &[Object], at: Location) -> bool {
         let Some(cur) = self.current else {
             return false;
         };
@@ -658,12 +689,25 @@ impl<'a> Interp<'a> {
         };
         match seg {
             Some((c1, c2, end)) => {
-                self.path.push(Segment::CurveTo(c1, c2, end));
+                self.push_path(&[Segment::CurveTo(c1, c2, end)], at);
                 self.current = Some(end);
                 true
             }
             None => false,
         }
+    }
+
+    /// Adds to the current path within [`MAX_SEGMENTS`]; past it, segments are dropped and
+    /// reported once.
+    fn push_path(&mut self, segments: &[Segment], at: Location) {
+        if self.path.len() + segments.len() > self.segments_left {
+            if !self.segment_budget_reported {
+                self.segment_budget_reported = true;
+                self.diags.push(DiagnosticKind::RecursionLimit, at);
+            }
+            return;
+        }
+        self.path.extend_from_slice(segments);
     }
 
     fn clear_path(&mut self) {
@@ -699,6 +743,7 @@ impl<'a> Interp<'a> {
             None
         };
         if !segments.is_empty() && (stroke || fill.is_some()) {
+            self.segments_left = self.segments_left.saturating_sub(segments.len());
             self.out.paths.push(Path {
                 clip: self.gs.clip,
                 segments,

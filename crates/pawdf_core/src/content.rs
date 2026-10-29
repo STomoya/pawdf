@@ -7,7 +7,7 @@ use crate::parser::parse_object_from;
 
 /// Operands beyond this many are dropped, so a run of bare numbers cannot grow one
 /// operation without bound.
-const MAX_OPERANDS: usize = 4096;
+pub const MAX_OPERANDS: usize = 4096;
 
 /// One content-stream operation.
 ///

@@ -14,7 +14,7 @@ mod parser;
 mod text;
 mod xref;
 
-pub use content::{Operation, parse_content};
+pub use content::{MAX_OPERANDS, Operation, parse_content};
 pub use crypt::{Encryption, Method, PasswordKind, Permissions};
 pub use diag::{Diagnostic, DiagnosticKind, Diagnostics, Location, Origin};
 pub use error::{Error, ErrorKind};

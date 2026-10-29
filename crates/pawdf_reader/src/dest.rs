@@ -234,27 +234,35 @@ fn flatten<'a>(cx: &mut Cx<'a>, root: &'a Object, out: &mut HashMap<&'a [u8], &'
         };
         let at = obj.as_ref().map_or(holder, Location::Object);
         let names = entry(node, b"Names").map(|n| file.deref(n));
-        let kids = entry(node, b"Kids").map(|k| file.deref(k));
+        let kids_ref = entry(node, b"Kids");
+        let kids = kids_ref.map(|k| file.deref(k));
         if names.is_none() && kids.is_none() {
             cx.bad(at);
         }
-        if let Some(names) = names {
-            let Some(names) = names.as_array() else {
-                cx.bad(at);
-                continue;
-            };
-            let (pairs, rest) = names.as_chunks::<2>();
-            if !rest.is_empty() {
-                cx.bad(at);
-            }
-            for [key, value] in pairs {
-                match file.deref(key) {
-                    Object::String(k) => {
-                        out.entry(k.as_slice()).or_insert(value);
+        match names.map(Object::as_array) {
+            Some(Some(names)) => {
+                let (pairs, rest) = names.as_chunks::<2>();
+                if !rest.is_empty() {
+                    cx.bad(at);
+                }
+                for [key, value] in pairs {
+                    match file.deref(key) {
+                        Object::String(k) => {
+                            out.entry(k.as_slice()).or_insert(value);
+                        }
+                        _ => cx.bad(at),
                     }
-                    _ => cx.bad(at),
                 }
             }
+            Some(None) => cx.bad(at),
+            None => {}
+        }
+        // A shared indirect /Kids array would otherwise be walked once per direct parent.
+        if let Some(r) = kids_ref.and_then(Object::as_ref)
+            && !visited.insert(r.num)
+        {
+            cx.bad(at);
+            continue;
         }
         if let Some(kids) = kids {
             match kids.as_array() {

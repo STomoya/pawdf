@@ -33,7 +33,8 @@ pub(crate) fn apply(data: Vec<u8>, params: &Dict) -> FilterResult {
 /// says. A trailing partial row is decoded as far as it goes.
 fn png(data: &[u8], row_len: usize, bpp: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity(data.len());
-    let mut prev = vec![0u8; row_len];
+    // No row is longer than the data, however large `/Columns` claims rows are.
+    let mut prev = vec![0u8; row_len.min(data.len())];
     for chunk in data.chunks(row_len + 1) {
         let (kind, row) = (chunk[0], &chunk[1..]);
         let mut cur = row.to_vec();
@@ -146,6 +147,17 @@ mod tests {
     fn png_partial_last_row() {
         let p = params(&[("Predictor", 12), ("Columns", 3)]);
         assert_eq!(ok(apply(vec![0, 1, 2, 3, 2, 1], &p)), vec![1, 2, 3, 2]);
+    }
+
+    #[test]
+    fn png_wide_rows_with_short_data() {
+        let p = params(&[
+            ("Predictor", 12),
+            ("Columns", 1 << 20),
+            ("Colors", 32),
+            ("BitsPerComponent", 16),
+        ]);
+        assert_eq!(ok(apply(vec![2, 5, 6], &p)), vec![5, 6]);
     }
 
     #[test]
