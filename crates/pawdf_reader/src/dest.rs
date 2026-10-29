@@ -233,28 +233,41 @@ fn flatten<'a>(cx: &mut Cx<'a>, root: &'a Object, out: &mut HashMap<&'a [u8], &'
             continue;
         };
         let at = obj.as_ref().map_or(holder, Location::Object);
-        let names = entry(node, b"Names").map(|n| file.deref(n));
-        let kids = entry(node, b"Kids").map(|k| file.deref(k));
+        let names_ref = entry(node, b"Names");
+        let names = names_ref.map(|n| file.deref(n));
+        let kids_ref = entry(node, b"Kids");
+        let kids = kids_ref.map(|k| file.deref(k));
         if names.is_none() && kids.is_none() {
             cx.bad(at);
         }
-        if let Some(names) = names {
-            let Some(names) = names.as_array() else {
-                cx.bad(at);
-                continue;
-            };
-            let (pairs, rest) = names.as_chunks::<2>();
-            if !rest.is_empty() {
-                cx.bad(at);
-            }
-            for [key, value] in pairs {
-                match file.deref(key) {
-                    Object::String(k) => {
-                        out.entry(k.as_slice()).or_insert(value);
+        // A shared indirect /Names or /Kids array would otherwise be walked once per direct
+        // parent. Skipping a seen /Names loses nothing: the first occurrence of a key wins.
+        let seen = |r: Option<&Object>, visited: &mut HashSet<u32>| {
+            r.and_then(Object::as_ref)
+                .is_some_and(|r| !visited.insert(r.num))
+        };
+        match names.map(Object::as_array) {
+            Some(_) if seen(names_ref, &mut visited) => cx.bad(at),
+            Some(Some(names)) => {
+                let (pairs, rest) = names.as_chunks::<2>();
+                if !rest.is_empty() {
+                    cx.bad(at);
+                }
+                for [key, value] in pairs {
+                    match file.deref(key) {
+                        Object::String(k) => {
+                            out.entry(k.as_slice()).or_insert(value);
+                        }
+                        _ => cx.bad(at),
                     }
-                    _ => cx.bad(at),
                 }
             }
+            Some(None) => cx.bad(at),
+            None => {}
+        }
+        if seen(kids_ref, &mut visited) {
+            cx.bad(at);
+            continue;
         }
         if let Some(kids) = kids {
             match kids.as_array() {

@@ -470,3 +470,50 @@ fn out_of_range_hival_is_diagnosed() {
     );
     assert_eq!(kinds(&c), [DiagnosticKind::BadObject]);
 }
+
+#[test]
+fn q_past_depth_cap_does_not_unbalance_q() {
+    let ops = "q ".repeat(300) + "0.5 g " + &"Q ".repeat(300) + "0 0 m 1 1 l f";
+    let c = content(ops.as_bytes());
+    assert_eq!(c.paths[0].fill_color, Color::Gray(0.));
+    assert_eq!(kinds(&c), [DiagnosticKind::RecursionLimit]);
+}
+
+#[test]
+fn path_segments_are_capped() {
+    let ops = "0 0 1 1 re ".repeat(500_000) + "f";
+    let c = content(ops.as_bytes());
+    let segments: usize = c.paths.iter().map(|p| p.segments.len()).sum();
+    assert!(
+        (1 << 21) - 5 < segments && segments <= 1 << 21,
+        "{segments}"
+    );
+    assert_eq!(kinds(&c), [DiagnosticKind::RecursionLimit]);
+}
+
+#[test]
+fn carried_operands_are_capped() {
+    let ints = "1 ".repeat(4096);
+    let s4 = stream("", ints.as_bytes());
+    let (pdf, _) = build_pdf(
+        &[
+            (1, CATALOG),
+            (2, b"<< /Type /Pages /Kids [3 0 R] >>"),
+            (
+                3,
+                b"<< /Type /Page /MediaBox [0 0 1 1] /Contents [4 0 R 4 0 R 4 0 R] >>",
+            ),
+            (4, &s4),
+        ],
+        "/Root 1 0 R",
+    );
+    let c = Document::from_bytes(pdf)
+        .unwrap()
+        .page(0)
+        .unwrap()
+        .content();
+    assert_eq!(
+        kinds(&c),
+        [DiagnosticKind::BadObject, DiagnosticKind::BadOperands]
+    );
+}
