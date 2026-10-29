@@ -233,13 +233,21 @@ fn flatten<'a>(cx: &mut Cx<'a>, root: &'a Object, out: &mut HashMap<&'a [u8], &'
             continue;
         };
         let at = obj.as_ref().map_or(holder, Location::Object);
-        let names = entry(node, b"Names").map(|n| file.deref(n));
+        let names_ref = entry(node, b"Names");
+        let names = names_ref.map(|n| file.deref(n));
         let kids_ref = entry(node, b"Kids");
         let kids = kids_ref.map(|k| file.deref(k));
         if names.is_none() && kids.is_none() {
             cx.bad(at);
         }
+        // A shared indirect /Names or /Kids array would otherwise be walked once per direct
+        // parent. Skipping a seen /Names loses nothing: the first occurrence of a key wins.
+        let seen = |r: Option<&Object>, visited: &mut HashSet<u32>| {
+            r.and_then(Object::as_ref)
+                .is_some_and(|r| !visited.insert(r.num))
+        };
         match names.map(Object::as_array) {
+            Some(_) if seen(names_ref, &mut visited) => cx.bad(at),
             Some(Some(names)) => {
                 let (pairs, rest) = names.as_chunks::<2>();
                 if !rest.is_empty() {
@@ -257,10 +265,7 @@ fn flatten<'a>(cx: &mut Cx<'a>, root: &'a Object, out: &mut HashMap<&'a [u8], &'
             Some(None) => cx.bad(at),
             None => {}
         }
-        // A shared indirect /Kids array would otherwise be walked once per direct parent.
-        if let Some(r) = kids_ref.and_then(Object::as_ref)
-            && !visited.insert(r.num)
-        {
+        if seen(kids_ref, &mut visited) {
             cx.bad(at);
             continue;
         }

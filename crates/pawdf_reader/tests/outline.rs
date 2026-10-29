@@ -492,3 +492,17 @@ fn non_array_names_still_walks_kids() {
     assert_eq!(dests(&o), [dest(0, None, None)]);
     assert_eq!(o.diagnostics, [bad(30)]);
 }
+
+#[test]
+fn shared_indirect_names_array_is_walked_once() {
+    let o = items(
+        TREE,
+        &["/Dest (a)"],
+        &[
+            obj(30, "<< /Kids [<< /Names 40 0 R >> << /Names 40 0 R >>] >>"),
+            obj(40, "[(a) [3 0 R /Fit]]"),
+        ],
+    );
+    assert_eq!(dests(&o), [dest(0, None, None)]);
+    assert_eq!(o.diagnostics, [bad(30)]);
+}
