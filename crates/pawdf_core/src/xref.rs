@@ -88,9 +88,13 @@ fn apply(into: &mut Entries, section: Section) {
     into.extend(section.entries);
 }
 
+/// Sorted, disjoint runs of object numbers that some section marks free.
+pub(crate) type Free = Vec<Range<u32>>;
+
 /// Loads the xref chain starting at `startxref`. Returns `None` if the first section is
-/// unreadable, so the caller can repair.
-pub(crate) fn load(data: &[u8], diags: &mut Diagnostics) -> Option<(Entries, Dict, usize)> {
+/// unreadable, so the caller can repair. The free runs include numbers a newer section
+/// reuses; only their absence from the entries makes them free.
+pub(crate) fn load(data: &[u8], diags: &mut Diagnostics) -> Option<(Entries, Free, Dict, usize)> {
     let start = find_startxref(data)?;
     let mut sections = Vec::new();
     let mut trailers = Vec::new();
@@ -108,7 +112,7 @@ pub(crate) fn load(data: &[u8], diags: &mut Diagnostics) -> Option<(Entries, Dic
             diags.push(DiagnosticKind::BadXrefEntry, Location::File(offset as u64));
             break;
         };
-        if let Some(stm) = sec_trailer.get(b"XRefStm").and_then(int_offset) {
+        if let Some(stm) = offset_entry(&sec_trailer, b"XRefStm", offset, diags) {
             if !seen.insert(stm) {
                 diags.push(DiagnosticKind::BadXrefEntry, Location::File(stm as u64));
             } else {
@@ -118,10 +122,22 @@ pub(crate) fn load(data: &[u8], diags: &mut Diagnostics) -> Option<(Entries, Dic
                 }
             }
         }
-        next = sec_trailer.get(b"Prev").and_then(int_offset);
+        next = offset_entry(&sec_trailer, b"Prev", offset, diags);
         sections.push(section);
         trailers.push(sec_trailer);
     }
+    let mut free: Free = sections
+        .iter()
+        .flat_map(|s| s.free.iter().cloned())
+        .collect();
+    free.sort_unstable_by_key(|run| run.start);
+    free.dedup_by(|next, run| {
+        let overlaps = next.start <= run.end;
+        if overlaps {
+            run.end = run.end.max(next.end);
+        }
+        overlaps
+    });
     let mut entries = Entries::new();
     for section in sections.into_iter().rev() {
         apply(&mut entries, section);
@@ -135,11 +151,21 @@ pub(crate) fn load(data: &[u8], diags: &mut Diagnostics) -> Option<(Entries, Dic
             .flat_map(Dict::into_entries)
             .collect(),
     );
-    Some((entries, trailer, start))
+    Some((entries, free, trailer, start))
 }
 
 fn int_offset(o: &Object) -> Option<usize> {
     o.as_int().and_then(|i| usize::try_from(i).ok())
+}
+
+/// A trailer's `/Prev` or `/XRefStm`; a value that is not an offset is diagnosed at the
+/// section's offset `at`.
+fn offset_entry(trailer: &Dict, key: &[u8], at: usize, diags: &mut Diagnostics) -> Option<usize> {
+    let offset = int_offset(trailer.get(key)?);
+    if offset.is_none() {
+        diags.push(DiagnosticKind::BadXrefEntry, Location::File(at as u64));
+    }
+    offset
 }
 
 fn read_section(data: &[u8], offset: usize, diags: &mut Diagnostics) -> Option<(Section, Dict)> {
@@ -154,7 +180,7 @@ fn read_section(data: &[u8], offset: usize, diags: &mut Diagnostics) -> Option<(
 }
 
 /// Classic table (§7.5.4). Malformed entries end the table early; the trailer is then
-/// searched for.
+/// searched for from the malformed tokens, which may include the `trailer` keyword.
 fn read_table(lex: &mut Lexer, diags: &mut Diagnostics) -> (Section, Dict) {
     let data_len = lex.data().len();
     let mut section = Section::default();
@@ -170,6 +196,7 @@ fn read_table(lex: &mut Lexer, diags: &mut Diagnostics) -> (Section, Dict) {
             }
             _ => {
                 diags.push(DiagnosticKind::BadXrefEntry, Location::File(pos as u64));
+                lex.set_pos(pos);
                 break;
             }
         };
@@ -185,6 +212,7 @@ fn read_table(lex: &mut Lexer, diags: &mut Diagnostics) -> (Section, Dict) {
                     DiagnosticKind::BadXrefEntry,
                     Location::File(entry_pos as u64),
                 );
+                lex.set_pos(entry_pos);
                 break 'sections;
             };
             // Some writers start the first subsection at 1 while listing object 0's entry.
@@ -196,6 +224,10 @@ fn read_table(lex: &mut Lexer, diags: &mut Diagnostics) -> (Section, Dict) {
                 first = 0;
             }
             let Ok(num) = u32::try_from(first + i) else {
+                diags.push(
+                    DiagnosticKind::BadXrefEntry,
+                    Location::File(entry_pos as u64),
+                );
                 break 'sections;
             };
             match (kind.as_slice(), usize::try_from(off)) {
@@ -266,10 +298,8 @@ fn read_stream(data: &[u8], offset: usize, diags: &mut Diagnostics) -> Option<(S
     let w: Vec<usize> = dict
         .get(b"W")
         .and_then(|w| w.as_array())
-        .unwrap_or_default()
-        .iter()
-        .filter_map(int_offset)
-        .collect();
+        .and_then(|w| w.iter().map(int_offset).collect())
+        .unwrap_or_default();
     let [w0, w1, w2] = w[..] else {
         diags.push(DiagnosticKind::BadXrefEntry, loc);
         return Some((Section::default(), stream.dict));
@@ -278,9 +308,24 @@ fn read_stream(data: &[u8], offset: usize, diags: &mut Diagnostics) -> Option<(S
         diags.push(DiagnosticKind::BadXrefEntry, loc);
         return Some((Section::default(), stream.dict));
     }
-    let size = dict.get(b"Size").and_then(|s| s.as_int()).unwrap_or(0);
-    let index: Vec<i64> = match dict.get(b"Index").and_then(|i| i.as_array()) {
-        Some(a) => a.iter().filter_map(|o| o.as_int()).collect(),
+    let size = dict
+        .get(b"Size")
+        .and_then(|s| s.as_int())
+        .unwrap_or_else(|| {
+            diags.push(DiagnosticKind::BadXrefEntry, loc);
+            0
+        });
+    let index: Vec<i64> = match dict.get(b"Index") {
+        Some(i) => match i
+            .as_array()
+            .and_then(|a| a.iter().map(Object::as_int).collect())
+        {
+            Some(index) => index,
+            None => {
+                diags.push(DiagnosticKind::BadXrefEntry, loc);
+                return Some((Section::default(), stream.dict));
+            }
+        },
         None => vec![0, size],
     };
     let row_len = w0 + w1 + w2;
@@ -346,6 +391,11 @@ fn be(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0, |acc, &b| acc << 8 | u64::from(b))
 }
 
+pub(crate) fn is_free(free: &Free, num: u32) -> bool {
+    let i = free.partition_point(|run| run.end <= num);
+    free.get(i).is_some_and(|run| run.contains(&num))
+}
+
 /// True if `offset` holds `num G obj`.
 pub(crate) fn header_matches(data: &[u8], offset: usize, num: u32) -> bool {
     parse_header(&mut Lexer::at(data, offset)).is_some_and(|r| r.num == num)
@@ -353,8 +403,8 @@ pub(crate) fn header_matches(data: &[u8], offset: usize, num: u32) -> bool {
 
 /// Rebuilds the cross-reference by scanning for `N G obj` and `trailer` (what mature readers
 /// do with broken files). Later definitions win. Objects inside object streams are added
-/// when no direct definition exists. If no trailer names a `/Root` the scan found, the
-/// last `/Type /Catalog` object is used, since an incremental update may add a new one.
+/// when no direct definition exists. If no trailer names a `/Root` dictionary the scan
+/// found, the last `/Type /Catalog` object is used, since an incremental update may add a new one.
 ///
 /// The scan is a single forward pass: candidates inside an object or trailer already
 /// parsed are skipped, so crafted files cannot make it quadratic.
@@ -376,6 +426,7 @@ pub(crate) fn repair(data: &[u8], crypt: Option<(&Crypt, &Entries)>) -> (Entries
     let mut trailer_parts = Vec::new();
     let mut xref_dicts = Vec::new();
     let mut catalog = None;
+    let mut dicts = HashSet::new();
     let mut quiet = Diagnostics::new();
     let mut consumed = 0;
     for (pos, num) in hits {
@@ -383,6 +434,15 @@ pub(crate) fn repair(data: &[u8], crypt: Option<(&Crypt, &Entries)>) -> (Entries
             continue;
         }
         let Some((num, generation)) = num else {
+            // Without a dictionary, as for `trailer` in a comment, parsing would swallow what
+            // follows.
+            let dict_at = data[pos + 7..]
+                .iter()
+                .position(|&b| !is_whitespace(b))
+                .map(|i| pos + 7 + i);
+            if !dict_at.is_some_and(|at| data[at..].starts_with(b"<<")) {
+                continue;
+            }
             let mut lex = Lexer::at(data, pos + 7);
             if let Some(Object::Dict(d)) = parse_object(&mut lex, Origin::File, &mut quiet) {
                 trailer_parts.extend(d.into_entries());
@@ -404,6 +464,7 @@ pub(crate) fn repair(data: &[u8], crypt: Option<(&Crypt, &Entries)>) -> (Entries
                 generation,
             },
         );
+        set_dict(&mut dicts, num, &obj);
         let Object::Stream(s) = &obj else {
             if is_catalog(&obj) {
                 catalog = Some(r);
@@ -432,24 +493,26 @@ pub(crate) fn repair(data: &[u8], crypt: Option<(&Crypt, &Entries)>) -> (Entries
                 let decoded = s.decode(origin.at(0), &mut quiet).data;
                 let first = s.dict.get(b"First").and_then(|o| o.as_int()).unwrap_or(0);
                 let first = usize::try_from(first).unwrap_or(0);
-                for (index, (member, off)) in
-                    objstm_header(&s.dict, &decoded).into_iter().enumerate()
+                for (index, (member, off)) in objstm_header(&s.dict, &decoded, origin, &mut quiet)
+                    .into_iter()
+                    .enumerate()
                 {
-                    if member > MAX_OBJECT_NUM {
+                    if member > MAX_OBJECT_NUM
+                        || matches!(entries.get(&member), Some(Entry::InFile { .. }))
+                    {
                         continue;
                     }
                     let index = u32::try_from(index).unwrap_or(u32::MAX);
-                    let entry = Entry::InStream { stream: num, index };
-                    if *entries.entry(member).or_insert(entry) == entry {
-                        let mut lex = Lexer::at(&decoded, first.saturating_add(off));
-                        if parse_object(&mut lex, origin, &mut quiet)
-                            .is_some_and(|o| is_catalog(&o))
-                        {
-                            catalog = Some(Ref {
-                                num: member,
-                                generation: 0,
-                            });
-                        }
+                    entries.insert(member, Entry::InStream { stream: num, index });
+                    let mut lex = Lexer::at(&decoded, first.saturating_add(off));
+                    let member_obj =
+                        parse_object(&mut lex, origin, &mut quiet).unwrap_or(Object::Null);
+                    set_dict(&mut dicts, member, &member_obj);
+                    if is_catalog(&member_obj) {
+                        catalog = Some(Ref {
+                            num: member,
+                            generation: 0,
+                        });
                     }
                 }
             }
@@ -463,8 +526,7 @@ pub(crate) fn repair(data: &[u8], crypt: Option<(&Crypt, &Entries)>) -> (Entries
         .collect();
     parts.extend(trailer_parts);
     let mut trailer = Dict::from_entries(parts);
-    let root_found =
-        matches!(trailer.get(b"Root"), Some(Object::Ref(r)) if entries.contains_key(&r.num));
+    let root_found = matches!(trailer.get(b"Root"), Some(Object::Ref(r)) if dicts.contains(&r.num));
     if !root_found && let Some(r) = catalog {
         trailer.insert("Root".into(), Object::Ref(r));
     }
@@ -490,6 +552,14 @@ fn in_file_values(data: &[u8], known: &Entries, value: &mut Object) {
     }
 }
 
+fn set_dict(dicts: &mut HashSet<u32>, num: u32, obj: &Object) {
+    if obj.as_dict().is_some() {
+        dicts.insert(num);
+    } else {
+        dicts.remove(&num);
+    }
+}
+
 fn is_catalog(obj: &Object) -> bool {
     obj.as_dict()
         .and_then(|d| d.get(b"Type"))
@@ -498,21 +568,29 @@ fn is_catalog(obj: &Object) -> bool {
 }
 
 /// `/N` pairs of `(object number, offset)` from an object stream header (§7.5.7).
-/// Offsets are relative to `/First`.
-pub(crate) fn objstm_header(dict: &Dict, decoded: &[u8]) -> Vec<(u32, usize)> {
+/// Offsets are relative to `/First`. A header with fewer pairs is diagnosed.
+pub(crate) fn objstm_header(
+    dict: &Dict,
+    decoded: &[u8],
+    origin: Origin,
+    diags: &mut Diagnostics,
+) -> Vec<(u32, usize)> {
     let n = dict.get(b"N").and_then(|o| o.as_int()).unwrap_or(0).max(0);
     let mut lex = Lexer::new(decoded);
     let mut out = Vec::new();
     for _ in 0..n {
-        let (Some((_, Token::Int(num))), Some((_, Token::Int(off)))) =
-            (lex.next_token(), lex.next_token())
-        else {
+        let pos = lex.pos();
+        let pair = match (lex.next_token(), lex.next_token()) {
+            (Some((_, Token::Int(num))), Some((_, Token::Int(off)))) => {
+                u32::try_from(num).ok().zip(usize::try_from(off).ok())
+            }
+            _ => None,
+        };
+        let Some(pair) = pair else {
+            diags.push(DiagnosticKind::BadObject, origin.at(pos));
             break;
         };
-        let (Ok(num), Ok(off)) = (u32::try_from(num), usize::try_from(off)) else {
-            break;
-        };
-        out.push((num, off));
+        out.push(pair);
     }
     out
 }
@@ -663,6 +741,39 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    fn bad_entries(d: &Diagnostics) -> usize {
+        d.as_slice()
+            .iter()
+            .filter(|x| x.kind == DiagnosticKind::BadXrefEntry)
+            .count()
+    }
+
+    /// #32 F8: malformed `/W`, `/Size` and `/Index` values are diagnosed, not skipped.
+    #[test]
+    fn malformed_stream_keys_are_diagnosed() {
+        for (extra, rows) in [
+            ("/Size 1 /W [1 /x 2 0]", &[1, 0, 5][..]),
+            ("/Index [0 1] /W [1 2 0]", &[1, 0, 5]),
+            ("/Size 1 /Index [0 /x] /W [1 2 0]", &[1, 0, 5]),
+            ("/Size 1 /Index 3 /W [1 2 0]", &[1, 0, 5]),
+        ] {
+            let data = xref_stream(extra, rows);
+            let mut d = Diagnostics::new();
+            read_stream(&data, 0, &mut d).unwrap();
+            assert_eq!(bad_entries(&d), 1, "{extra}");
+        }
+    }
+
+    #[test]
+    fn free_runs_are_merged_and_searched() {
+        let mut d = Diagnostics::new();
+        let data = b"xref\n0 3\n0000000000 65535 f \n0000000000 00001 f \n0000000000 00001 f \n5 1\n0000000000 00001 f \ntrailer << >>\nstartxref\n0\n";
+        let (_, free, _, _) = load(data, &mut d).unwrap();
+        assert_eq!(free, vec![0..3, 5..6]);
+        assert!(is_free(&free, 2) && is_free(&free, 5));
+        assert!(!is_free(&free, 3) && !is_free(&free, 6));
     }
 
     #[test]
