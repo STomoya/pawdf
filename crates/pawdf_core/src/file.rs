@@ -359,22 +359,47 @@ impl File {
         parse_object(&mut lex, Origin::File, &mut Diagnostics::new())?.as_int()
     }
 
-    /// Replaces indirect `/Filter` and `/DecodeParms` values (and their array elements) so
-    /// `Stream::decode` can run without file access.
+    /// Replaces indirect `/Filter` and `/DecodeParms` values (their array elements, and the
+    /// non-stream values inside each parameter dictionary) so `Stream::decode` can run
+    /// without file access.
     fn resolve_filter_values(&self, dict: &mut Dict, depth: usize) {
+        let resolve = |o: &mut Object| {
+            if let Object::Ref(r) = o {
+                *o = self.resolve_depth(*r, depth + 1).clone();
+            }
+        };
         for key in [&b"Filter"[..], b"DecodeParms"] {
             let Some(value) = dict.get_mut(key) else {
                 continue;
             };
-            if let Object::Ref(r) = value {
-                *value = self.resolve_depth(*r, depth + 1).clone();
-            }
+            resolve(value);
             if let Object::Array(items) = value {
-                for item in items {
-                    if let Object::Ref(r) = item {
-                        *item = self.resolve_depth(*r, depth + 1).clone();
+                items.iter_mut().for_each(resolve);
+            }
+            if key != b"DecodeParms" {
+                continue;
+            }
+            let resolve_params = |d: &mut Dict| {
+                for (_, v) in d.iter_mut() {
+                    // Streams such as `/JBIG2Globals` stay references for the caller to load.
+                    if let Object::Ref(r) = v {
+                        let target = self.resolve_depth(*r, depth + 1);
+                        if !matches!(target, Object::Stream(_)) {
+                            *v = target.clone();
+                        }
                     }
                 }
+            };
+            match value {
+                Object::Dict(d) => resolve_params(d),
+                Object::Array(items) => {
+                    for item in items {
+                        if let Object::Dict(d) = item {
+                            resolve_params(d);
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }

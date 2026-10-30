@@ -137,7 +137,12 @@ pub(crate) fn read_image(
                         None
                     }
                 },
-                _ => None,
+                None | Some(Object::Null) => None,
+                // `File` resolves indirect non-stream parameter values, so this is the value.
+                Some(_) => {
+                    diags.push(DiagnosticKind::BadImage, at);
+                    None
+                }
             };
             ImageData::Jbig2 {
                 data: decoded.data,

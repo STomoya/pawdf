@@ -84,6 +84,29 @@ fn indirect_length_and_filter_are_resolved() {
 }
 
 #[test]
+fn indirect_decode_parms_values_are_resolved() {
+    // PNG Up rows of 2 columns: [1, 1] then [1, 1] + [1, 1].
+    let body = compress_to_vec_zlib(&[2, 1, 1, 2, 1, 1], 6);
+    let mut stream = format!(
+        "<< /Length {} /Filter /FlateDecode /DecodeParms << /Predictor 12 /Columns 4 0 R >> >>\nstream\n",
+        body.len()
+    )
+    .into_bytes();
+    stream.extend_from_slice(&body);
+    stream.extend_from_slice(b"\nendstream");
+    let (pdf, _) = build_pdf(
+        &[(1, CATALOG), (2, PAGES), (3, &stream), (4, b"2")],
+        "/Root 1 0 R",
+    );
+    let file = File::from_bytes(pdf).unwrap();
+    let s = file.resolve(r(3)).as_stream().unwrap();
+    let mut d = pawdf_core::Diagnostics::new();
+    assert_eq!(s.decode(Location::File(0), &mut d).data, [1, 1, 2, 2]);
+    assert!(file.diagnostics().is_empty());
+    assert!(d.is_empty());
+}
+
+#[test]
 fn missing_header_is_reported() {
     let (mut pdf, _) = build_pdf(&[(1, CATALOG), (2, PAGES)], "/Root 1 0 R");
     pdf[..5].copy_from_slice(b"%XYZ-");
