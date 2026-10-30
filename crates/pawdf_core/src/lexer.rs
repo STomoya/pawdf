@@ -41,17 +41,20 @@ pub fn is_regular(b: u8) -> bool {
 }
 
 /// A tokenizer over a byte slice. It never fails: malformed input becomes the closest
-/// sensible token.
+/// sensible token, and the offset of the recovery is kept for [`Lexer::take_recoveries`].
 #[derive(Debug, Clone)]
 pub(crate) struct Lexer<'a> {
     data: &'a [u8],
     pos: usize,
+    recoveries: Vec<usize>,
+    /// Offsets below this were already recorded; backtracking re-lexes them.
+    recorded_to: usize,
 }
 
 impl<'a> Lexer<'a> {
     /// A lexer at the start of `data`.
     pub fn new(data: &'a [u8]) -> Self {
-        Self { data, pos: 0 }
+        Self::at(data, 0)
     }
 
     /// A lexer starting at `pos` (clamped to the end of `data`).
@@ -59,6 +62,8 @@ impl<'a> Lexer<'a> {
         Self {
             data,
             pos: pos.min(data.len()),
+            recoveries: Vec::new(),
+            recorded_to: 0,
         }
     }
 
@@ -75,6 +80,19 @@ impl<'a> Lexer<'a> {
     /// Moves to `pos` (clamped to the end of the input).
     pub fn set_pos(&mut self, pos: usize) {
         self.pos = pos.min(self.data.len());
+    }
+
+    /// Offsets of unterminated strings, invalid hex string characters, and bad `#xx`
+    /// name escapes lexed since the last call, one per token.
+    pub fn take_recoveries(&mut self) -> Vec<usize> {
+        std::mem::take(&mut self.recoveries)
+    }
+
+    fn recover(&mut self, pos: usize) {
+        if pos >= self.recorded_to {
+            self.recoveries.push(pos);
+            self.recorded_to = pos + 1;
+        }
     }
 
     /// Skips whitespace and `%` comments.
@@ -134,9 +152,14 @@ impl<'a> Lexer<'a> {
 
     /// §7.3.4.2. Called after the opening `(`. An unterminated string runs to end of input.
     fn literal_string(&mut self) -> Vec<u8> {
+        let start = self.pos - 1;
         let mut out = Vec::new();
         let mut depth = 1usize;
-        while let Some(&b) = self.data.get(self.pos) {
+        loop {
+            let Some(&b) = self.data.get(self.pos) else {
+                self.recover(start);
+                break;
+            };
             self.pos += 1;
             match b {
                 b'(' => {
@@ -202,14 +225,25 @@ impl<'a> Lexer<'a> {
     /// §7.3.4.3. Called after `<`. Invalid characters are skipped; an odd final digit
     /// is padded with 0.
     fn hex_string(&mut self) -> Vec<u8> {
+        let start = self.pos - 1;
         let mut out = Vec::new();
         let mut hi: Option<u8> = None;
-        while let Some(&b) = self.data.get(self.pos) {
+        let mut bad = None;
+        loop {
+            let Some(&b) = self.data.get(self.pos) else {
+                bad.get_or_insert(start);
+                break;
+            };
             self.pos += 1;
             if b == b'>' {
                 break;
             }
-            let Some(v) = hex_value(b) else { continue };
+            let Some(v) = hex_value(b) else {
+                if !is_whitespace(b) {
+                    bad.get_or_insert(self.pos - 1);
+                }
+                continue;
+            };
             match hi.take() {
                 Some(h) => out.push(h << 4 | v),
                 None => hi = Some(v),
@@ -218,12 +252,16 @@ impl<'a> Lexer<'a> {
         if let Some(h) = hi {
             out.push(h << 4);
         }
+        if let Some(at) = bad {
+            self.recover(at);
+        }
         out
     }
 
     /// §7.3.5. Called after `/`. A `#` not followed by two hex digits is kept literally.
     fn name(&mut self) -> Vec<u8> {
         let mut out = Vec::new();
+        let mut bad = None;
         while let Some(&b) = self.data.get(self.pos) {
             if !is_regular(b) {
                 break;
@@ -237,8 +275,12 @@ impl<'a> Lexer<'a> {
                     self.pos += 2;
                     continue;
                 }
+                bad.get_or_insert(self.pos - 1);
             }
             out.push(b);
+        }
+        if let Some(at) = bad {
+            self.recover(at);
         }
         out
     }
@@ -382,6 +424,26 @@ mod tests {
                 kw("true"),
             ]
         );
+    }
+
+    #[test]
+    fn recoveries_are_recorded_once_per_token() {
+        let mut lex = Lexer::new(b"(ok) <41 0a\n> /A#20 <4z1y> /B#zz#q <41");
+        while lex.next_token().is_some() {}
+        assert_eq!(lex.take_recoveries(), vec![22, 29, 35]);
+        assert!(lex.take_recoveries().is_empty());
+        let mut lex = Lexer::new(b"x (a(b)");
+        while lex.next_token().is_some() {}
+        assert_eq!(lex.take_recoveries(), vec![2]);
+    }
+
+    #[test]
+    fn relexing_after_backtrack_records_nothing_new() {
+        let mut lex = Lexer::new(b"/A#z");
+        lex.next_token();
+        lex.set_pos(0);
+        lex.next_token();
+        assert_eq!(lex.take_recoveries(), vec![2]);
     }
 
     #[test]

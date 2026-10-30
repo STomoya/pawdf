@@ -25,7 +25,11 @@ pub(crate) fn parse_object_from(
     origin: Origin,
     diags: &mut Diagnostics,
 ) -> Object {
-    parse_with_depth(lex, start, tok, origin, diags, 0)
+    let obj = parse_with_depth(lex, start, tok, origin, diags, 0);
+    for at in lex.take_recoveries() {
+        diags.push(DiagnosticKind::BadObject, origin.at(at));
+    }
+    obj
 }
 
 fn parse_with_depth(
@@ -368,6 +372,29 @@ mod tests {
         assert_eq!(d.as_slice().len(), 1);
         assert_eq!(d.as_slice()[0].kind, DiagnosticKind::BadObject);
         assert_eq!(d.as_slice()[0].location, crate::diag::Location::File(13));
+    }
+
+    #[test]
+    fn lexer_recoveries_are_bad_object() {
+        let (o, d) = parse(b"<< /K#zz <4g1> >>");
+        assert_eq!(
+            o.as_dict().unwrap().get(b"K#zz"),
+            Some(&Object::String(b"A".to_vec()))
+        );
+        let got: Vec<_> = d.as_slice().iter().map(|x| (x.kind, x.location)).collect();
+        let at = |n| (DiagnosticKind::BadObject, crate::diag::Location::File(n));
+        assert_eq!(got, vec![at(5), at(11)]);
+    }
+
+    #[test]
+    fn unterminated_string_after_int_is_reported_once() {
+        let (_, d) = parse(b"[1 (abc");
+        let strings = d
+            .as_slice()
+            .iter()
+            .filter(|x| x.location == crate::diag::Location::File(3))
+            .count();
+        assert_eq!(strings, 1);
     }
 
     #[test]
