@@ -67,7 +67,15 @@ impl Space {
     /// The color for `sc`/`scn` operands, or `None` if they do not fit this space.
     pub fn color(&self, ops: &[Object]) -> Option<Color> {
         if *self == Space::Pattern {
-            let n = ops.last()?.as_name()?;
+            // §8.7.3.3: an uncoloured pattern's tint components come before the name.
+            let (name, tints) = ops.split_last()?;
+            let n = name.as_name()?;
+            if !tints
+                .iter()
+                .all(|o| o.as_number().is_some_and(f64::is_finite))
+            {
+                return None;
+            }
             return Some(Color::Pattern(String::from_utf8_lossy(n).into_owned()));
         }
         if ops.len() != self.components() {
@@ -137,17 +145,16 @@ fn resolve_depth(
     let other = |family, n| Some(Space::Other { family, n });
     match family {
         b"ICCBased" => {
-            let n = arg(1)?
-                .as_stream()?
-                .dict
-                .get(b"N")
-                .and_then(|n| file.deref(n).as_int());
-            match n {
+            let dict = &arg(1)?.as_stream()?.dict;
+            match dict.get(b"N").and_then(|n| file.deref(n).as_int()) {
                 Some(1) => Some(Space::Gray),
                 Some(3) => Some(Space::Rgb),
                 Some(4) => Some(Space::Cmyk),
                 Some(n) => other(ColorSpaceFamily::Unknown, usize::try_from(n).ok()?.min(32)),
-                None => None,
+                None => {
+                    diags.push(DiagnosticKind::BadObject, at);
+                    resolve_depth(file, dict.get(b"Alternate")?, at, diags, depth + 1)
+                }
             }
         }
         b"CalGray" => other(ColorSpaceFamily::CalGray, 1),
@@ -157,6 +164,11 @@ fn resolve_depth(
         b"DeviceN" => other(ColorSpaceFamily::DeviceN, arg(1)?.as_array()?.len().min(32)),
         b"Indexed" | b"I" => {
             let base = resolve_depth(file, arr.get(1)?, at, diags, depth + 1)?;
+            // §8.6.6.3: the base may not be a Pattern or Indexed space; pdfium rejects both.
+            if matches!(base, Space::Pattern | Space::Indexed { .. }) {
+                diags.push(DiagnosticKind::BadObject, at);
+                return None;
+            }
             let hival = arg(2)?.as_int()?;
             if !(0..=255).contains(&hival) {
                 diags.push(DiagnosticKind::BadObject, at);

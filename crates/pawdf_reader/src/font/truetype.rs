@@ -6,7 +6,7 @@ use std::sync::Arc;
 use pawdf_core::{DiagnosticKind, Diagnostics, Dict, File, Location, Object, Ref};
 use ttf_parser::{PlatformId, RawFace, Tag, cmap};
 
-use super::Shared;
+use super::{Shared, replay};
 
 /// Codepoints inverted per Unicode subtable: the BMP and planes 1–2 (CJK extensions).
 /// Asking each codepoint keeps the work bounded however the subtable's ranges are drawn.
@@ -144,6 +144,10 @@ pub(crate) fn load(
     let desc = desc?;
     let r = match (desc.get(b"FontFile2"), desc.get(b"FontFile3")) {
         (Some(Object::Ref(r)), _) => *r,
+        (Some(o), _) if *o != Object::Null => {
+            diags.push(DiagnosticKind::BadFont, at);
+            return None;
+        }
         (_, Some(Object::Ref(r)))
             if matches!(file.resolve(*r), Object::Stream(s)
                 if s.dict.get(b"Subtype").and_then(Object::as_name) == Some(b"OpenType")) =>
@@ -153,18 +157,27 @@ pub(crate) fn load(
         _ => return None,
     };
     let lock = || shared.programs.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(tt) = lock().get(&r) {
+    if let Some((tt, d)) = lock().get(&r) {
+        replay(diags, d);
         return tt.clone();
     }
-    let Object::Stream(s) = file.resolve(r) else {
-        return None;
+    let s = match file.resolve(r) {
+        Object::Stream(s) => s,
+        Object::Null => return None,
+        _ => {
+            diags.push(DiagnosticKind::BadFont, at);
+            return None;
+        }
     };
-    let program = s.decode(Location::Stream { obj: r, offset: 0 }, diags);
-    let tt = TrueType::parse(&program.data, r, diags).map(Arc::new);
+    let at = Location::Stream { obj: r, offset: 0 };
+    let mut own = Diagnostics::new();
+    let program = s.decode(at, &mut own);
+    let tt = TrueType::parse(&program.data, r, &mut own).map(Arc::new);
     if tt.is_none() {
-        diags.push(DiagnosticKind::BadFont, at);
+        own.push(DiagnosticKind::BadFont, at);
     }
-    lock().insert(r, tt.clone());
+    replay(diags, own.as_slice());
+    lock().insert(r, (tt.clone(), own.into_vec()));
     tt
 }
 
@@ -235,6 +248,31 @@ mod tests {
         let a = load(&f, &shared, Some(&desc), Location::File(0), &mut d).unwrap();
         let b = load(&f, &shared, Some(&desc), Location::File(0), &mut d).unwrap();
         assert!(std::sync::Arc::ptr_eq(&a, &b));
+    }
+
+    #[test]
+    fn cached_program_replays_its_diagnostics() {
+        let ff = crate::testutil::stream("", b"garbage");
+        let f = crate::testutil::file(&[
+            (5, b"<< /Type /FontDescriptor /FontFile2 6 0 R >>"),
+            (6, &ff),
+        ]);
+        let r = pawdf_core::Ref {
+            num: 5,
+            generation: 0,
+        };
+        let desc = f.resolve(r).as_dict().unwrap().clone();
+        let shared = crate::font::Shared::default();
+        let at = Location::Stream {
+            obj: OBJ,
+            offset: 0,
+        };
+        for _ in 0..2 {
+            let mut d = Diagnostics::new();
+            assert!(load(&f, &shared, Some(&desc), Location::File(0), &mut d).is_none());
+            let got: Vec<_> = d.as_slice().iter().map(|d| (d.kind, d.location)).collect();
+            assert_eq!(got, [(DiagnosticKind::BadFont, at)]);
+        }
     }
 
     #[test]

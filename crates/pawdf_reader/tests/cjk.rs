@@ -282,6 +282,33 @@ fn short_cid_to_gid_map_and_garbage_program() {
 }
 
 #[test]
+fn wrong_type_metrics_and_cid_to_gid_map_are_diagnosed() {
+    let bad_fonts = |extra: &str| {
+        let (f, d) = type0("/Identity-H", extra);
+        let c = run(
+            b"BT /F1 1 Tf <0007> Tj ET",
+            &[(5, f.as_bytes()), (6, d.as_bytes())],
+        );
+        let n = kinds(&c)
+            .iter()
+            .filter(|k| **k == DiagnosticKind::BadFont)
+            .count();
+        (n, c.glyphs[0].advance)
+    };
+    for extra in ["/DW (x)", "/W 5", "/DW2 [1]", "/DW2 [1 (x)]", "/W2 5"] {
+        assert_eq!(bad_fonts(extra), (1, 1.), "{extra}");
+    }
+    assert_eq!(
+        bad_fonts("/DW null /W 99 0 R /DW2 null /W2 99 0 R"),
+        (0, 1.)
+    );
+    let program = common::sfnt(&[(3, 1, &[(0x65E5, 3)])]);
+    let c = identity_truetype("42", &program, &[0, 3]);
+    assert_eq!(kinds(&c), [DiagnosticKind::BadFont]);
+    assert_eq!(texts(&c), ["\u{65E5}"]);
+}
+
+#[test]
 fn encoding_cmap_without_codespace_falls_back_to_identity() {
     let (f, d) = type0("7 0 R", "");
     let cmap = stream("/Type /CMap", b"this is not a cmap");

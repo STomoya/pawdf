@@ -497,6 +497,37 @@ fn out_of_range_hival_is_diagnosed() {
 }
 
 #[test]
+fn pattern_tint_operands_are_checked() {
+    let c = content_with(b"/Pattern cs /X /P1 scn", "<< >>", &[]);
+    assert_eq!(kinds(&c), [DiagnosticKind::BadOperands]);
+}
+
+#[test]
+fn indexed_over_pattern_or_indexed_is_rejected() {
+    for base in ["/Pattern", "[/Indexed /DeviceGray 0 <00>]"] {
+        let res = format!("<< /ColorSpace << /C [/Indexed {base} 0 <00>] >> >>");
+        let c = content_with(b"/C cs", &res, &[]);
+        assert_eq!(
+            kinds(&c),
+            [DiagnosticKind::BadObject, DiagnosticKind::MissingResource],
+            "{base}"
+        );
+    }
+}
+
+#[test]
+fn icc_without_n_uses_alternate() {
+    let icc = stream("/Alternate /DeviceRGB", b"");
+    let c = content_with(
+        b"/C cs 0 1 0 sc 0 0 m 1 1 l f",
+        "<< /ColorSpace << /C [/ICCBased 5 0 R] >> >>",
+        &[(5, &icc)],
+    );
+    assert_eq!(kinds(&c), [DiagnosticKind::BadObject]);
+    assert_eq!(c.paths[0].fill_color, Color::Rgb([0., 1., 0.]));
+}
+
+#[test]
 fn q_past_depth_cap_does_not_unbalance_q() {
     let ops = "q ".repeat(300) + "0.5 g " + &"Q ".repeat(300) + "0 0 m 1 1 l f";
     let c = content(ops.as_bytes());
