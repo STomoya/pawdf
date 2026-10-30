@@ -18,7 +18,7 @@ pub(crate) struct Cx<'a> {
     kind: DiagnosticKind,
     pub catalog: Option<&'a Dict>,
     pub catalog_at: Location,
-    /// The `/Names /Dests` tree, flattened on the first named lookup.
+    /// The `/Names /Dests` tree over the legacy `/Dests`, flattened on the first named lookup.
     names: Option<HashMap<&'a [u8], &'a Object>>,
 }
 
@@ -185,31 +185,35 @@ fn named<'a>(cx: &mut Cx<'a>, key: &[u8], at: Location) -> Option<Destination> {
     let file = cx.file;
     if cx.names.is_none() {
         let mut names = HashMap::new();
-        if let Some(root) = cx
-            .catalog
-            .and_then(|c| entry(c, b"Names"))
-            .and_then(|n| file.deref(n).as_dict())
-            .and_then(|n| entry(n, b"Dests"))
-        {
+        if let Some(root) = catalog_dict(cx, b"Names").and_then(|n| entry(n, b"Dests")) {
             flatten(cx, root, &mut names);
+        }
+        if let Some(legacy) = catalog_dict(cx, b"Dests") {
+            for (k, v) in legacy.iter() {
+                names.entry(k.as_bytes()).or_insert(v);
+            }
         }
         cx.names = Some(names);
     }
-    let value = cx
-        .names
-        .as_ref()
-        .and_then(|n| n.get(key).copied())
-        .or_else(|| {
-            cx.catalog
-                .and_then(|c| entry(c, b"Dests"))
-                .and_then(|d| file.deref(d).as_dict())
-                .and_then(|d| d.get(key))
-        });
+    let value = cx.names.as_ref().and_then(|n| n.get(key).copied());
     match value.map(|v| file.deref(v)) {
         // A name mapping to another name is not followed, so lookups cannot loop.
         Some(Object::Array(_) | Object::Dict(_)) => value.and_then(|v| target(cx, v, at)),
         _ => {
             cx.bad(at);
+            None
+        }
+    }
+}
+
+/// A dictionary entry of the catalog; a value of another type is reported.
+fn catalog_dict<'a>(cx: &mut Cx<'a>, key: &[u8]) -> Option<&'a Dict> {
+    let file = cx.file;
+    match file.deref(entry(cx.catalog?, key)?) {
+        Object::Dict(d) => Some(d),
+        Object::Null => None,
+        _ => {
+            cx.bad(cx.catalog_at);
             None
         }
     }

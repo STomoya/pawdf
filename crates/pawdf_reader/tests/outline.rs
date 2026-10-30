@@ -506,3 +506,23 @@ fn shared_indirect_names_array_is_walked_once() {
     assert_eq!(dests(&o), [dest(0, None, None)]);
     assert_eq!(o.diagnostics, [bad(30)]);
 }
+
+#[test]
+fn link_back_to_root_is_cut() {
+    let o = outline(
+        "/Outlines 10 0 R",
+        &[
+            obj(10, "<< /First 11 0 R >>"),
+            obj(11, "<< /Title (a) /Next 10 0 R >>"),
+        ],
+    );
+    assert_eq!(titles(&o.items), ["a"]);
+    assert_eq!(o.diagnostics, [bad(11)]);
+}
+
+#[test]
+fn non_dict_names_and_dests_are_diagnosed() {
+    let o = items("/Names 5 /Dests 6", &["/Dest /x"], &[]);
+    assert_eq!(dests(&o), [None]);
+    assert_eq!(o.diagnostics, [bad(1), bad(1), bad(11)]);
+}
