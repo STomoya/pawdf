@@ -13,6 +13,9 @@ pub(crate) fn read(doc: &Inner) -> Outline {
     let mut items = Vec::new();
     if let Some(o) = catalog.and_then(|c| entry(c, b"Outlines")) {
         let at = o.as_ref().map_or(catalog_at, Location::Object);
+        if let Some(r) = o.as_ref() {
+            visited.insert(r.num);
+        }
         match file.deref(o).as_dict() {
             Some(d) => items = chain(&mut cx, &mut visited, entry(d, b"First"), at, 0),
             None => cx.bad(catalog_at),

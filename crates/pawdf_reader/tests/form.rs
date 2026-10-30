@@ -591,7 +591,7 @@ fn shared_kids_array_cycle_is_cut() {
             "[<< /T (a) /FT /Tx /Kids 10 0 R >> << /T (b) /FT /Tx /Kids 10 0 R >>]",
         )],
     );
-    assert_eq!(names(&f), ["a", "b"]);
+    assert!(f.items.is_empty(), "{f:?}");
     assert_eq!(f.diagnostics, [bad(1), bad(1)]);
 }
 
@@ -605,7 +605,7 @@ fn shared_kids_array_read_once() {
         ],
     );
     let widgets: Vec<_> = f.items.iter().map(|i| i.widgets.len()).collect();
-    assert_eq!(widgets, [1, 0]);
+    assert_eq!(widgets, [1]);
     assert_eq!(f.diagnostics.len(), 2, "{:?}", f.diagnostics);
 }
 
@@ -637,4 +637,46 @@ fn empty_partial_name_adds_no_segment() {
     );
     assert_eq!(names(&f), ["a.c"]);
     assert_eq!(f.diagnostics, []);
+}
+
+#[test]
+fn link_back_to_acroform_is_cut() {
+    let f = form(
+        "/AcroForm 8 0 R",
+        "",
+        "",
+        &[
+            obj(8, "<< /Fields [9 0 R 8 0 R] >>"),
+            obj(9, "<< /T (a) /FT /Tx >>"),
+        ],
+    );
+    assert_eq!(names(&f), ["a"]);
+    assert_eq!(f.diagnostics, [bad(8)]);
+}
+
+#[test]
+fn widgets_at_depth_cap_are_kept() {
+    let mut objects = Vec::new();
+    for n in 10..75 {
+        objects.push(obj(
+            n,
+            &format!("<< /T (x) /FT /Tx /Kids [{} 0 R] >>", n + 1),
+        ));
+    }
+    objects.push(obj(75, "<< /Subtype /Widget /Rect [0 0 1 1] >>"));
+    let f = form(
+        "/AcroForm << /Fields [10 0 R] >>",
+        "/Annots [75 0 R]",
+        "",
+        &objects,
+    );
+    assert_eq!(f.diagnostics, []);
+    assert_eq!(field(&f).widgets.len(), 1);
+}
+
+#[test]
+fn non_array_opt_on_check_box_is_diagnosed() {
+    let f = one("/T (c) /FT /Btn /V /0 /Opt (a)");
+    assert_eq!(values(&f), ["0"]);
+    assert_eq!(f.diagnostics, [bad(10)]);
 }

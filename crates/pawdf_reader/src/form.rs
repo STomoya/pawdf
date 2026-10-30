@@ -46,6 +46,9 @@ pub(crate) fn read(doc: &Inner) -> FormFields {
     };
     if let Some(a) = catalog.and_then(|c| entry(c, b"AcroForm")) {
         let at = a.as_ref().map_or(catalog_at, Location::Object);
+        if let Some(r) = a.as_ref() {
+            w.visited.insert(r.num);
+        }
         match file.deref(a).as_dict() {
             Some(form) => match entry(form, b"Fields").map(|f| {
                 if let Some(r) = f.as_ref() {
@@ -114,17 +117,15 @@ impl<'a> Walk<'a> {
         // Direct fields can share an indirect `/Kids` array, even the one holding them: reading
         // it once keeps such a cycle from recursing and shared widgets from repeating.
         let shared = kids.is_some_and(|k| !self.first_visit(k, at));
+        if shared {
+            return;
+        }
         match kids.map(|k| file.deref(k)) {
-            _ if shared => {}
             // A field without kids is its own widget when it has widget entries (§12.5.6.19).
             None if entry(d, b"Rect").is_some() || entry(d, b"Subtype").is_some() => {
                 widgets.push((obj, d));
             }
             None => {}
-            Some(Object::Array(_)) if depth >= MAX_TREE_DEPTH => {
-                self.cx.bad(at);
-                return;
-            }
             Some(Object::Array(kids)) => {
                 for kid in kids {
                     match file.deref(kid) {
@@ -148,6 +149,13 @@ impl<'a> Walk<'a> {
                 }
             }
             Some(_) => self.cx.bad(at),
+        }
+        if depth >= MAX_TREE_DEPTH && !fields.is_empty() {
+            self.cx.bad(at);
+            if widgets.is_empty() {
+                return;
+            }
+            fields.clear();
         }
         if !widgets.is_empty() || fields.is_empty() {
             let item = self.terminal(d, &inh, at, &widgets);
@@ -245,7 +253,14 @@ impl<'a> Walk<'a> {
                 let index = std::str::from_utf8(n)
                     .ok()
                     .and_then(|n| n.parse::<usize>().ok());
-                let opts = inh.opt.and_then(|o| file.deref(o).as_array());
+                let opts = match inh.opt.map(|o| file.deref(o)) {
+                    Some(Object::Array(a)) => Some(a),
+                    None | Some(Object::Null) => None,
+                    Some(_) => {
+                        self.cx.bad(at);
+                        None
+                    }
+                };
                 let label = match (index, opts) {
                     (Some(i), Some(opts)) => {
                         let s = opts.get(i).and_then(|o| file.deref(o).as_string());
