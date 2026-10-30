@@ -413,6 +413,31 @@ fn leftover_operands_are_diagnosed() {
 }
 
 #[test]
+fn non_array_contents_is_diagnosed() {
+    let (pdf, _) = build_pdf(
+        &[
+            (1, CATALOG),
+            (2, b"<< /Type /Pages /Kids [3 0 R] >>"),
+            (3, b"<< /Type /Page /MediaBox [0 0 1 1] /Contents 5 >>"),
+        ],
+        "/Root 1 0 R",
+    );
+    let c = Document::from_bytes(pdf)
+        .unwrap()
+        .page(0)
+        .unwrap()
+        .content();
+    assert_eq!(kinds(&c), [DiagnosticKind::BadPageTree]);
+    assert_eq!(
+        c.diagnostics[0].location,
+        Location::Object(Ref {
+            num: 3,
+            generation: 0
+        })
+    );
+}
+
+#[test]
 fn non_reference_contents_entry_is_diagnosed() {
     let s4 = stream("", b"0 0 m 1 1 l S");
     let (pdf, _) = build_pdf(

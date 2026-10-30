@@ -150,8 +150,8 @@ impl<'a> Interp<'a> {
                     for item in items {
                         match item {
                             Object::String(s) => self.show(s, op.location),
-                            o => {
-                                if let Some(n) = o.as_number().filter(|n| n.is_finite()) {
+                            o => match o.as_number().filter(|n| n.is_finite()) {
+                                Some(n) => {
                                     let ts = &self.gs.text;
                                     let vertical = ts.font.as_ref().is_some_and(|(_, f)| {
                                         f.info.wmode == WritingMode::Vertical
@@ -164,7 +164,8 @@ impl<'a> Interp<'a> {
                                     };
                                     self.tm = shift.concat(&self.tm);
                                 }
-                            }
+                                None => self.diags.push(DiagnosticKind::BadOperands, op.location),
+                            },
                         }
                     }
                     true
@@ -182,7 +183,7 @@ impl<'a> Interp<'a> {
     /// The font a `Tf` (or `gs /Font`) name selects; the fallback if it is missing.
     fn named_font(&mut self, key: &[u8], at: Location) -> (FontKey, Arc<Font>) {
         match self.resource_entry(b"Font", key) {
-            Some(Object::Ref(r)) => (FontKey::Ref(*r), self.ref_font(*r, at)),
+            Some(Object::Ref(r)) => (FontKey::Ref(*r), self.ref_font(*r)),
             Some(Object::Dict(d)) => {
                 let key = FontKey::Direct(d as *const _ as usize);
                 if let Some(f) = self.pass_fonts.get(&key) {
@@ -206,12 +207,12 @@ impl<'a> Interp<'a> {
     }
 
     /// A document-cached font, reporting its load diagnostics once per pass.
-    fn ref_font(&mut self, r: pawdf_core::Ref, at: Location) -> Arc<Font> {
+    fn ref_font(&mut self, r: pawdf_core::Ref) -> Arc<Font> {
         let key = FontKey::Ref(r);
         if let Some(f) = self.pass_fonts.get(&key) {
             return Arc::clone(f);
         }
-        let (font, diags) = self.doc.font(r, at);
+        let (font, diags) = self.doc.font(r);
         for d in diags {
             self.diags.push(d.kind, d.location);
         }
@@ -221,7 +222,7 @@ impl<'a> Interp<'a> {
 
     pub(crate) fn set_font_ref(&mut self, font: &Object, size: f64, at: Location) {
         let selected = match font {
-            Object::Ref(r) => (FontKey::Ref(*r), self.ref_font(*r, at)),
+            Object::Ref(r) => (FontKey::Ref(*r), self.ref_font(*r)),
             _ => {
                 self.diags.push(DiagnosticKind::BadFont, at);
                 (FontKey::Fallback, Arc::clone(&self.fallback))

@@ -41,11 +41,13 @@ pub(crate) struct Inner {
 impl Inner {
     /// The font at `r`, loading it on first use, plus the diagnostics its loading gave,
     /// so every pass that uses it can report them.
-    pub fn font(&self, r: Ref, at: Location) -> LoadedFont {
+    pub fn font(&self, r: Ref) -> LoadedFont {
         let mut fonts = self.fonts.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((f, d)) = fonts.get(&r) {
             return (Arc::clone(f), d.clone());
         }
+        // Located at the font, not the first user, since every later user replays them.
+        let at = Location::Object(r);
         let mut diags = Diagnostics::new();
         let font = match self.file.resolve(r).as_dict() {
             Some(dict) => load_font(&self.file, &self.shared, dict, at, &mut diags),
@@ -216,27 +218,26 @@ struct Inherited {
 /// the `/Kids` walk is authoritative.
 fn walk_pages(file: &File, diags: &mut Diagnostics) -> Vec<PageInfo> {
     let mut pages = Vec::new();
-    let bad = |diags: &mut Diagnostics| diags.push(DiagnosticKind::BadPageTree, Location::File(0));
-    let root = file
-        .trailer()
-        .get(b"Root")
-        .map(|o| file.deref(o))
-        .and_then(Object::as_dict)
+    let bad = |diags: &mut Diagnostics, r: Ref| {
+        diags.push(DiagnosticKind::BadPageTree, Location::Object(r))
+    };
+    let (catalog, at) = catalog(file);
+    let root = catalog
         .and_then(|c| c.get(b"Pages"))
         .and_then(Object::as_ref);
     let Some(root) = root else {
-        bad(diags);
+        diags.push(DiagnosticKind::BadPageTree, at);
         return pages;
     };
     let mut visited = HashSet::new();
     let mut stack = vec![(root, Arc::new(Inherited::default()), 0usize)];
     while let Some((r, parent, depth)) = stack.pop() {
         if depth > MAX_TREE_DEPTH || !visited.insert(r.num) {
-            bad(diags);
+            bad(diags, r);
             continue;
         }
         let Some(node) = file.resolve(r).as_dict() else {
-            bad(diags);
+            bad(diags, r);
             continue;
         };
         let mut inherited = Inherited::clone(&parent);
@@ -247,9 +248,13 @@ fn walk_pages(file: &File, diags: &mut Diagnostics) -> Vec<PageInfo> {
             (b"CropBox", &mut inherited.crop_box),
             (b"Rotate", &mut inherited.rotate),
         ] {
-            if let Some(v) = node.get(key) {
+            // §7.3.7, §7.3.10: null and a dangling reference mean absent, so the inherited
+            // value stays.
+            if let Some(v) = node.get(key).map(|v| file.deref(v))
+                && *v != Object::Null
+            {
                 // Shared, so a node with many kids does not copy a large /Resources per kid.
-                *slot = Some(Arc::new(file.deref(v).clone()));
+                *slot = Some(Arc::new(v.clone()));
             }
         }
         let kids = node.get(b"Kids").map(|k| file.deref(k));
@@ -260,14 +265,14 @@ fn walk_pages(file: &File, diags: &mut Diagnostics) -> Vec<PageInfo> {
                 for kid in kids.iter().rev() {
                     match kid.as_ref() {
                         Some(k) => stack.push((k, Arc::clone(&inherited), depth + 1)),
-                        None => bad(diags),
+                        None => bad(diags, r),
                     }
                 }
             }
             _ => {
                 // pdfium counts a kid without /Kids as a page whatever its /Type.
                 if node.get(b"Type").and_then(Object::as_name) == Some(b"Pages") {
-                    bad(diags);
+                    bad(diags, r);
                 }
                 pages.push(page_info(file, r, inherited, diags));
             }
@@ -277,7 +282,7 @@ fn walk_pages(file: &File, diags: &mut Diagnostics) -> Vec<PageInfo> {
 }
 
 fn page_info(file: &File, obj: Ref, inh: Inherited, diags: &mut Diagnostics) -> PageInfo {
-    let mut bad = || diags.push(DiagnosticKind::BadPageTree, Location::File(0));
+    let mut bad = || diags.push(DiagnosticKind::BadPageTree, Location::Object(obj));
     let media_box = match inh.media_box.map(|b| rect(file, &b)) {
         Some(Some(r)) => r,
         _ => {
@@ -437,8 +442,8 @@ mod tests {
             num: 7,
             generation: 0,
         };
-        let (a, _) = doc.0.font(r, Location::File(0));
-        let (b, _) = doc.0.font(r, Location::File(0));
+        let (a, _) = doc.0.font(r);
+        let (b, _) = doc.0.font(r);
         assert!(Arc::ptr_eq(&a, &b));
         assert_eq!(a.info.base_font, "Helvetica");
     }

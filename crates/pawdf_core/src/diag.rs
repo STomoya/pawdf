@@ -30,10 +30,11 @@ pub enum DiagnosticKind {
     /// The diagnostic limit was reached; later diagnostics were dropped.
     TooManyDiagnostics,
     /// The page tree was malformed (cycle, bad node, bad box, bad `/Rotate`, or a `/Contents`
-    /// entry that is not a reference).
+    /// that is not a reference or an array, or an entry of it that is not a reference).
     BadPageTree,
     /// An operator had the wrong operand count or type, or a non-finite number; it was skipped.
-    /// Also operands left at the end of the content with no operator.
+    /// Also operands left at the end of the content with no operator, and a `TJ` element that
+    /// is neither a string nor a finite number, which was skipped.
     /// Also a clip whose bounds became non-finite or inverted through the CTM; it was ignored.
     BadOperands,
     /// An unknown operator appeared outside `BX`/`EX`.
@@ -54,7 +55,8 @@ pub enum DiagnosticKind {
     UnmappedGlyph,
     /// A malformed CMap entry was skipped.
     BadCMap,
-    /// An image had bad dimensions or short data, or an inline image had no `EI`.
+    /// An image had bad dimensions or short data, a Pattern colour space, or an inline image had
+    /// no `EI`.
     BadImage,
     /// Encryption data was malformed (`/ID`, `/Length`, `/Perms`, AES padding, or an unknown
     /// crypt filter); the object or value was used as is.
