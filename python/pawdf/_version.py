@@ -1,4 +1,4 @@
-"""laytext version string."""
+"""pawdf version string."""
 
 from __future__ import annotations
 

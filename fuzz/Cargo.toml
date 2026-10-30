@@ -63,3 +63,45 @@ path = "fuzz_targets/crypt.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "outline"
+path = "fuzz_targets/outline.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "acroform"
+path = "fuzz_targets/acroform.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "structure"
+path = "fuzz_targets/structure.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "annotation"
+path = "fuzz_targets/annotation.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "oc"
+path = "fuzz_targets/oc.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "names"
+path = "fuzz_targets/names.rs"
+test = false
+doc = false
+bench = false

@@ -1,6 +1,6 @@
 [project]
 name = "pawdf"
-description = "Add your description here"
+description = "A pure-Rust PDF reading and parsing library"
 readme = "README.md"
 authors = [
     { name = "Tomoya Sawada", email = "stomoya0110@gmail.com" }

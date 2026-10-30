@@ -35,7 +35,6 @@ from pawdf._core import (
     StructTree,
     UnsupportedEncryptionError,
     Widget,
-    hello_from_bin,
 )
 from pawdf._version import __version__
 
@@ -94,7 +93,3 @@ def open(path: str | os.PathLike[str], password: str | None = None) -> Document:
         UnsupportedEncryptionError: If the file uses an unsupported security handler.
     """
     return Document(_Path(path).read_bytes(), password)
-
-
-def hello() -> str:
-    return hello_from_bin()

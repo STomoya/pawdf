@@ -1415,8 +1415,6 @@ impl Document {
 /// import the module.
 #[pymodule]
 mod _core {
-    use pyo3::prelude::*;
-
     #[pymodule_export]
     use super::{
         Annotation, Annotations, Color, Destination, Diagnostic, Document, EncryptedError,
@@ -1424,9 +1422,4 @@ mod _core {
         ObjectRef, Outline, OutlineItem, Page, PageContent, PasswordError, Path, PdfError,
         Permissions, SoftMask, StructElement, StructTree, UnsupportedEncryptionError, Widget,
     };
-
-    #[pyfunction]
-    fn hello_from_bin() -> String {
-        "Hello from pawdf!".to_string()
-    }
 }

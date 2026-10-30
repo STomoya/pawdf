@@ -9,8 +9,6 @@ FieldKind: TypeAlias = Literal[
 ]
 SpaceFamily: TypeAlias = Literal['cal_gray', 'cal_rgb', 'lab', 'separation', 'device_n', 'indexed', 'unknown']
 
-def hello_from_bin() -> str: ...
-
 class PdfError(Exception):
     """The PDF could not be read."""
 

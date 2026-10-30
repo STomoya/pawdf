@@ -11,6 +11,12 @@
 | `document` | `Document`: every page's content                  |
 | `cmap`     | an embedded CMap on a Type0 font                  |
 | `crypt`    | an encryption dictionary and password, then decryption of a string and a stream |
+| `outline`    | the document outline                            |
+| `acroform`   | AcroForm fields and widgets                     |
+| `structure`  | the structure tree                              |
+| `annotation` | a page's annotations                            |
+| `oc`         | optional content, from marked content and annotations |
+| `names`      | named destinations, from link annotations        |
 
 ```sh
 cargo +nightly fuzz run document -- -max_total_time=300

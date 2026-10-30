@@ -1,5 +1,4 @@
-//! Builds a small PDF around fuzz input so the content, CMap and encryption parsers are
-//! reachable through the public API.
+//! Builds a small PDF around fuzz input so each parser is reachable through the public API.
 #![allow(dead_code)]
 
 fn stream(dict: &str, data: &[u8]) -> Vec<u8> {
@@ -68,6 +67,21 @@ pub fn encrypted(dict: &[u8]) -> Vec<u8> {
         &objects,
         "/Encrypt 4 0 R /ID [<00112233445566778899aabbccddeeff> <00>]",
     )
+}
+
+/// A one-page file with content stream `content` (object 4) whose objects from 5 on are the
+/// fuzz input split at 0xFF, so the input builds its own object graph. `catalog` and `page`
+/// are extra entries for the catalog (1) and the page (3), typically pointing at `5 0 R`.
+pub fn objects(catalog: &str, page: &str, content: &[u8], data: &[u8]) -> Vec<u8> {
+    let mut objects: Vec<Vec<u8>> = vec![
+        format!("<< /Type /Catalog /Pages 2 0 R {catalog} >>").into_bytes(),
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+        format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R {page} >>")
+            .into_bytes(),
+        stream("", content),
+    ];
+    objects.extend(data.split(|&b| b == 0xFF).map(<[u8]>::to_vec));
+    assemble(&objects)
 }
 
 fn assemble(objects: &[Vec<u8>]) -> Vec<u8> {
