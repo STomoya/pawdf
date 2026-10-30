@@ -47,6 +47,11 @@ pub(crate) fn read(doc: &Inner) -> StructTree {
                 if let Some(r) = t.as_ref() {
                     w.visited.insert(r.num);
                 }
+                if entry(root, b"Type")
+                    .is_some_and(|t| file.deref(t).as_name() != Some(b"StructTreeRoot"))
+                {
+                    w.cx.bad(at);
+                }
                 match entry(root, b"RoleMap").map(|m| file.deref(m)) {
                     None => {}
                     Some(Object::Dict(m)) => {

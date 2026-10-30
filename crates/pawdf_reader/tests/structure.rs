@@ -449,3 +449,22 @@ fn element_cut_for_depth_is_read_where_shallower() {
     // The cut, and `/P` naming 163, not the root.
     assert_eq!(t.diagnostics, [bad(200), bad(200)]);
 }
+
+#[test]
+fn wrong_root_type_is_read_and_reported() {
+    let t = tree(&[
+        obj(10, "<< /Type /StructElem /K 11 0 R >>"),
+        obj(11, "<< /S /P /P 10 0 R >>"),
+    ]);
+    assert_eq!(
+        roles(
+            &t.roots
+                .iter()
+                .cloned()
+                .map(StructKid::Element)
+                .collect::<Vec<_>>()
+        ),
+        ["P"]
+    );
+    assert_eq!(t.diagnostics, [bad(10)]);
+}
