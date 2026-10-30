@@ -49,7 +49,7 @@ impl Interp<'_> {
             }
             b"EMC" => {
                 self.end_marked(op.location);
-                true
+                args.is_empty()
             }
             _ => return None,
         };
@@ -104,7 +104,7 @@ impl Interp<'_> {
     }
 
     /// §8.11.3.2: `/OC /name BDC` names an optional content group or membership dictionary in
-    /// `/Properties`. An inline dictionary is accepted too. Missing or malformed properties
+    /// `/Properties`. An inline dictionary or an indirect reference is accepted too. Missing or malformed properties
     /// are reported by `read_span`, or here when `report`, for a sequence it does not read.
     fn marked_oc_hides(&mut self, props: Option<&Object>, at: Location, report: bool) -> bool {
         let file = self.file;
@@ -118,7 +118,11 @@ impl Interp<'_> {
                 }
                 oc
             }
-            Some(p @ Object::Dict(_)) => Some(p),
+            Some(p @ Object::Ref(_)) if report => {
+                self.diags.push(DiagnosticKind::BadOperands, at);
+                Some(p)
+            }
+            Some(p @ (Object::Dict(_) | Object::Ref(_))) => Some(p),
             Some(_) if report => {
                 self.diags.push(DiagnosticKind::BadOperands, at);
                 None
@@ -160,9 +164,8 @@ impl Interp<'_> {
                 .unwrap_or_default();
         }
         let file = self.file;
-        let dict: Option<&Dict> = match props.map(|p| file.deref(p)) {
+        let dict: Option<&Dict> = match props {
             None => None,
-            Some(Object::Dict(d)) => Some(d),
             Some(Object::Name(n)) => {
                 let d = self
                     .resource(b"Properties", n.as_bytes())
@@ -172,9 +175,13 @@ impl Interp<'_> {
                 }
                 d
             }
-            Some(_) => {
-                self.diags.push(DiagnosticKind::BadOperands, at);
-                None
+            Some(p) => {
+                // §7.8.2: content streams hold no indirect references; one is followed anyway.
+                let d = file.deref(p).as_dict();
+                if d.is_none() || matches!(p, Object::Ref(_)) {
+                    self.diags.push(DiagnosticKind::BadOperands, at);
+                }
+                d
             }
         };
         let get = |k: &[u8]| dict.and_then(|d| d.get(k)).map(|o| file.deref(o));

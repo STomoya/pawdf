@@ -295,3 +295,10 @@ fn marked_content_budget() {
     assert_eq!(c.marked_contents.len(), 1 << 20);
     assert_eq!(kinds(&c), [DiagnosticKind::RecursionLimit]);
 }
+
+#[test]
+fn emc_with_operands_is_reported() {
+    let c = content(&format!("/P BMC {} 1 EMC", t("a")));
+    assert_eq!(c.marked_contents, [span("P", 0..1)]);
+    assert_eq!(kinds(&c), [DiagnosticKind::BadOperands]);
+}

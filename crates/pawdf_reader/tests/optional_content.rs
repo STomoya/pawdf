@@ -564,3 +564,38 @@ fn annotations_with_oc() {
     let kinds: Vec<_> = a.diagnostics.iter().map(|d| d.kind).collect();
     assert_eq!(kinds, [DiagnosticKind::BadOptionalContent]);
 }
+
+#[test]
+fn off_list_ignores_generation() {
+    let props = "<< /OCGs [10 0 R 11 0 R 12 0 R] /D << /OFF [10 1 R] >> >>";
+    let c = content(props, &format!("/OC /on BDC {} EMC", t("a")), &[]);
+    assert_eq!(glyphs_hidden(&c), [true]);
+    assert_eq!(kinds(&c), []);
+}
+
+#[test]
+fn indirect_properties_operand_is_followed_and_reported() {
+    let c = content(PROPS, &format!("/OC 11 0 R BDC {} EMC", t("a")), &[]);
+    assert_eq!(glyphs_hidden(&c), [true]);
+    assert_eq!(kinds(&c), [DiagnosticKind::BadOperands]);
+}
+
+#[test]
+fn non_dict_groups_are_reported() {
+    // 40 is listed as a group but is not a dictionary, so the membership has only 11 (off).
+    let props = "<< /OCGs [10 0 R 11 0 R 12 0 R 40 0 R] /D << /OFF [11 0 R] >> >>";
+    let ocmd = obj(20, "<< /Type /OCMD /OCGs [11 0 R 40 0 R] >>");
+    let c = content(
+        props,
+        &format!("/OC /m BDC {} EMC", t("a")),
+        &[ocmd, obj(40, "(x)")],
+    );
+    assert_eq!(glyphs_hidden(&c), [true]);
+    assert_eq!(
+        kinds(&c),
+        [
+            DiagnosticKind::BadOptionalContent,
+            DiagnosticKind::BadOptionalContent
+        ]
+    );
+}

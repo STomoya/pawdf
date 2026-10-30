@@ -10,12 +10,13 @@ use crate::document::{self, Inner, catalog};
 const MAX_DEPTH: usize = 32;
 
 /// The groups of `/OCProperties`, which of them the default configuration turns off, and
-/// which it ignores for their intent.
+/// which it ignores for their intent, by object number: generations are ignored, as
+/// `File::resolve` does.
 #[derive(Default)]
 pub(crate) struct Config {
-    groups: HashSet<Ref>,
-    off: HashSet<Ref>,
-    ignored: HashSet<Ref>,
+    groups: HashSet<u32>,
+    off: HashSet<u32>,
+    ignored: HashSet<u32>,
 }
 
 /// Reads the catalog's `/OCProperties` (§8.11.4.2) and its `/D` (§8.11.4.3).
@@ -47,7 +48,18 @@ pub(crate) fn read(file: &File) -> (Config, Vec<Diagnostic>) {
     if entry(props, b"OCGs").is_none() {
         bad(&mut diags);
     }
-    config.groups = refs(props, b"OCGs", &mut diags).into_iter().collect();
+    let groups: Vec<Ref> = refs(props, b"OCGs", &mut diags)
+        .into_iter()
+        .filter(|r| match file.resolve(*r) {
+            Object::Dict(_) => true,
+            Object::Null => false,
+            _ => {
+                bad(&mut diags);
+                false
+            }
+        })
+        .collect();
+    config.groups = groups.iter().map(|r| r.num).collect();
     let Some(d) = entry(props, b"D").and_then(|d| file.deref(d).as_dict()) else {
         bad(&mut diags);
         return (config, diags.into_vec());
@@ -90,27 +102,26 @@ pub(crate) fn read(file: &File) -> (Config, Vec<Diagnostic>) {
     // pdf.js applies `/ON` then `/OFF`, so a group in both is off.
     for (key, on) in [(b"ON".as_slice(), true), (b"OFF", false)] {
         for r in refs(d, key, &mut diags) {
-            if !config.groups.contains(&r) {
+            if !config.groups.contains(&r.num) {
                 bad(&mut diags);
             } else if on {
-                config.off.remove(&r);
+                config.off.remove(&r.num);
             } else {
-                config.off.insert(r);
+                config.off.insert(r.num);
             }
         }
     }
     // §8.11.4.3: groups whose intent shares nothing with the configuration's are ignored.
     let wanted = intents(d, &mut diags);
     if !wanted.iter().any(|i| i == b"All") {
-        config.ignored = config
-            .groups
+        config.ignored = groups
             .iter()
-            .copied()
             .filter(|r| {
-                file.resolve(*r)
+                file.resolve(**r)
                     .as_dict()
                     .is_some_and(|g| !intents(g, &mut diags).iter().any(|i| wanted.contains(i)))
             })
+            .map(|r| r.num)
             .collect();
     }
     (config, diags.into_vec())
@@ -122,9 +133,9 @@ pub(crate) struct Visibility<'a> {
     config: &'a Config,
     /// Results by object, so a membership dictionary or subexpression shared by reference is
     /// evaluated once per pass. This bounds the work by the size of the file.
-    memberships: HashMap<Ref, bool>,
+    memberships: HashMap<u32, bool>,
     /// Expression results with the depth they were evaluated at.
-    exprs: HashMap<Ref, (usize, Result<Option<bool>, DiagnosticKind>)>,
+    exprs: HashMap<u32, (usize, Result<Option<bool>, DiagnosticKind>)>,
 }
 
 /// Whether the `/OC` value `oc`, an optional content group or membership dictionary, is off.
@@ -161,11 +172,11 @@ impl Visibility<'_> {
         let Some(r) = oc.as_ref() else {
             return self.on_uncached(oc, at, diags);
         };
-        if let Some(&on) = self.memberships.get(&r) {
+        if let Some(&on) = self.memberships.get(&r.num) {
             return on;
         }
         let on = self.on_uncached(oc, at, diags);
-        self.memberships.insert(r, on);
+        self.memberships.insert(r.num, on);
         on
     }
 
@@ -234,8 +245,8 @@ impl Visibility<'_> {
     /// intent, or not in `/OCGs` (reported).
     fn group(&self, r: Option<Ref>, at: Location, diags: &mut Diagnostics) -> Option<bool> {
         match r {
-            Some(r) if self.config.groups.contains(&r) => {
-                (!self.config.ignored.contains(&r)).then(|| !self.config.off.contains(&r))
+            Some(r) if self.config.groups.contains(&r.num) => {
+                (!self.config.ignored.contains(&r.num)).then(|| !self.config.off.contains(&r.num))
             }
             _ => {
                 Self::bad(diags, at);
@@ -258,13 +269,13 @@ impl Visibility<'_> {
         };
         // A depth limit hit deeper than this use may not recur here, so it is retried. Each
         // retry is shallower, so an object is evaluated at most `MAX_DEPTH + 1` times.
-        if let Some(&(was, v)) = self.exprs.get(&r)
+        if let Some(&(was, v)) = self.exprs.get(&r.num)
             && (v != Err(DiagnosticKind::RecursionLimit) || depth >= was)
         {
             return v;
         }
         let v = self.expr_uncached(e, depth, at, diags);
-        self.exprs.insert(r, (depth, v));
+        self.exprs.insert(r.num, (depth, v));
         v
     }
 
