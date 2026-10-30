@@ -114,6 +114,7 @@ fn parse_array(lex: &mut Lexer, origin: Origin, diags: &mut Diagnostics, depth: 
 fn parse_dict(lex: &mut Lexer, origin: Origin, diags: &mut Diagnostics, depth: usize) -> Dict {
     let mut entries = Vec::new();
     let mut seen = HashSet::new();
+    let mut duplicated = false;
     loop {
         let Some((start, tok)) = lex.next_token() else {
             diags.push(DiagnosticKind::BadObject, origin.at(lex.pos()));
@@ -143,6 +144,7 @@ fn parse_dict(lex: &mut Lexer, origin: Origin, diags: &mut Diagnostics, depth: u
                 let value = parse_with_depth(lex, vstart, vtok, origin, diags, depth);
                 if !seen.insert(key.clone()) {
                     diags.push(DiagnosticKind::BadObject, origin.at(start));
+                    duplicated = true;
                 }
                 entries.push((Name(key), value));
             }
@@ -158,7 +160,11 @@ fn parse_dict(lex: &mut Lexer, origin: Origin, diags: &mut Diagnostics, depth: u
             }
         }
     }
-    Dict::from_entries(entries)
+    if duplicated {
+        Dict::from_entries(entries)
+    } else {
+        Dict::from_unique(entries)
+    }
 }
 
 /// Parses an indirect object `num gen obj ... endobj` starting at `offset` in the file.

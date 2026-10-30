@@ -156,6 +156,11 @@ impl Dict {
         Dict(kept)
     }
 
+    /// Wraps entries whose keys the caller already checked are unique.
+    pub(crate) fn from_unique(entries: Vec<(Name, Object)>) -> Self {
+        Dict(entries)
+    }
+
     /// Value for `key`.
     pub fn get(&self, key: &[u8]) -> Option<&Object> {
         self.0

@@ -379,24 +379,27 @@ impl File {
             if key != b"DecodeParms" {
                 continue;
             }
-            let params: Vec<&mut Dict> = match value {
-                Object::Dict(d) => vec![d],
-                Object::Array(items) => items
-                    .iter_mut()
-                    .filter_map(|i| match i {
-                        Object::Dict(d) => Some(d),
-                        _ => None,
-                    })
-                    .collect(),
-                _ => vec![],
-            };
-            for (_, v) in params.into_iter().flat_map(Dict::iter_mut) {
-                // Streams such as `/JBIG2Globals` stay references for the caller to load.
-                if let Object::Ref(r) = v
-                    && !matches!(self.resolve_depth(*r, depth + 1), Object::Stream(_))
-                {
-                    resolve(v);
+            let resolve_params = |d: &mut Dict| {
+                for (_, v) in d.iter_mut() {
+                    // Streams such as `/JBIG2Globals` stay references for the caller to load.
+                    if let Object::Ref(r) = v {
+                        let target = self.resolve_depth(*r, depth + 1);
+                        if !matches!(target, Object::Stream(_)) {
+                            *v = target.clone();
+                        }
+                    }
                 }
+            };
+            match value {
+                Object::Dict(d) => resolve_params(d),
+                Object::Array(items) => {
+                    for item in items {
+                        if let Object::Dict(d) = item {
+                            resolve_params(d);
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }
