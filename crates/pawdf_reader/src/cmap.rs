@@ -148,7 +148,9 @@ impl CMap {
                     for pair in args.chunks(2) {
                         match pair {
                             [Object::String(lo), Object::String(hi)]
-                                if lo.len() == hi.len() && (1..=4).contains(&lo.len()) =>
+                                if lo.len() == hi.len()
+                                    && (1..=4).contains(&lo.len())
+                                    && lo.iter().zip(hi).all(|(l, h)| l <= h) =>
                             {
                                 if t.codespace.len() < MAX_CODESPACE {
                                     t.codespace.push((lo.clone(), hi.clone()));
@@ -184,7 +186,9 @@ impl CMap {
                 b"endbfchar" => {
                     for pair in args.chunks(2) {
                         match pair {
-                            [Object::String(code), Object::String(dst)] => {
+                            [Object::String(code), Object::String(dst)]
+                                if (1..=4).contains(&code.len()) =>
+                            {
                                 t.insert(code.clone(), utf16_units(dst, diags, at), diags, at);
                             }
                             _ => diags.push(DiagnosticKind::BadCMap, at),
@@ -344,6 +348,9 @@ impl CMap {
                 }
             }
             Object::Array(items) => {
+                if items.len() as u64 != count {
+                    diags.push(DiagnosticKind::BadCMap, at);
+                }
                 for (i, item) in (0..=end - start).zip(items) {
                     match item {
                         Object::String(d) => {
@@ -763,6 +770,19 @@ mod tests {
             parse("1 beginbfchar <01> endbfchar 1 beginbfrange <05> <01> <0041> endbfrange");
         assert_eq!(t.lookup(&[1]), None);
         assert_eq!(d, [DiagnosticKind::BadCMap, DiagnosticKind::BadCMap]);
+    }
+
+    #[test]
+    fn malformed_ranges_and_codes_are_diagnosed() {
+        let (m, d) = parse("1 begincodespacerange <8000> <7FFF> endcodespacerange");
+        assert_eq!(m.codespace.len(), 1);
+        assert_eq!(d, [DiagnosticKind::BadCMap]);
+        let (t, d) = parse("2 beginbfchar <> <0041> <0102030405> <0042> endbfchar");
+        assert!(t.map.is_empty());
+        assert_eq!(d, [DiagnosticKind::BadCMap; 2]);
+        let (t, d) = parse("1 beginbfrange <30> <32> [<0058> <0059>] endbfrange");
+        assert_eq!(t.lookup(&[0x31]).as_deref(), Some("Y"));
+        assert_eq!(d, [DiagnosticKind::BadCMap]);
     }
 
     #[test]

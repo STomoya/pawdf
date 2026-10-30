@@ -5,7 +5,7 @@ use std::sync::Arc;
 use pawdf_core::{DiagnosticKind, Diagnostics, Dict, File, Location, Object};
 
 use super::truetype::{self, TrueType};
-use super::{Font, GLYPH_SCALE, Glyphs, Shared, embedded_cmap, metrics};
+use super::{Font, GLYPH_SCALE, Glyphs, Shared, embedded_cmap, entry, metrics, to_unicode};
 use crate::cmap::{CMap, Code};
 use crate::data::{predefined_cmap, ucs2};
 use crate::model::{FontInfo, FontKind, WritingMode};
@@ -142,33 +142,28 @@ pub(crate) fn load_type0(
         .any(|k| desc.is_some_and(|d| d.contains_key(k)));
 
     let num = |o: &Object| file.deref(o).as_number().filter(|n| n.is_finite());
-    let dw = dget(b"DW").and_then(num).unwrap_or(1000.) / 1000.;
-    let w = dget(b"W")
-        .and_then(Object::as_array)
+    let dw = entry(dget(b"DW"), num, at, diags).unwrap_or(1000.) / 1000.;
+    let w = entry(dget(b"W"), Object::as_array, at, diags)
         .map(|a| cid_ranges::<1>(file, a, at, diags))
         .unwrap_or_default()
         .into_iter()
         .map(|(lo, hi, [w])| (lo, hi, w))
         .collect();
-    let w2 = dget(b"W2")
-        .and_then(Object::as_array)
+    let w2 = entry(dget(b"W2"), Object::as_array, at, diags)
         .map(|a| cid_ranges::<3>(file, a, at, diags))
         .unwrap_or_default();
-    let dw2 = match dget(b"DW2").and_then(Object::as_array) {
-        Some([vy, w1]) => match (num(vy), num(w1)) {
-            (Some(vy), Some(w1)) => [vy / 1000., w1 / 1000.],
-            _ => {
-                diags.push(DiagnosticKind::BadFont, at);
-                [0.88, -1.]
-            }
+    let dw2 = entry(
+        dget(b"DW2"),
+        |o| match o.as_array()? {
+            [vy, w1] => Some([num(vy)? / 1000., num(w1)? / 1000.]),
+            _ => None,
         },
-        _ => [0.88, -1.],
-    };
+        at,
+        diags,
+    )
+    .unwrap_or([0.88, -1.]);
 
-    let to_unicode = match dict.get(b"ToUnicode") {
-        Some(Object::Ref(r)) => embedded_cmap(file, shared, *r, diags),
-        _ => None,
-    };
+    let to_unicode = to_unicode(file, shared, dict, at, diags);
     // §9.10.2 (b): the ordering of the font's CMap, then of the CIDFont.
     let info = dget(b"CIDSystemInfo").and_then(Object::as_dict);
     let info_str = |k: &[u8]| match info.and_then(|d| d.get(k)).map(|o| file.deref(o)) {
@@ -186,15 +181,18 @@ pub(crate) fn load_type0(
     let truetype = match subtype {
         Some(b"CIDFontType2") if identity => {
             truetype::load(file, shared, desc, at, diags).map(|tt| {
-                let map = match descendant.and_then(|d| d.get(b"CIDToGIDMap")) {
-                    Some(Object::Ref(r)) => match file.resolve(*r) {
-                        Object::Stream(s) => Some(
-                            s.decode(Location::Stream { obj: *r, offset: 0 }, diags)
-                                .data,
-                        ),
-                        _ => None,
-                    },
-                    _ => None,
+                let raw = descendant.and_then(|d| d.get(b"CIDToGIDMap"));
+                let map = match (raw, raw.map(|o| file.deref(o))) {
+                    (Some(Object::Ref(r)), Some(Object::Stream(s))) => Some(
+                        s.decode(Location::Stream { obj: *r, offset: 0 }, diags)
+                            .data,
+                    ),
+                    (_, None | Some(Object::Null)) => None,
+                    (_, Some(Object::Name(n))) if n.as_bytes() == b"Identity" => None,
+                    _ => {
+                        diags.push(DiagnosticKind::BadFont, at);
+                        None
+                    }
                 };
                 (tt, map)
             })

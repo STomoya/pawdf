@@ -7,7 +7,9 @@ pub(crate) mod truetype;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use pawdf_core::{DiagnosticKind, Diagnostics, Dict, File, Location, Object, Origin, Ref};
+use pawdf_core::{
+    Diagnostic, DiagnosticKind, Diagnostics, Dict, File, Location, Object, Origin, Ref,
+};
 
 use crate::cmap::{CMap, Code, MAX_USECMAP_DEPTH, UseCMap};
 use crate::data::{BaseEncoding, encoding_names, predefined_cmap, std14_width};
@@ -27,11 +29,61 @@ pub(crate) const GLYPH_SCALE: Matrix = Matrix {
 };
 
 /// Parsed streams shared by the fonts of one document, keyed by stream object, so fonts
-/// that share a CMap or a font program parse it once.
+/// that share a CMap or a font program parse it once. Each entry keeps the diagnostics
+/// its parse produced, replayed on every hit.
 #[derive(Debug, Default)]
 pub(crate) struct Shared {
-    pub(crate) cmaps: Mutex<HashMap<Ref, Arc<CMap>>>,
-    pub(crate) programs: Mutex<HashMap<Ref, Option<Arc<truetype::TrueType>>>>,
+    pub(crate) cmaps: Cache<Arc<CMap>>,
+    pub(crate) programs: Cache<Option<Arc<truetype::TrueType>>>,
+}
+
+type Cache<T> = Mutex<HashMap<Ref, (T, Vec<Diagnostic>)>>;
+
+pub(crate) fn replay(diags: &mut Diagnostics, cached: &[Diagnostic]) {
+    for d in cached {
+        diags.push(d.kind, d.location);
+    }
+}
+
+/// An optional font entry converted by `f`. Absent or null (§7.3.7) gives `None` quietly;
+/// a value `f` rejects gives `None` with `BadFont`.
+pub(crate) fn entry<'a, T>(
+    value: Option<&'a Object>,
+    f: impl FnOnce(&'a Object) -> Option<T>,
+    at: Location,
+    diags: &mut Diagnostics,
+) -> Option<T> {
+    let v = value.filter(|o| **o != Object::Null)?;
+    let out = f(v);
+    if out.is_none() {
+        diags.push(DiagnosticKind::BadFont, at);
+    }
+    out
+}
+
+/// The `/ToUnicode` CMap, if `dict` has a usable one.
+pub(crate) fn to_unicode(
+    file: &File,
+    shared: &Shared,
+    dict: &Dict,
+    at: Location,
+    diags: &mut Diagnostics,
+) -> Option<Arc<CMap>> {
+    match dict.get(b"ToUnicode") {
+        None | Some(Object::Null) => None,
+        Some(Object::Ref(r)) => match file.resolve(*r) {
+            Object::Null => None,
+            Object::Stream(_) => embedded_cmap(file, shared, *r, diags),
+            _ => {
+                diags.push(DiagnosticKind::BadFont, at);
+                None
+            }
+        },
+        Some(_) => {
+            diags.push(DiagnosticKind::BadFont, at);
+            None
+        }
+    }
 }
 
 /// A loaded font: per-code widths and Unicode, plus the metrics glyph boxes need.
@@ -243,8 +295,13 @@ pub(crate) fn load_font(
             }
         },
         Some(Object::Dict(e)) => {
-            let base = e.get(b"BaseEncoding").map(|o| file.deref(o));
-            let mut names = match base.and_then(Object::as_name).and_then(named) {
+            let base = entry(
+                e.get(b"BaseEncoding").map(|o| file.deref(o)),
+                |o| o.as_name().and_then(named),
+                at,
+                diags,
+            );
+            let mut names = match base {
                 Some(b) => names_of(encoding_names(b)),
                 // §9.6.5.1 says an embedded program's built-in encoding is the base, but
                 // pdfium uses StandardEncoding for every nonsymbolic font; we follow pdfium.
@@ -253,12 +310,11 @@ pub(crate) fn load_font(
                 }
                 None => names_of(encoding_names(BaseEncoding::Standard)),
             };
-            if let Some(diffs) = e
-                .get(b"Differences")
-                .map(|o| file.deref(o))
-                .and_then(Object::as_array)
+            let diffs = e.get(b"Differences").map(|o| file.deref(o));
+            if let Some(diffs) = entry(diffs, Object::as_array, at, diags)
+                && !apply_differences(&mut names, diffs, file)
             {
-                apply_differences(&mut names, diffs, file);
+                diags.push(DiagnosticKind::BadFont, at);
             }
             names
         }
@@ -293,10 +349,7 @@ pub(crate) fn load_font(
         })
         .collect();
 
-    let to_unicode = match dict.get(b"ToUnicode") {
-        Some(Object::Ref(r)) => embedded_cmap(file, shared, *r, diags),
-        _ => None,
-    };
+    let to_unicode = to_unicode(file, shared, dict, at, diags);
     // §9.6.5.4: without /Encoding, a TrueType font's own cmap selects the glyphs.
     let builtin_cmap = match (kind, dict.get(b"Encoding")) {
         (FontKind::TrueType, None) => truetype::load(file, shared, desc, at, diags),
@@ -357,7 +410,8 @@ fn embedded_cmap_in(
     diags: &mut Diagnostics,
 ) -> Option<Arc<CMap>> {
     let lock = || shared.cmaps.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(m) = lock().get(&r) {
+    if let Some((m, d)) = lock().get(&r) {
+        replay(diags, d);
         return Some(Arc::clone(m));
     }
     let at = Location::Stream { obj: r, offset: 0 };
@@ -369,11 +423,16 @@ fn embedded_cmap_in(
     let Object::Stream(s) = file.resolve(r) else {
         return None;
     };
-    let decoded = s.decode(at, diags);
+    let mut own = Diagnostics::new();
+    let decoded = s.decode(at, &mut own);
     let base = match s.dict.get(b"UseCMap") {
         Some(Object::Ref(b)) => Some(UseCMap::Stream(*b)),
         Some(Object::Name(n)) => Some(UseCMap::Name(n.as_bytes())),
-        _ => None,
+        None | Some(Object::Null) => None,
+        Some(_) => {
+            own.push(DiagnosticKind::BadCMap, at);
+            None
+        }
     };
     let depth = visiting.len();
     visiting.push(r);
@@ -387,33 +446,45 @@ fn embedded_cmap_in(
         depth,
         base,
         &mut resolve,
-        diags,
+        &mut own,
     ));
     visiting.pop();
+    replay(diags, own.as_slice());
     // A map built with its parent cut depends on where the chain was entered, so caching
     // it would hand a truncated map to a font that points at it directly.
     if !*cut {
-        lock().insert(r, Arc::clone(&m));
+        lock().insert(r, (Arc::clone(&m), own.into_vec()));
     }
     Some(m)
 }
 
-fn apply_differences(names: &mut [Option<String>], diffs: &[Object], file: &File) {
+/// Applies `/Differences` (§9.6.5.1). `false` if an item was skipped: not an integer or
+/// a name, a negative code, a name before any code, or a code past 255.
+fn apply_differences(names: &mut [Option<String>], diffs: &[Object], file: &File) -> bool {
+    let mut ok = true;
     let mut code: Option<usize> = None;
     for item in diffs {
         match file.deref(item) {
-            Object::Int(n) => code = usize::try_from(*n).ok(),
-            Object::Name(n) => {
-                if let Some(c) = code {
-                    if let Some(slot) = names.get_mut(c) {
-                        *slot = Some(String::from_utf8_lossy(n.as_bytes()).into_owned());
+            Object::Int(n) => {
+                code = usize::try_from(*n).ok();
+                ok &= code.is_some();
+            }
+            Object::Name(n) => match code {
+                Some(c) => {
+                    match names.get_mut(c) {
+                        Some(slot) => {
+                            *slot = Some(String::from_utf8_lossy(n.as_bytes()).into_owned());
+                        }
+                        None => ok = false,
                     }
                     code = Some(c + 1);
                 }
-            }
-            _ => {}
+                None => ok = false,
+            },
+            _ => ok = false,
         }
     }
+    ok
 }
 
 /// Ascent and descent at size 1: descriptor values, then `/FontBBox`, then a default.
@@ -659,7 +730,7 @@ mod tests {
         let (a, d) = load_with(&f, &shared);
         assert_eq!(d, [pawdf_core::DiagnosticKind::BadCMap]);
         let (b, d) = load_with(&f, &shared);
-        assert!(d.is_empty(), "{d:?}");
+        assert_eq!(d, [pawdf_core::DiagnosticKind::BadCMap]);
         assert_eq!(text(&a, 66), text(&b, 66));
         assert_eq!(shared.cmaps.lock().unwrap().len(), 1);
     }
@@ -815,6 +886,54 @@ mod tests {
             let (f, d) = load(&[(5, body.as_bytes())]);
             assert_eq!(d, [pawdf_core::DiagnosticKind::BadFont], "{enc}");
             assert_eq!(text(&f, b'a').as_deref(), Some("a"));
+        }
+    }
+
+    #[test]
+    fn bad_encoding_dictionary_entries_are_diagnosed() {
+        for enc in [
+            "<< /BaseEncoding /Bogus >>",
+            "<< /Differences 42 >>",
+            "<< /Differences [/a 65 /A (x) -1 /B 300 /C] >>",
+        ] {
+            let body =
+                format!("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding {enc} >>");
+            let (_, d) = load(&[(5, body.as_bytes())]);
+            assert_eq!(d, [pawdf_core::DiagnosticKind::BadFont], "{enc}");
+        }
+        let (f, d) = load(&[(
+            5,
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding << /BaseEncoding null /Differences 9 0 R >> >>",
+        )]);
+        assert!(d.is_empty(), "{d:?}");
+        assert_eq!(text(&f, b'a').as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn bad_tounicode_and_usecmap_are_diagnosed() {
+        use pawdf_core::DiagnosticKind::{BadCMap, BadFont};
+        let font = |tu: &str| {
+            format!("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /ToUnicode {tu} >>")
+        };
+        for tu in ["/Identity-H", "6 0 R"] {
+            let (_, d) = load(&[(5, font(tu).as_bytes()), (6, b"42")]);
+            assert_eq!(d, [BadFont], "{tu}");
+        }
+        let (_, d) = load(&[(5, font("9 0 R").as_bytes())]);
+        assert!(d.is_empty(), "{d:?}");
+        let cmap = stream("/UseCMap 42", b"1 beginbfchar <41> <005A> endbfchar");
+        let (f, d) = load(&[(5, font("6 0 R").as_bytes()), (6, &cmap)]);
+        assert_eq!(d, [BadCMap]);
+        assert_eq!(text(&f, 65).as_deref(), Some("Z"));
+    }
+
+    #[test]
+    fn font_file2_that_is_not_a_stream_is_diagnosed() {
+        let font = b"<< /Type /Font /Subtype /TrueType /BaseFont /Foo /FontDescriptor 6 0 R >>";
+        for (ff, want) in [("42", 1), ("7 0 R", 1), ("9 0 R", 0)] {
+            let desc = format!("<< /Type /FontDescriptor /Flags 32 /FontFile2 {ff} >>");
+            let (_, d) = load(&[(5, font), (6, desc.as_bytes()), (7, b"42")]);
+            assert_eq!(d, vec![pawdf_core::DiagnosticKind::BadFont; want], "{ff}");
         }
     }
 

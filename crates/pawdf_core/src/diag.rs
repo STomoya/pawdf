@@ -49,11 +49,12 @@ pub enum DiagnosticKind {
     UnbalancedMarkedContent,
     /// A named font, XObject, color space, or ExtGState was not in the resources.
     MissingResource,
-    /// A font dictionary was unusable; fallback metrics were used.
+    /// A font dictionary, or an entry of it, its descriptor or its CIDFont, was unusable; a
+    /// fallback or the default was used.
     BadFont,
     /// A character code has no Unicode mapping.
     UnmappedGlyph,
-    /// A malformed CMap entry was skipped.
+    /// A malformed CMap entry, or a bad `/UseCMap` value, was skipped.
     BadCMap,
     /// An image had bad dimensions or short data, a Pattern colour space, or an inline image had
     /// no `EI`.
