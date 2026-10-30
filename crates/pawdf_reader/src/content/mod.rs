@@ -99,14 +99,18 @@ fn content_streams(file: &File, page: Ref, diags: &mut Diagnostics) -> Vec<Ref> 
     let Some(dict) = file.resolve(page).as_dict() else {
         return Vec::new();
     };
-    let bad = || diags.push(DiagnosticKind::BadPageTree, Location::Object(page));
+    let mut bad = || diags.push(DiagnosticKind::BadPageTree, Location::Object(page));
     match dict.get(b"Contents") {
         Some(Object::Ref(r)) => match file.resolve(*r) {
             Object::Array(a) => refs(a, bad),
             _ => vec![*r],
         },
         Some(Object::Array(a)) => refs(a, bad),
-        _ => Vec::new(),
+        None | Some(Object::Null) => Vec::new(),
+        Some(_) => {
+            bad();
+            Vec::new()
+        }
     }
 }
 

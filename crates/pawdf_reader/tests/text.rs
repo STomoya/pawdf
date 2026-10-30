@@ -1,7 +1,7 @@
 mod common;
 
-use common::{one_page, stream};
-use pawdf_core::DiagnosticKind;
+use common::{CATALOG, build_pdf, one_page, stream};
+use pawdf_core::{DiagnosticKind, Location, Ref};
 use pawdf_reader::{Color, Document, FontKind, Glyph, Matrix, PageContent, Rect, RenderMode};
 
 const HELV: &[u8] = b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
@@ -91,6 +91,49 @@ fn tj_adjustment_moves_without_glyph() {
     let c = text(b"BT /F1 10 Tf [(a) -1000 (b)] TJ ET");
     assert_eq!(c.glyphs.len(), 2);
     at(&c.glyphs[1], 15.56, 0.);
+}
+
+#[test]
+fn tj_non_number_element_is_diagnosed() {
+    let c = text(b"BT /F1 10 Tf [(a) /X (b)] TJ ET");
+    assert_eq!(c.glyphs.len(), 2);
+    assert_eq!(kinds(&c), [DiagnosticKind::BadOperands]);
+}
+
+#[test]
+fn cached_font_diagnostics_point_at_the_font() {
+    let s4 = stream("", b"BT /F1 10 Tf (a) Tj ET");
+    let s6 = stream("", b"q Q BT /F1 10 Tf (a) Tj ET");
+    let res = "/Resources << /Font << /F1 5 0 R >> >>";
+    let p3 = format!("<< /Type /Page /MediaBox [0 0 1 1] /Contents 4 0 R {res} >>");
+    let p7 = format!("<< /Type /Page /MediaBox [0 0 1 1] /Contents 6 0 R {res} >>");
+    let (pdf, _) = build_pdf(
+        &[
+            (1, CATALOG),
+            (2, b"<< /Type /Pages /Kids [3 0 R 7 0 R] >>"),
+            (3, p3.as_bytes()),
+            (4, &s4),
+            (5, b"<< /Type /Font /BaseFont /Helvetica >>"),
+            (6, &s6),
+            (7, p7.as_bytes()),
+        ],
+        "/Root 1 0 R",
+    );
+    let doc = Document::from_bytes(pdf).unwrap();
+    let font = Location::Object(Ref {
+        num: 5,
+        generation: 0,
+    });
+    for i in 0..2 {
+        let c = doc.page(i).unwrap().content();
+        let bad: Vec<_> = c
+            .diagnostics
+            .iter()
+            .filter(|d| d.kind == DiagnosticKind::BadFont)
+            .map(|d| d.location)
+            .collect();
+        assert_eq!(bad, [font], "page {i}");
+    }
 }
 
 #[test]

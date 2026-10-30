@@ -95,8 +95,11 @@ pub(crate) fn read_image(
     let resolved = match (image_mask, dict.get(b"ColorSpace")) {
         (false, Some(cs)) => {
             let s = space(cs, diags);
-            if s.is_none() {
-                diags.push(DiagnosticKind::MissingResource, at);
+            match s {
+                None => diags.push(DiagnosticKind::MissingResource, at),
+                // §8.9.5.1: an image's colour space may be any type except Pattern.
+                Some(Space::Pattern) => diags.push(DiagnosticKind::BadImage, at),
+                Some(_) => {}
             }
             s
         }
@@ -111,13 +114,15 @@ pub(crate) fn read_image(
         .and_then(|v| v.checked_mul(u64::from(bpc)))
         .map(|bits| bits.div_ceil(8))
         .and_then(|row| row.checked_mul(u64::from(height)));
-    let Some(expected) = expected.filter(|&n| n <= MAX_DECODED_LEN as u64) else {
-        diags.push(DiagnosticKind::BadImage, at);
-        return None;
-    };
     let decoded = stream.decode(at, diags);
     let data = match decoded.codec {
+        // Only raw samples are bounded by the dimensions; a codec's data is sized by its own
+        // stream.
         None => {
+            let Some(expected) = expected.filter(|&n| n <= MAX_DECODED_LEN as u64) else {
+                diags.push(DiagnosticKind::BadImage, at);
+                return None;
+            };
             if (decoded.data.len() as u64) < expected {
                 diags.push(DiagnosticKind::BadImage, at);
             }

@@ -247,6 +247,25 @@ fn huge_dimensions_do_not_allocate() {
 }
 
 #[test]
+fn huge_pass_through_image_is_kept() {
+    let c = with_image(
+        "/Width 100000 /Height 100000 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode",
+        b"\xff\xd8junk",
+    );
+    assert_eq!(c.images[0].data, ImageData::Jpeg(b"\xff\xd8junk".to_vec()));
+    assert!(c.diagnostics.is_empty());
+}
+
+#[test]
+fn pattern_color_space_is_diagnosed() {
+    let c = with_image(
+        "/Width 1 /Height 1 /ColorSpace /Pattern /BitsPerComponent 8",
+        b"x",
+    );
+    assert_eq!(kinds(&c), [DiagnosticKind::BadImage]);
+}
+
+#[test]
 fn missing_xobject_is_diagnosed() {
     let c = run(b"/Nope Do", "<< >>", &[]);
     assert_eq!(kinds(&c), [DiagnosticKind::MissingResource]);

@@ -1,7 +1,7 @@
 mod common;
 
 use common::{CATALOG, build_pdf};
-use pawdf_core::DiagnosticKind;
+use pawdf_core::{DiagnosticKind, Location, Ref};
 use pawdf_reader::{Document, ErrorKind, Method, Page, Point, Rect, Rotation};
 
 fn open(objects: &[(u32, &[u8])]) -> Document {
@@ -42,6 +42,45 @@ fn inherited_attributes() {
     assert_eq!(p.crop_box(), p.media_box());
     assert_eq!(p.rotate(), Rotation::R90);
     assert!(doc.diagnostics().is_empty());
+}
+
+#[test]
+fn null_and_dangling_attributes_keep_inherited_values() {
+    let doc = open(&[
+        (1, CATALOG),
+        (
+            2,
+            b"<< /Type /Pages /Kids [3 0 R] /MediaBox [0 0 200 100] /Rotate 90 /Resources << /Font << >> >> >>",
+        ),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox null /Rotate 9 0 R /Resources null >>",
+        ),
+    ]);
+    let p = doc.page(0).unwrap();
+    assert_eq!(p.media_box(), rect(0., 0., 200., 100.));
+    assert_eq!(p.rotate(), Rotation::R90);
+    assert_eq!(count(&doc, DiagnosticKind::BadPageTree), 0);
+}
+
+#[test]
+fn page_tree_diagnostics_point_at_the_node() {
+    let doc = open(&[
+        (1, CATALOG),
+        (2, b"<< /Type /Pages /Kids [3 0 R 5] >>"),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] /Rotate 45 >>",
+        ),
+    ]);
+    let at = |num| Location::Object(Ref { num, generation: 0 });
+    let locs: Vec<_> = doc
+        .diagnostics()
+        .iter()
+        .filter(|d| d.kind == DiagnosticKind::BadPageTree)
+        .map(|d| d.location)
+        .collect();
+    assert_eq!(locs, [at(2), at(3)]);
 }
 
 #[test]

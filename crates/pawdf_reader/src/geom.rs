@@ -26,32 +26,53 @@ impl Rect {
     /// The rectangle spanned by two corners, in any order.
     pub fn from_corners(x0: f64, y0: f64, x1: f64, y1: f64) -> Rect {
         Rect {
-            x0: x0.min(x1),
-            y0: y0.min(y1),
-            x1: x0.max(x1),
-            y1: y0.max(y1),
+            x0: min(x0, x1),
+            y0: min(y0, y1),
+            x1: max(x0, x1),
+            y1: max(y0, y1),
         }
     }
 
     /// The overlap; a zero-area rectangle when they do not overlap.
     pub fn intersect(&self, other: &Rect) -> Rect {
-        let x0 = self.x0.max(other.x0);
-        let y0 = self.y0.max(other.y0);
+        let x0 = max(self.x0, other.x0);
+        let y0 = max(self.y0, other.y0);
         Rect {
             x0,
             y0,
-            x1: self.x1.min(other.x1).max(x0),
-            y1: self.y1.min(other.y1).max(y0),
+            x1: max(min(self.x1, other.x1), x0),
+            y1: max(min(self.y1, other.y1), y0),
         }
     }
 
     pub(crate) fn union(&self, other: &Rect) -> Rect {
         Rect {
-            x0: self.x0.min(other.x0),
-            y0: self.y0.min(other.y0),
-            x1: self.x1.max(other.x1),
-            y1: self.y1.max(other.y1),
+            x0: min(self.x0, other.x0),
+            y0: min(self.y0, other.y0),
+            x1: max(self.x1, other.x1),
+            y1: max(self.y1, other.y1),
         }
+    }
+}
+
+// `f64::min`/`max` drop NaN, which would turn a NaN corner into a finite, wrong rect.
+fn min(a: f64, b: f64) -> f64 {
+    if a.is_nan() {
+        a
+    } else if b.is_nan() {
+        b
+    } else {
+        a.min(b)
+    }
+}
+
+fn max(a: f64, b: f64) -> f64 {
+    if a.is_nan() {
+        a
+    } else if b.is_nan() {
+        b
+    } else {
+        a.max(b)
     }
 }
 
@@ -110,10 +131,10 @@ impl Matrix {
         let (mut out_x0, mut out_y0) = (f64::INFINITY, f64::INFINITY);
         let (mut out_x1, mut out_y1) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
         for p in pts {
-            out_x0 = out_x0.min(p.x);
-            out_y0 = out_y0.min(p.y);
-            out_x1 = out_x1.max(p.x);
-            out_y1 = out_y1.max(p.y);
+            out_x0 = min(out_x0, p.x);
+            out_y0 = min(out_y0, p.y);
+            out_x1 = max(out_x1, p.x);
+            out_y1 = max(out_y1, p.y);
         }
         Rect {
             x0: out_x0,
@@ -194,5 +215,19 @@ mod tests {
         };
         let r = rot.transform_rect(Rect::from_corners(0., 0., 2., 1.));
         assert_eq!(r, Rect::from_corners(-1., 0., 0., 2.));
+    }
+
+    #[test]
+    fn nan_corner_propagates() {
+        let nan = Matrix {
+            a: f64::NAN,
+            ..Matrix::IDENTITY
+        };
+        let r = nan.transform_rect(Rect::from_corners(0., 0., 1., 1.));
+        assert!(r.x0.is_nan() && r.x1.is_nan());
+        let unit = Rect::from_corners(0., 0., 1., 1.);
+        assert!(unit.union(&r).x0.is_nan());
+        assert!(unit.intersect(&r).x1.is_nan());
+        assert!(Rect::from_corners(f64::NAN, 0., 1., 1.).x0.is_nan());
     }
 }
