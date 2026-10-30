@@ -61,7 +61,7 @@ pub(crate) fn authenticate(
             }
         };
         if let Some(key) = key {
-            if modern && !h.perms.is_empty() && !perms_ok(h, &key) {
+            if modern && !perms_ok(h, &key) {
                 diags.push(DiagnosticKind::BadEncryption, Location::File(0));
             }
             if password.is_some() && i == forms.len() * 2 {
@@ -449,6 +449,13 @@ mod tests {
         let mut h = handler(k);
         h.encrypt_metadata = !h.encrypt_metadata;
         assert_eq!(auth(&h, k, Some("u")).1, 1);
+
+        for label in ["R5", "R6"] {
+            let k = kat(label);
+            let mut h = handler(k);
+            h.perms.clear();
+            assert_eq!(auth(&h, k, Some("u")).1, 1, "{label}");
+        }
     }
 
     #[test]

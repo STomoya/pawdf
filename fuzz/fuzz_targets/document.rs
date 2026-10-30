@@ -10,7 +10,7 @@ use pawdf_reader::Document;
 const MAX_PAGES: usize = 64;
 
 fuzz_target!(|data: &[u8]| {
-    // Inputs that are not PDFs exercise the ToUnicode parser instead (until M3's `cmap` target).
+    // Inputs that are not PDFs exercise the ToUnicode parser instead.
     let pdf = if data.starts_with(b"%PDF") {
         data.to_vec()
     } else {
