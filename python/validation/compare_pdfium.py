@@ -6,9 +6,11 @@ Per page, it compares:
 
 - Glyphs. pawdf glyphs are expanded to one (char, origin) pair per character of their
   text. pdfium characters come from its text page, skipping generated ones
-  (FPDFText_IsGenerated). The two strings are aligned with difflib; unaligned runs are
-  Unicode mismatches, and aligned characters whose origins differ by more than 0.5 pt in
-  x or y are position mismatches.
+  (FPDFText_IsGenerated), with UTF-16 surrogate pairs joined. The two strings are aligned
+  with difflib, then characters left over, or aligned with a different origin, are paired
+  by character and origin in any order. A character found on both sides only at origins
+  more than 0.5 pt apart in x or y is a position mismatch; one found on a single side is a
+  Unicode mismatch.
 - Paths. pdfium page objects are walked in order, descending into forms. FPDFPath_CountSegments
   counts points, so a pawdf path counts MoveTo and LineTo as 1, CurveTo as 3, and Close as
   1 only when the current point differs from the subpath start (pdfium's Handle_ClosePath
@@ -26,13 +28,14 @@ Clips and marks are compared only when the path and image sequences already matc
 Documented pdfium policies the comparison accounts for (core/fpdftext/cpdf_textpage.cpp):
 
 - CloseTempLine deletes a space that directly follows another space in a line, so runs
-  of real spaces in pawdf's output are collapsed before comparing.
+  of real spaces in pawdf's output are collapsed before comparing. pdfium's lines can
+  differ from stream order, so it may keep a space collapsed here; a pdfium space at the
+  origin of a collapsed one is not reported.
 - A hyphen that ends a line is reported as U+0002 (ProcessInsertObject's kHyphen case);
   it is compared as '-'.
 - A code without Unicode is reported as the code itself (CharType::kNotUnicode), where
   pawdf reports U+FFFD; such a glyph is compared as chr(code), so it matches only that.
-- ProcessTextObject reorders text objects on one line by x. Characters that difflib
-  cannot align are therefore re-paired by character and origin before being reported.
+- ProcessTextObject reorders text objects, so the comparison above ignores character order.
 - ProcessTextObject skips a text object whose bounds are narrower than kSizeEpsilon (0.01),
   such as one showing a lone space or a bitmap emoji, whose glyphs have no outline. Such
   objects are found through FPDFPageObj_GetBounds, and pawdf characters at their origins
@@ -78,6 +81,8 @@ SIZE_EPSILON = 0.01
 HYPHEN_MARK = 0x2
 UNMAPPED = '\ufffd'
 LIGATURES = range(0xFB00, 0xFB07)
+HIGH_SURROGATES = range(0xD800, 0xDC00)
+LOW_SURROGATES = range(0xDC00, 0xE000)
 ASCII_LIMIT = 0x80
 
 
@@ -120,15 +125,16 @@ def actual_text(text: str) -> str:
     return out
 
 
-def pawdf_chars(content: pawdf.PageContent) -> list[tuple[str, float, float]]:
+def pawdf_chars(content: pawdf.PageContent) -> tuple[list[tuple[str, float, float]], list[tuple[float, float]]]:
     """One (char, x, y) per character of each glyph's text, with space runs collapsed and
-    /ActualText substituted as pdfium does.
+    /ActualText substituted as pdfium does, and the origins of the spaces collapsed.
     """
     replaced: dict[int, pawdf.MarkedContent] = {}
     for m in content.marked_contents:
         if m.actual_text and len(m.glyphs):
             replaced[m.glyphs.start] = m
     out: list[tuple[str, float, float]] = []
+    collapsed: list[tuple[float, float]] = []
     skip_to = 0
     for i, g in enumerate(content.glyphs):
         if i < skip_to:
@@ -140,8 +146,25 @@ def pawdf_chars(content: pawdf.PageContent) -> list[tuple[str, float, float]]:
         text = ''.join(unicodedata.normalize('NFKD', c) if ord(c) in LIGATURES else c for c in text)
         for ch in text:
             if ch == ' ' and out and out[-1][0] == ' ':
+                collapsed.append(g.origin)
                 continue
             out.append((ch, *g.origin))
+    return out, collapsed
+
+
+def decode_chars(chars: list[tuple[int, float, float]]) -> list[tuple[str, float, float]]:
+    """Turn pdfium's UTF-16 code units into characters, joining surrogate pairs."""
+    out = []
+    i = 0
+    while i < len(chars):
+        code, x, y = chars[i]
+        i += 1
+        if HIGH_SURROGATES.start <= code < HIGH_SURROGATES.stop and i < len(chars):
+            low = chars[i][0]
+            if LOW_SURROGATES.start <= low < LOW_SURROGATES.stop:
+                code = 0x10000 + ((code - HIGH_SURROGATES.start) << 10) + (low - LOW_SURROGATES.start)
+                i += 1
+        out.append(('-' if code == HYPHEN_MARK else chr(code), x, y))
     return out
 
 
@@ -156,10 +179,10 @@ def pdfium_chars(page: pdfium.PdfPage) -> list[tuple[str, float, float]]:
                 continue
             code = pdfium_c.FPDFText_GetUnicode(textpage.raw, i)
             pdfium_c.FPDFText_GetCharOrigin(textpage.raw, i, ctypes.byref(x), ctypes.byref(y))
-            out.append(('-' if code == HYPHEN_MARK else chr(code), x.value, y.value))
+            out.append((code, x.value, y.value))
     finally:
         textpage.close()
-    return out
+    return decode_chars(out)
 
 
 def clip_bound(obj: pdfium.PdfObject) -> tuple[float, float, float, float] | None:
@@ -256,7 +279,13 @@ def near(a: tuple[str, float, float], b: tuple[str, float, float]) -> bool:
     return abs(a[1] - b[1]) <= TOLERANCE and abs(a[2] - b[2]) <= TOLERANCE
 
 
-def compare_glyphs(report: PageReport, ours: list, theirs: list, skipped: list[tuple[float, float]]) -> None:
+def compare_glyphs(
+    report: PageReport,
+    ours: list,
+    theirs: list,
+    skipped: list[tuple[float, float]],
+    collapsed: list[tuple[float, float]],
+) -> None:
     """Align the two character sequences and record Unicode and position mismatches."""
     a = ''.join(c for c, _, _ in ours)
     b = ''.join(c for c, _, _ in theirs)
@@ -267,23 +296,35 @@ def compare_glyphs(report: PageReport, ours: list, theirs: list, skipped: list[t
             left.extend(ours[i1:i2])
             right.extend(theirs[j1:j2])
             continue
-        for k in range(i2 - i1):
-            ch, x0, y0 = ours[i1 + k]
-            _, x1, y1 = theirs[j1 + k]
-            if abs(x0 - x1) > TOLERANCE or abs(y0 - y1) > TOLERANCE:
-                report.position.append(f'{ch!r} ours=({x0:.2f}, {y0:.2f}) pdfium=({x1:.2f}, {y1:.2f})')
+        # Repeated text that pdfium reordered aligns with the wrong instance, so a pair that
+        # disagrees on origin only joins the pools below, rather than counting as a mismatch.
+        for o, t in zip(ours[i1:i2], theirs[j1:j2], strict=True):
+            if not near(o, t):
+                left.append(o)
+                right.append(t)
+    pending: dict[str, list[tuple[str, float, float]]] = {}
+    for t in right:
+        pending.setdefault(t[0], []).append(t)
+    if ' ' in pending:
+        pending[' '] = [t for t in pending[' '] if not any(near(t, ('', x, y)) for x, y in collapsed)]
+    unpaired = []
     for o in left:
-        match = next(
-            (t for t in right if t[0] == o[0] and near(o, t)),
-            None,
-        )
-        if match is None and any(near(o, ('', x, y)) for x, y in skipped):
-            continue
-        if match is None:
-            report.unicode.append(f'ours {o[0]!r} at ({o[1]:.2f}, {o[2]:.2f}) not in pdfium')
+        candidates = pending.get(o[0], [])
+        match = next((t for t in candidates if near(o, t)), None)
+        if match is not None:
+            candidates.remove(match)
+        elif not any(near(o, ('', x, y)) for x, y in skipped):
+            unpaired.append(o)
+    for ch, x0, y0 in unpaired:
+        candidates = pending.get(ch)
+        if candidates:
+            _, x1, y1 = candidates.pop(0)
+            report.position.append(f'{ch!r} ours=({x0:.2f}, {y0:.2f}) pdfium=({x1:.2f}, {y1:.2f})')
         else:
-            right.remove(match)
-    report.unicode.extend(f'pdfium {t[0]!r} at ({t[1]:.2f}, {t[2]:.2f}) not in ours' for t in right)
+            report.unicode.append(f'ours {ch!r} at ({x0:.2f}, {y0:.2f}) not in pdfium')
+    report.unicode.extend(
+        f'pdfium {t[0]!r} at ({t[1]:.2f}, {t[2]:.2f}) not in ours' for ts in pending.values() for t in ts
+    )
 
 
 def bounds(obj: pawdf.Path | pawdf.Image) -> tuple[float, float, float, float]:
@@ -335,7 +376,8 @@ def compare_page(index: int, ours: pawdf.Page, theirs: pdfium.PdfPage) -> PageRe
     content = ours.content()
     report = PageReport(index, glyphs=len(content.glyphs))
     segments, sizes, skipped, pdfium_paths, pdfium_images = pdfium_objects(theirs)
-    compare_glyphs(report, pawdf_chars(content), pdfium_chars(theirs), skipped)
+    chars, collapsed = pawdf_chars(content)
+    compare_glyphs(report, chars, pdfium_chars(theirs), skipped, collapsed)
     counts = [pdfium_point_count(p) for p in content.paths]
     if counts != segments:
         matcher = difflib.SequenceMatcher(None, counts, segments, autojunk=False)
