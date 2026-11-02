@@ -199,7 +199,7 @@ pub(crate) fn load_type0(
         }
         _ => None,
     };
-    let (ascent, descent) = metrics(file, FontKind::Type0, &GLYPH_SCALE, dict, desc);
+    let (ascent, descent) = metrics(file, FontKind::Type0, &GLYPH_SCALE, dict, desc, at, diags);
     Font {
         info: FontInfo {
             base_font: get(b"BaseFont")

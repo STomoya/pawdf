@@ -647,6 +647,11 @@ impl MarkedContent {
     }
 
     #[getter]
+    fn stream(&self) -> Option<(u32, u16)> {
+        self.0.stream.map(|r| (r.num, r.generation))
+    }
+
+    #[getter]
     fn actual_text(&self) -> Option<&str> {
         self.0.actual_text.as_deref()
     }
