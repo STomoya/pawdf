@@ -373,7 +373,7 @@ pub(crate) fn load_font(
         })
         .collect();
 
-    let (ascent, descent) = metrics(file, kind, &font_matrix, dict, desc);
+    let (ascent, descent) = metrics(file, kind, &font_matrix, dict, desc, at, diags);
     Font {
         info: FontInfo {
             base_font,
@@ -494,6 +494,8 @@ pub(crate) fn metrics(
     fm: &Matrix,
     dict: &Dict,
     desc: Option<&Dict>,
+    at: Location,
+    diags: &mut Diagnostics,
 ) -> (f64, f64) {
     let num = |d: Option<&Dict>, k: &[u8]| {
         d.and_then(|d| d.get(k))
@@ -505,7 +507,11 @@ pub(crate) fn metrics(
         && let (Some(a), Some(d)) = (a, d)
         && (a != 0. || d != 0.)
     {
-        return (a / 1000., d / 1000.);
+        // §9.8.2: /Descent is a depth below the baseline, so a positive value is a sign error.
+        if d > 0. {
+            diags.push(DiagnosticKind::BadFont, at);
+        }
+        return (a / 1000., -d.abs() / 1000.);
     }
     let bbox = if kind == FontKind::Type3 {
         dict.get(b"FontBBox")
@@ -869,6 +875,53 @@ mod tests {
         assert_eq!((f.ascent, f.descent), (0.7, -0.3));
         let f = desc(b"<< >>");
         assert_eq!((f.ascent, f.descent), (0.8, -0.2));
+    }
+
+    #[test]
+    fn positive_descent_is_negated_and_reported() {
+        let (f, d) = load(&[
+            (
+                5,
+                b"<< /Type /Font /Subtype /Type1 /BaseFont /Foo /FontDescriptor 6 0 R >>",
+            ),
+            (6, b"<< /Ascent 800 /Descent 200 >>"),
+        ]);
+        assert_eq!((f.ascent, f.descent), (0.8, -0.2));
+        assert_eq!(d, [pawdf_core::DiagnosticKind::BadFont]);
+    }
+
+    #[test]
+    fn positive_descent_on_a_cid_font_is_negated_and_reported() {
+        let (f, d) = load(&[
+            (
+                5,
+                b"<< /Type /Font /Subtype /Type0 /BaseFont /Foo /Encoding /Identity-H /DescendantFonts [6 0 R] >>",
+            ),
+            (
+                6,
+                b"<< /Type /Font /Subtype /CIDFontType2 /BaseFont /Foo /FontDescriptor 7 0 R >>",
+            ),
+            (7, b"<< /Ascent 800 /Descent 200 >>"),
+        ]);
+        assert_eq!((f.ascent, f.descent), (0.8, -0.2));
+        assert!(d.contains(&pawdf_core::DiagnosticKind::BadFont));
+    }
+
+    #[test]
+    fn zero_and_negative_descent_are_not_reported() {
+        for d in [
+            b"<< /Ascent 800 /Descent 0 >>".as_slice(),
+            b"<< /Ascent 800 /Descent -200 >>",
+        ] {
+            let (_, diags) = load(&[
+                (
+                    5,
+                    b"<< /Type /Font /Subtype /Type1 /BaseFont /Foo /FontDescriptor 6 0 R >>",
+                ),
+                (6, d),
+            ]);
+            assert!(diags.is_empty(), "{diags:?}");
+        }
     }
 
     #[test]
