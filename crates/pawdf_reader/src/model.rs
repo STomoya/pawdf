@@ -35,6 +35,10 @@ pub struct MarkedContent {
     pub tag: String,
     /// `/MCID` (§14.7.5).
     pub mcid: Option<u32>,
+    /// The form XObject whose content stream holds the sequence; `None` in the page's own
+    /// content. MCIDs are numbered per stream (§14.7.5.2), so `(stream, mcid)` identifies a
+    /// sequence, and matches [`MarkedContentRef::stream`] and [`MarkedContentRef::mcid`].
+    pub stream: Option<Ref>,
     /// `/ActualText` (§14.9.4). `None` on sequences nested in one that has it, so
     /// replacement texts never overlap, and once the marked-content text limit is spent (see
     /// [`MarkedContent::tag`]).
@@ -548,7 +552,8 @@ pub struct MarkedContentRef {
     /// 0-based page index the content is on: its own `/Pg`, else its element's, else (reported)
     /// the nearest ancestor's.
     pub page: Option<usize>,
-    /// Matches [`MarkedContent::mcid`] on that page, unless [`MarkedContentRef::stream`] is set.
+    /// Matches [`MarkedContent::mcid`] on that page, among sequences with the same
+    /// [`MarkedContent::stream`].
     pub mcid: u32,
     /// `/Stm`: the content stream (e.g. a form XObject) holding the sequence, when not the
     /// page's. Its MCIDs are numbered separately from the page's.

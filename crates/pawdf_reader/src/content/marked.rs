@@ -151,6 +151,7 @@ impl Interp<'_> {
         let mut span = MarkedContent {
             tag: String::new(),
             mcid: None,
+            stream: self.form_stack.last().copied(),
             actual_text: None,
             artifact_type: None,
             artifact_subtype: None,

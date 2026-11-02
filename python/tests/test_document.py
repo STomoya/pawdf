@@ -202,6 +202,17 @@ def test_marked_contents() -> None:
     assert 'marked_contents=1' in repr(c)
 
 
+def test_marked_content_stream() -> None:
+    """A sequence in a form XObject names that form; one in the page's content does not."""
+    body = b'/Span << /MCID 0 >> BDC EMC'
+    form = (
+        b'<< /Type /XObject /Subtype /Form /BBox [0 0 9 9] /Length %d >>\nstream\n' % len(body) + body + b'\nendstream'
+    )
+    res = b'<< /XObject << /Fm0 6 0 R >> >>'
+    c = pawdf.Document(_pdf(body + b' /Fm0 Do', res, extra=(form,)))[0].content()
+    assert [(m.mcid, m.stream) for m in c.marked_contents] == [(0, None), (0, (6, 0))]
+
+
 def test_unbalanced_marked_content() -> None:
     """A stray EMC is reported."""
     c = pawdf.Document(_pdf(b'EMC'))[0].content()

@@ -1,7 +1,7 @@
 mod common;
 
 use common::{CATALOG, build_pdf, one_page, stream};
-use pawdf_core::DiagnosticKind;
+use pawdf_core::{DiagnosticKind, Ref};
 use pawdf_reader::{Document, MarkedContent, PageContent};
 
 const HELV: &[u8] = b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
@@ -31,6 +31,7 @@ fn span(tag: &str, glyphs: std::ops::Range<usize>) -> MarkedContent {
     MarkedContent {
         tag: tag.into(),
         mcid: None,
+        stream: None,
         actual_text: None,
         artifact_type: None,
         artifact_subtype: None,
@@ -198,7 +199,14 @@ fn form_has_own_stack() {
     let f = form(&format!("EMC /F BMC {}", t("a")));
     let ops = format!("/S BMC /Fm0 Do {} EMC", t("c"));
     let c = run(ops.as_bytes(), FORM_RES, &[(6, &f)]);
-    assert_eq!(c.marked_contents, [span("S", 0..2), span("F", 0..1)]);
+    let f = MarkedContent {
+        stream: Some(Ref {
+            num: 6,
+            generation: 0,
+        }),
+        ..span("F", 0..1)
+    };
+    assert_eq!(c.marked_contents, [span("S", 0..2), f]);
     assert_eq!(
         kinds(&c),
         [
@@ -206,6 +214,26 @@ fn form_has_own_stack() {
             DiagnosticKind::UnbalancedMarkedContent
         ]
     );
+}
+
+#[test]
+fn same_mcid_in_page_and_form_differ_by_stream() {
+    let f = form(&format!("/Span << /MCID 0 >> BDC {} EMC", t("f")));
+    let ops = format!("/Span << /MCID 0 >> BDC {} EMC /Fm0 Do", t("p"));
+    let c = run(ops.as_bytes(), FORM_RES, &[(6, &f)]);
+    let in_page = MarkedContent {
+        mcid: Some(0),
+        ..span("Span", 0..1)
+    };
+    let in_form = MarkedContent {
+        mcid: Some(0),
+        stream: Some(Ref {
+            num: 6,
+            generation: 0,
+        }),
+        ..span("Span", 1..2)
+    };
+    assert_eq!(c.marked_contents, [in_page, in_form]);
 }
 
 #[test]

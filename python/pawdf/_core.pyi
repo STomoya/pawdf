@@ -325,7 +325,10 @@ class MarkedContent:
         """The tag of ``BMC``/``BDC``, for example ``'Span'``, ``'P'``, ``'Artifact'``."""
     @property
     def mcid(self) -> int | None:
-        """``/MCID``, linking the content to the structure tree."""
+        """``/MCID``, linking the content to the structure tree. Numbered per content stream."""
+    @property
+    def stream(self) -> tuple[int, int] | None:
+        """The form XObject holding the sequence as (object number, generation); None in the page's own content."""
     @property
     def actual_text(self) -> str | None:
         """``/ActualText``; None on sequences nested in one that has it.
@@ -479,7 +482,7 @@ class MarkedContentRef:
         """0-based page index the content is on."""
     @property
     def mcid(self) -> int:
-        """Matches ``MarkedContent.mcid`` on that page, unless ``stream`` is set."""
+        """Matches ``MarkedContent.mcid`` on that page, among sequences with the same ``stream``."""
     @property
     def stream(self) -> tuple[int, int] | None:
         """``/Stm`` as (object number, generation): the content stream holding the sequence, when not the page's."""
