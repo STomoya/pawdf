@@ -45,7 +45,8 @@ build = [
 # and pdfminer.six the reference layout for python/validation/compare_pdfminer.py.
 # Validation only; never a runtime dependency.
 validation = [
-    "pdfminer.six>=20260107",
+    # Pinned: compare_pdfminer.py patches pdfminer.layout.id; recheck that before upgrading.
+    "pdfminer.six==20260107",
     "pypdfium2>=5.14.0",
 ]
 

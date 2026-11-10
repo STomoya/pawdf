@@ -11,14 +11,15 @@ boxes are dropped, boxes are mapped into pdfminer's page space with its own
 ``LTChar`` added straight to an ``LTPage``. pdfminer breaks ties between equally distant boxes
 with ``id()``, a memory address; ``pdfminer.layout.id`` is patched to number objects in the
 order it first sees them, which is what pawdf does. This patches a pdfminer internal, so
-recheck it before raising the pdfminer version bound.
+pdfminer.six is pinned in ``pyproject.toml``; recheck the patch before changing the pin.
 
 pdfminer has no words. They are derived with pawdf's rule: a word is a run of a line's
 characters between inserted spaces (``LTAnno(' ')``) and characters whose text is whitespace.
 
 Blocks, lines and words are compared exactly: order, glyph indices, orientation, text and
 boxes, with no rounding. A page where pawdf reports ``layout_limit`` is a skip, not a pass.
-The exit status is 1 when anything mismatched or was skipped.
+A PDF given on the command line that yields no blocks at all is a failure, since nothing
+was compared. The exit status is 1 when anything mismatched, was skipped or failed.
 """
 
 from __future__ import annotations
@@ -286,8 +287,9 @@ def fixtures() -> dict[str, bytes]:
     }
 
 
-def _run(name: str, doc: pawdf.Document, pages: list[int] | range) -> tuple[int, int]:
-    mismatched = skipped = 0
+def check_pdf(name: str, doc: pawdf.Document, pages: list[int] | range, *, require_blocks: bool) -> int:
+    """Compare the pages under every setting and print a report; return how many problems were found."""
+    mismatched = skipped = blocks = 0
     for i in pages:
         page = doc[i]
         content = page.content()
@@ -297,14 +299,21 @@ def _run(name: str, doc: pawdf.Document, pages: list[int] | range) -> tuple[int,
                 skipped += 1
                 print(f'{name} page {i} {settings}: skipped (layout_limit)')
                 continue
+            blocks += len(ours)
             diffs = compare_tree(ours, pdfminer_layout(page, settings, content))
             if diffs:
                 mismatched += 1
                 print(f'{name} page {i} {settings}: {len(diffs)} mismatches')
                 for d in diffs[:SHOW]:
                     print(f'  {d}')
-    print(f'{name}: {len(pages)} pages x {len(SETTINGS)} settings, {mismatched} mismatched, {skipped} skipped')
-    return mismatched, skipped
+    print(
+        f'{name}: {len(pages)} pages x {len(SETTINGS)} settings, {blocks} blocks compared, '
+        f'{mismatched} mismatched, {skipped} skipped'
+    )
+    empty = require_blocks and blocks == 0
+    if empty:
+        print(f'{name}: no blocks compared')
+    return mismatched + skipped + empty
 
 
 def main() -> int:
@@ -317,11 +326,11 @@ def main() -> int:
     bad = 0
     for name, data in fixtures().items():
         doc = pawdf.Document(data)
-        bad += sum(_run(f'fixture {name}', doc, range(len(doc))))
+        bad += check_pdf(f'fixture {name}', doc, range(len(doc)), require_blocks=False)
     for path in args.pdf:
         doc = pawdf.open(path)
         pages = [int(p) for p in args.pages.split(',')] if args.pages else range(len(doc))
-        bad += sum(_run(str(path), doc, pages))
+        bad += check_pdf(str(path), doc, pages, require_blocks=True)
     return 1 if bad else 0
 
 

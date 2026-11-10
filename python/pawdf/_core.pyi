@@ -722,8 +722,11 @@ def layout_pdfminer(
 
     Given the same glyph boxes, the result matches pdfminer.six's ``LTPage.analyze``. Results on a
     whole PDF can still differ from running pdfminer on it: glyph boxes are measured differently,
-    text in form XObjects is grouped with the rest of the page, and ties between equally distant
-    blocks are broken by creation order rather than memory address.
+    text in form XObjects is grouped with the rest of the page, ties between equally distant
+    blocks are broken by creation order rather than memory address, and a ``/MediaBox`` written
+    with its corners reversed is normalised where pdfminer keeps it as written. A page that hits a
+    work or block limit gets a simpler grouping or order and a ``layout_limit`` diagnostic; that
+    result does not match pdfminer.
 
     Boxes are in pdfminer's upright page space: the media box's lower-left corner is the origin,
     ``/Rotate`` is applied, and y points up. They differ from ``Glyph.bbox`` on rotated or shifted

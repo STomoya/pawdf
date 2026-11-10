@@ -70,3 +70,29 @@ def test_every_fixture_matches() -> None:
                 theirs = compare.pdfminer_layout(page, settings)
                 assert ours, (name, settings)
                 assert compare.compare_tree(ours, theirs) == [], (name, page.index, settings)
+
+
+def test_pdfminer_layout_uses_the_patched_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pdfminer still breaks ties through the module-level ``id`` that the script patches."""
+    calls = []
+    real = compare._creation_order_ids
+
+    def counting() -> Any:  # noqa: ANN401
+        stable = real()
+
+        def wrapped(obj: object) -> int:
+            calls.append(obj)
+            return stable(obj)
+
+        return wrapped
+
+    monkeypatch.setattr(compare, '_creation_order_ids', counting)
+    compare.pdfminer_layout(_pages('ties')[0], {})
+    assert calls
+
+
+def test_a_pdf_with_no_blocks_fails() -> None:
+    """A given PDF that compares no blocks at all is a failure, not a vacuous pass."""
+    empty = pawdf.Document(compare._pdf(b''))
+    assert compare.check_pdf('empty', empty, range(len(empty)), require_blocks=True) > 0
+    assert compare.check_pdf('ties', _pages('ties'), range(1), require_blocks=True) == 0

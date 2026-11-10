@@ -53,8 +53,11 @@ fn count((xr, yr): Cells) -> u64 {
     n(xr).saturating_mul(n(yr))
 }
 
+/// The cells of a range; nothing at all when either axis is empty, so that an empty x range
+/// does not walk the y range for free (`count` charges zero for it).
 fn each((xr, yr): Cells) -> impl Iterator<Item = (i64, i64)> {
-    (yr.0..yr.1).flat_map(move |y| (xr.0..xr.1).map(move |x| (x, y)))
+    let rows = if xr.0 < xr.1 { yr.0..yr.1 } else { 0..0 };
+    rows.flat_map(move |y| (xr.0..xr.1).map(move |x| (x, y)))
 }
 
 /// Objects on a 50-unit grid, found by area. Objects are ids chosen by the caller.
@@ -223,6 +226,12 @@ mod tests {
         let mut p = Plane::new(BOUND);
         p.add(0, r(0., 0., 10., 10.), &mut w).unwrap();
         assert!(p.find(r(10., 0., 20., 10.), &mut w).unwrap().is_empty());
+    }
+
+    #[test]
+    fn empty_x_range_does_not_walk_the_y_range() {
+        // Without the early return this walks i64::MAX empty rows and never finishes.
+        assert_eq!(each(((5, 0), (0, i64::MAX))).next(), None);
     }
 
     #[test]

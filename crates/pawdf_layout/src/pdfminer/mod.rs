@@ -9,7 +9,13 @@
 //! - text inside form XObjects is grouped with the rest of the page, whereas pdfminer keeps
 //!   it in an ungrouped figure by default;
 //! - pdfminer breaks ties between equally distant blocks by memory address, so its order
-//!   can change between runs; this port breaks them by creation order.
+//!   can change between runs; this port breaks them by creation order;
+//! - `pawdf_reader` normalises a `/MediaBox` written with its corners reversed, such as
+//!   `[612 792 0 0]`, whereas pdfminer keeps the corners as written, which can put every
+//!   glyph off its page.
+//!
+//! A page that hits a work or block limit gets a simpler grouping or reading order and a
+//! `LayoutLimit` diagnostic. That result does not match pdfminer.
 //!
 //! Result boxes are in pdfminer's upright page space: the media box's lower-left corner is
 //! the origin, `/Rotate` is applied, and y points up. On rotated or shifted pages they differ

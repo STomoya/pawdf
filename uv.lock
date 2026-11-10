@@ -516,7 +516,7 @@ dev = [
     { name = "pytest-mock", specifier = ">=3.16.0" },
 ]
 validation = [
-    { name = "pdfminer-six", specifier = ">=20260107" },
+    { name = "pdfminer-six", specifier = "==20260107" },
     { name = "pypdfium2", specifier = ">=5.14.0" },
 ]
 
