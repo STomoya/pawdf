@@ -8,6 +8,10 @@ use super::input::{py_max, py_min};
 
 const GRID: i64 = 50;
 
+/// Work charged per cell [`Plane::add`] touches. A new grid entry costs ~160 bytes against
+/// a few bytes for a walk, so this keeps the grid of a page within ~40 MB.
+const CELL_COST: u64 = 32;
+
 /// The page's work budget ran out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct OverBudget;
@@ -96,7 +100,7 @@ impl Plane {
 
     pub(crate) fn add(&mut self, id: usize, r: Rect, work: &mut Work) -> Result<(), OverBudget> {
         if let Some(cells) = self.range(&r) {
-            work.spend(count(cells))?;
+            work.spend(count(cells).saturating_mul(CELL_COST))?;
             for k in each(cells) {
                 self.grid.entry(k).or_default().push(id);
             }
@@ -246,5 +250,17 @@ mod tests {
             y1: 1e9,
         });
         assert!(p.add(0, r(0., 0., 1e9, 1e9), &mut Work::new(1000)).is_err());
+    }
+
+    #[test]
+    fn page_budget_caps_grid_memory() {
+        // 1024 × 1024 cells is well under the page budget counted in cells, but would
+        // allocate ~170 MB of grid entries.
+        let side = 1023. * GRID as f64;
+        let big = r(0., 0., side, side);
+        let mut p = Plane::new(big);
+        let mut w = Work::new(crate::pdfminer::MAX_WORK);
+        assert!(p.add(0, big, &mut w).is_err());
+        assert!(p.grid.is_empty());
     }
 }
