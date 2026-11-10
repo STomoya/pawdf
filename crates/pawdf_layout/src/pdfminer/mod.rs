@@ -41,8 +41,9 @@ use crate::{Block, Error, Layout};
 const MAX_WORK: u64 = 1 << 23;
 
 /// Blocks per page above which reading order falls back to `getkey` order: grouping holds a
-/// heap of all block pairs. The four real PDFs used for validation peak at 326.
-const MAX_BLOCKS: usize = 2048;
+/// heap of all block pairs, so time and memory grow with the square. The four real PDFs used
+/// for validation peak at 326.
+const MAX_BLOCKS: usize = 1024;
 
 /// pdfminer's `LAParams`, without `all_texts`: form XObject text is always grouped.
 #[derive(Debug, Clone, PartialEq)]

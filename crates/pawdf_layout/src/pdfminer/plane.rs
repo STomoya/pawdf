@@ -149,6 +149,11 @@ impl Plane {
         Ok(out)
     }
 
+    /// How many objects were ever added, which is what [`Plane::iter`] walks.
+    pub(crate) fn added(&self) -> usize {
+        self.seq.len()
+    }
+
     /// Live objects in the order they were added.
     pub(crate) fn iter(&self) -> impl Iterator<Item = usize> + '_ {
         self.seq.iter().copied().filter(|o| self.live.contains(o))

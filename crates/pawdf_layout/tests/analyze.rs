@@ -277,11 +277,11 @@ fn block_limit_falls_back_to_getkey() {
         x1: 10000.,
         y1: 10000.,
     };
-    let glyphs: Vec<_> = (0..2049)
+    let glyphs: Vec<_> = (0..1025)
         .map(|i| g("x", (i % 46) as f64 * 100., (i / 46) as f64 * 100.))
         .collect();
     let l = analyze(&content(glyphs), media, Rotation::R0, &Params::default()).unwrap();
-    assert_eq!(l.blocks.len(), 2049);
+    assert_eq!(l.blocks.len(), 1025);
     assert_eq!(limits(&l), 1);
     let keys: Vec<_> = l.blocks.iter().map(|b| (-b.bbox.y0, b.bbox.x0)).collect();
     assert!(keys.windows(2).all(|w| w[0] <= w[1]));

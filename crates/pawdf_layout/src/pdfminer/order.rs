@@ -94,11 +94,11 @@ pub(crate) fn group_textboxes(
             block: Some(i),
         })
         .collect();
-    let mut heap = BinaryHeap::new();
+    let mut pairs = Vec::with_capacity(n * (n - 1) / 2);
     for i in 0..n {
         for j in i + 1..n {
             let dist = dist(&elems[i].bbox, &elems[j].bbox);
-            heap.push(Reverse(HeapEntry {
+            pairs.push(Reverse(HeapEntry {
                 skip_isany: false,
                 dist,
                 id1: i,
@@ -106,6 +106,7 @@ pub(crate) fn group_textboxes(
             }));
         }
     }
+    let mut heap = BinaryHeap::from(pairs);
     let mut plane = Plane::new(bound);
     for (i, e) in elems.iter().enumerate() {
         plane.add(i, e.bbox, work)?;
@@ -148,6 +149,8 @@ pub(crate) fn group_textboxes(
         plane.remove(id2, work)?;
         done[id1] = true;
         done[id2] = true;
+        // Iterating walks every object ever added, removed ones included.
+        work.spend(plane.added() as u64)?;
         let others: Vec<usize> = plane.iter().collect();
         work.spend(others.len() as u64)?;
         for other in others {
