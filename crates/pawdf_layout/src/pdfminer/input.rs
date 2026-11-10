@@ -28,7 +28,6 @@ pub(crate) fn py_max(a: f64, b: f64) -> f64 {
 /// A total order for sort and heap keys: `0.0 == -0.0`, and NaN equals only NaN and ranks
 /// after every number. Treating NaN as equal to everything is not a total order, and
 /// `sort_by` may panic on one.
-#[allow(dead_code)] // Temporary: used once blocks are sorted.
 pub(crate) fn cmp_f64(a: f64, b: f64) -> Ordering {
     match (a.is_nan(), b.is_nan()) {
         (true, true) => Ordering::Equal,

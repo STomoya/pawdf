@@ -21,12 +21,23 @@
 //! The port is distributed under pdfminer.six's MIT license as well; see `LICENSE-pdfminer`
 //! in this crate.
 
+mod blocks;
 mod input;
 mod lines;
+mod plane;
 
-use pawdf_reader::{PageContent, Rect, Rotation};
+use pawdf_reader::{Diagnostic, DiagnosticKind, Location, PageContent, Rect, Rotation};
+
+use blocks::RawBlock;
+use input::Char;
+use lines::RawLine;
+use plane::{OverBudget, Work};
 
 use crate::{Block, Error, Layout};
+
+/// Grid-cell visits, object scans and member copies allowed per page. The four real PDFs
+/// used for validation peak at about 170,000 (pdfminer.six, measured 2026-11-02).
+const MAX_WORK: u64 = 1 << 26;
 
 /// pdfminer's `LAParams`, without `all_texts`: form XObject text is always grouped.
 #[derive(Debug, Clone, PartialEq)]
@@ -91,23 +102,63 @@ pub fn analyze(
 ) -> Result<Layout, Error> {
     params.validate()?;
     let mut diagnostics = Vec::new();
-    let (m, _bound) = input::page_space(media_box, rotate);
+    let (m, bound) = input::page_space(media_box, rotate);
     let chars = input::select(content, &m, &mut diagnostics);
-    let blocks = lines::group_objects(&chars, params)
-        .iter()
+    let lines: Vec<_> = lines::group_objects(&chars, params)
+        .into_iter()
         .filter(|l| !lines::is_empty_line(l, &chars))
-        .map(|l| {
-            let line = lines::finish_line(l, &chars);
-            Block {
-                bbox: line.bbox,
-                orientation: line.orientation,
-                text: line.text.clone(),
-                lines: vec![line],
-            }
-        })
+        .collect();
+    let mut work = Work::new(MAX_WORK);
+    let raw = match blocks::group_textlines(&lines, bound, params, &mut work) {
+        Ok(raw) => raw,
+        Err(OverBudget) => {
+            diagnostics.push(limit());
+            one_block_per_line(&lines)
+        }
+    };
+    let blocks = raw
+        .iter()
+        .map(|b| finish_block(b, &lines, &chars))
         .collect();
     Ok(Layout {
         blocks,
         diagnostics,
     })
+}
+
+fn limit() -> Diagnostic {
+    Diagnostic {
+        kind: DiagnosticKind::LayoutLimit,
+        location: Location::File(0),
+    }
+}
+
+fn one_block_per_line(lines: &[RawLine]) -> Vec<RawBlock> {
+    lines
+        .iter()
+        .enumerate()
+        .map(|(i, l)| RawBlock {
+            bbox: l.bbox,
+            orientation: l.orientation,
+            lines: vec![i],
+        })
+        .collect()
+}
+
+fn finish_block(b: &RawBlock, lines: &[RawLine], chars: &[Char]) -> Block {
+    let lines: Vec<_> = b
+        .lines
+        .iter()
+        .map(|&i| lines::finish_line(&lines[i], chars))
+        .collect();
+    Block {
+        bbox: b.bbox,
+        orientation: b.orientation,
+        text: lines
+            .iter()
+            .map(|l| l.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        lines,
+    }
 }
