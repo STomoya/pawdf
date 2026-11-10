@@ -65,7 +65,6 @@ fn all_hidden_glyphs_give_empty_layout() {
 }
 
 #[test]
-#[ignore = "needs lines"]
 fn invisible_text_is_kept() {
     let mut g = glyph("a", (0., 0., 10., 10.));
     g.render_mode = RenderMode::Invisible;
@@ -100,7 +99,6 @@ fn box_overflowing_in_page_space_is_skipped() {
 }
 
 #[test]
-#[ignore = "needs lines"]
 fn glyph_indices_survive_skipping() {
     let mut hidden = glyph("a", (0., 0., 10., 10.));
     hidden.hidden = true;

@@ -21,12 +21,12 @@
 //! The port is distributed under pdfminer.six's MIT license as well; see `LICENSE-pdfminer`
 //! in this crate.
 
-#[allow(dead_code)] // Temporary: used once lines land.
 mod input;
+mod lines;
 
 use pawdf_reader::{PageContent, Rect, Rotation};
 
-use crate::{Error, Layout};
+use crate::{Block, Error, Layout};
 
 /// pdfminer's `LAParams`, without `all_texts`: form XObject text is always grouped.
 #[derive(Debug, Clone, PartialEq)]
@@ -92,9 +92,22 @@ pub fn analyze(
     params.validate()?;
     let mut diagnostics = Vec::new();
     let (m, _bound) = input::page_space(media_box, rotate);
-    let _chars = input::select(content, &m, &mut diagnostics);
+    let chars = input::select(content, &m, &mut diagnostics);
+    let blocks = lines::group_objects(&chars, params)
+        .iter()
+        .filter(|l| !lines::is_empty_line(l, &chars))
+        .map(|l| {
+            let line = lines::finish_line(l, &chars);
+            Block {
+                bbox: line.bbox,
+                orientation: line.orientation,
+                text: line.text.clone(),
+                lines: vec![line],
+            }
+        })
+        .collect();
     Ok(Layout {
-        blocks: Vec::new(),
+        blocks,
         diagnostics,
     })
 }
