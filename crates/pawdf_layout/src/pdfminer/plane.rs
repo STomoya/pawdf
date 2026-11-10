@@ -104,7 +104,6 @@ impl Plane {
         Ok(())
     }
 
-    #[allow(dead_code)] // Temporary: used by reading order.
     pub(crate) fn remove(&mut self, id: usize, work: &mut Work) -> Result<(), OverBudget> {
         if let Some(cells) = self.rects.get(&id).and_then(|r| self.range(r)) {
             work.spend(count(cells))?;
@@ -151,7 +150,6 @@ impl Plane {
     }
 
     /// Live objects in the order they were added.
-    #[allow(dead_code)] // Temporary: used by reading order.
     pub(crate) fn iter(&self) -> impl Iterator<Item = usize> + '_ {
         self.seq.iter().copied().filter(|o| self.live.contains(o))
     }

@@ -187,3 +187,128 @@ fn defaults_match_pdfminer() {
         (0.5, 2.0, 0.5, 0.1, Some(0.5), false)
     );
 }
+
+fn g(text: &str, x: f64, y: f64) -> Glyph {
+    glyph(text, (x, y, x + 10., y + 10.))
+}
+
+fn order(glyphs: Vec<Glyph>, boxes_flow: Option<f64>) -> Vec<String> {
+    let p = Params {
+        boxes_flow,
+        ..Params::default()
+    };
+    let l = analyze(&content(glyphs), MEDIA, Rotation::R0, &p).unwrap();
+    assert!(l.diagnostics.is_empty());
+    l.blocks.into_iter().map(|b| b.text).collect()
+}
+
+// Expected orders below are pdfminer.six 20260107's, with ties broken by creation order.
+
+#[test]
+fn corners_read_top_row_first() {
+    let glyphs = vec![
+        g("a", 0., 0.),
+        g("b", 100., 0.),
+        g("c", 0., 100.),
+        g("d", 100., 100.),
+    ];
+    assert_eq!(order(glyphs, Some(0.5)), ["c", "d", "a", "b"]);
+}
+
+#[test]
+fn corner_input_order_is_irrelevant() {
+    let glyphs = vec![
+        g("d", 100., 100.),
+        g("c", 0., 100.),
+        g("b", 100., 0.),
+        g("a", 0., 0.),
+    ];
+    assert_eq!(order(glyphs, Some(0.5)), ["c", "d", "a", "b"]);
+}
+
+#[test]
+fn row_reads_left_to_right() {
+    let glyphs = vec![
+        g("a", 0., 0.),
+        g("b", 100., 0.),
+        g("c", 200., 0.),
+        g("d", 290., 0.),
+    ];
+    assert_eq!(order(glyphs, Some(0.5)), ["a", "b", "c", "d"]);
+}
+
+#[test]
+fn columns_by_flow() {
+    let cols = || {
+        vec![
+            g("a", 0., 200.),
+            g("b", 0., 100.),
+            g("c", 150., 200.),
+            g("d", 150., 100.),
+        ]
+    };
+    for flow in [Some(0.5), Some(-1.0), Some(0.0)] {
+        assert_eq!(order(cols(), flow), ["a", "b", "c", "d"], "{flow:?}");
+    }
+    assert_eq!(order(cols(), Some(1.0)), ["c", "d", "a", "b"]);
+    assert_eq!(order(cols(), None), ["a", "c", "b", "d"]);
+}
+
+#[test]
+fn single_block_page_is_returned() {
+    assert_eq!(
+        order(vec![g("a", 0., 0.), g("b", 11., 0.)], Some(0.5)),
+        ["ab"]
+    );
+}
+
+fn limits(l: &pawdf_layout::Layout) -> usize {
+    l.diagnostics
+        .iter()
+        .filter(|d| d.kind == DiagnosticKind::LayoutLimit)
+        .count()
+}
+
+#[test]
+fn block_limit_falls_back_to_getkey() {
+    let media = Rect {
+        x0: 0.,
+        y0: 0.,
+        x1: 10000.,
+        y1: 10000.,
+    };
+    let glyphs: Vec<_> = (0..2049)
+        .map(|i| g("x", (i % 46) as f64 * 100., (i / 46) as f64 * 100.))
+        .collect();
+    let l = analyze(&content(glyphs), media, Rotation::R0, &Params::default()).unwrap();
+    assert_eq!(l.blocks.len(), 2049);
+    assert_eq!(limits(&l), 1);
+    let keys: Vec<_> = l.blocks.iter().map(|b| (-b.bbox.y0, b.bbox.x0)).collect();
+    assert!(keys.windows(2).all(|w| w[0] <= w[1]));
+}
+
+#[test]
+fn budget_exhausted_while_grouping_lines() {
+    let media = Rect {
+        x0: 0.,
+        y0: 0.,
+        x1: 1e9,
+        y1: 1e9,
+    };
+    let glyphs = vec![glyph("a", (0., 0., 1e9, 1e9)), g("b", 0., 2e9)];
+    let l = analyze(&content(glyphs), media, Rotation::R0, &Params::default()).unwrap();
+    assert_eq!(limits(&l), 1);
+    assert_eq!(l.diagnostics[0].location, Location::File(0));
+    let texts: Vec<_> = l.blocks.iter().map(|b| b.text.as_str()).collect();
+    assert_eq!(texts, ["b", "a"]);
+}
+
+#[test]
+fn alternating_glyphs_hit_the_budget() {
+    let glyphs: Vec<_> = (0..1 << 13)
+        .map(|i| g("x", if i % 2 == 0 { 0. } else { 100. }, 0.))
+        .collect();
+    let l = analyze(&content(glyphs), MEDIA, Rotation::R0, &Params::default()).unwrap();
+    assert_eq!(limits(&l), 1);
+    assert_eq!(l.blocks.len(), 1 << 13);
+}

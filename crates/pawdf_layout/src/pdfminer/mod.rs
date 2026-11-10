@@ -24,6 +24,7 @@
 mod blocks;
 mod input;
 mod lines;
+mod order;
 mod plane;
 
 use pawdf_reader::{Diagnostic, DiagnosticKind, Location, PageContent, Rect, Rotation};
@@ -37,7 +38,11 @@ use crate::{Block, Error, Layout};
 
 /// Grid-cell visits, object scans and member copies allowed per page. The four real PDFs
 /// used for validation peak at about 170,000 (pdfminer.six, measured 2026-11-02).
-const MAX_WORK: u64 = 1 << 26;
+const MAX_WORK: u64 = 1 << 23;
+
+/// Blocks per page above which reading order falls back to `getkey` order: grouping holds a
+/// heap of all block pairs. The four real PDFs used for validation peak at 326.
+const MAX_BLOCKS: usize = 2048;
 
 /// pdfminer's `LAParams`, without `all_texts`: form XObject text is always grouped.
 #[derive(Debug, Clone, PartialEq)]
@@ -110,10 +115,15 @@ pub fn analyze(
         .collect();
     let mut work = Work::new(MAX_WORK);
     let raw = match blocks::group_textlines(&lines, bound, params, &mut work) {
-        Ok(raw) => raw,
+        Ok(mut raw) => {
+            order::order_blocks(&mut raw, bound, params, &mut work, &mut diagnostics);
+            raw
+        }
         Err(OverBudget) => {
             diagnostics.push(limit());
-            one_block_per_line(&lines)
+            let mut raw = one_block_per_line(&lines);
+            order::getkey_order(&mut raw);
+            raw
         }
     };
     let blocks = raw
@@ -126,7 +136,7 @@ pub fn analyze(
     })
 }
 
-fn limit() -> Diagnostic {
+pub(crate) fn limit() -> Diagnostic {
     Diagnostic {
         kind: DiagnosticKind::LayoutLimit,
         location: Location::File(0),
