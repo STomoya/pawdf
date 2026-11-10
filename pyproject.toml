@@ -150,7 +150,7 @@ fixable = ["ALL"]
 [tool.ty.src]
 include = ["python"]
 
-# pypdfium2 is only installed with `uv run --group validation`.
+# pypdfium2 and pdfminer.six are only installed with `uv run --group validation`.
 [[tool.ty.overrides]]
 include = ["python/validation/**"]
 rules = { unresolved-import = "ignore" }
