@@ -41,9 +41,12 @@ dev = [
 build = [
     "maturin[zig]>=1.15.0",
 ]
-# Approved by the maintainer: pdfium is the reference reader for python/validation/compare_pdfium.py.
+# Approved by the maintainer: pdfium is the reference reader for python/validation/compare_pdfium.py,
+# and pdfminer.six the reference layout for python/validation/compare_pdfminer.py.
 # Validation only; never a runtime dependency.
 validation = [
+    # Pinned: compare_pdfminer.py patches pdfminer.layout.id; recheck that before upgrading.
+    "pdfminer.six==20260107",
     "pypdfium2>=5.14.0",
 ]
 
@@ -148,7 +151,7 @@ fixable = ["ALL"]
 [tool.ty.src]
 include = ["python"]
 
-# pypdfium2 is only installed with `uv run --group validation`.
+# pypdfium2 and pdfminer.six are only installed with `uv run --group validation`.
 [[tool.ty.overrides]]
 include = ["python/validation/**"]
 rules = { unresolved-import = "ignore" }
