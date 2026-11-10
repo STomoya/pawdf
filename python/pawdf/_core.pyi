@@ -645,3 +645,109 @@ class Document:
         """
     def form_fields(self) -> FormFields:
         """The interactive form fields. Read on every call. Releases the GIL while parsing."""
+
+@final
+class Word:
+    """A run of glyphs between spaces."""
+
+    @property
+    def bbox(self) -> Rect:
+        """Union of its glyphs' boxes ``(x0, y0, x1, y1)``, in the algorithm's page space."""
+    @property
+    def text(self) -> str:
+        """Its glyphs' text, concatenated."""
+    @property
+    def glyphs(self) -> list[int]:
+        """Indices into ``PageContent.glyphs``."""
+
+@final
+class Line:
+    """One line of text."""
+
+    @property
+    def bbox(self) -> Rect:
+        """Union of its glyphs' boxes ``(x0, y0, x1, y1)``, in the algorithm's page space."""
+    @property
+    def orientation(self) -> Literal['horizontal', 'vertical']:
+        """Writing direction."""
+    @property
+    def text(self) -> str:
+        """Its glyphs' text, with a space wherever the algorithm inserted one."""
+    @property
+    def words(self) -> list[Word]:
+        """Words in order."""
+    @property
+    def glyphs(self) -> list[int]:
+        """Indices into ``PageContent.glyphs`` of all its glyphs, including whitespace glyphs in no word."""
+
+@final
+class Block:
+    """A group of neighbouring lines."""
+
+    @property
+    def bbox(self) -> Rect:
+        """Union of its lines' boxes ``(x0, y0, x1, y1)``, in the algorithm's page space."""
+    @property
+    def orientation(self) -> Literal['horizontal', 'vertical']:
+        """Direction of its lines."""
+    @property
+    def text(self) -> str:
+        """Its lines' text joined with newlines."""
+    @property
+    def lines(self) -> list[Line]:
+        """Lines in reading order."""
+
+@final
+class Layout:
+    """The blocks of one page, in reading order."""
+
+    @property
+    def blocks(self) -> list[Block]:
+        """Text blocks in reading order."""
+    @property
+    def diagnostics(self) -> list[Diagnostic]:
+        """Recoveries made while reading the page, then those made by layout analysis."""
+
+def layout_pdfminer(
+    page: Page,
+    *,
+    line_overlap: float = 0.5,
+    char_margin: float = 2.0,
+    line_margin: float = 0.5,
+    word_margin: float = 0.1,
+    boxes_flow: float | None = 0.5,
+    detect_vertical: bool = False,
+) -> Layout:
+    """Group a page's glyphs into blocks, lines and words with pdfminer.six's layout algorithm.
+
+    Given the same glyph boxes, the result matches pdfminer.six's ``LTPage.analyze``. Results on a
+    whole PDF can still differ from running pdfminer on it: glyph boxes are measured differently,
+    text in form XObjects is grouped with the rest of the page, and ties between equally distant
+    blocks are broken by creation order rather than memory address.
+
+    Boxes are in pdfminer's upright page space: the media box's lower-left corner is the origin,
+    ``/Rotate`` is applied, and y points up. They differ from ``Glyph.bbox`` on rotated or shifted
+    pages. Hidden optional content is left out; invisible text is kept. ``/ActualText`` is not
+    applied; use the glyph indices with ``PageContent.marked_contents`` for that.
+
+    Reading the page again with ``Page.content()`` gives the glyphs the indices refer to.
+    Releases the GIL while reading and analyzing.
+
+    Args:
+        page: The page to analyze.
+        line_overlap: Two glyphs whose overlap exceeds this fraction of the smaller height can
+            share a line.
+        char_margin: Two glyphs closer than this multiple of the wider glyph's width can share
+            a line.
+        line_margin: Two lines closer than this multiple of the line height can share a block.
+        word_margin: A gap wider than this multiple of a glyph's larger dimension inserts a space.
+        boxes_flow: How much horizontal (-1.0) versus vertical (+1.0) position decides block
+            order. ``None`` sorts blocks by their lower-left corner instead.
+        detect_vertical: Whether vertical lines are detected.
+
+    Returns:
+        The page's blocks in reading order.
+
+    Raises:
+        ValueError: If a setting is not finite, or ``boxes_flow`` is outside [-1, 1].
+    """

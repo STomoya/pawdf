@@ -1,8 +1,9 @@
 use pyo3::create_exception;
-use pyo3::exceptions::{PyException, PyIndexError, PyOverflowError};
+use pyo3::exceptions::{PyException, PyIndexError, PyOverflowError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyList, PyRange, PyTuple};
 
+use pawdf_layout as layout;
 use pawdf_reader as r;
 use r::{Diagnostic as CoreDiagnostic, Location};
 
@@ -1155,6 +1156,179 @@ impl FormFields {
     }
 }
 
+fn orientation(o: layout::Orientation) -> &'static str {
+    match o {
+        layout::Orientation::Horizontal => "horizontal",
+        layout::Orientation::Vertical => "vertical",
+    }
+}
+
+/// A run of glyphs between spaces.
+#[pyclass(frozen, module = "pawdf._core")]
+struct Word {
+    #[pyo3(get)]
+    bbox: Rect4,
+    #[pyo3(get)]
+    text: String,
+    #[pyo3(get)]
+    glyphs: Vec<usize>,
+}
+
+#[pymethods]
+impl Word {
+    fn __repr__(&self) -> String {
+        format!("Word(text={:?}, bbox={:?})", self.text, self.bbox)
+    }
+}
+
+/// One line of text.
+#[pyclass(frozen, module = "pawdf._core")]
+struct Line {
+    #[pyo3(get)]
+    bbox: Rect4,
+    #[pyo3(get)]
+    orientation: &'static str,
+    #[pyo3(get)]
+    text: String,
+    #[pyo3(get)]
+    words: Py<PyList>,
+    #[pyo3(get)]
+    glyphs: Vec<usize>,
+}
+
+#[pymethods]
+impl Line {
+    fn __repr__(&self) -> String {
+        format!("Line(text={:?}, bbox={:?})", self.text, self.bbox)
+    }
+}
+
+/// A group of neighbouring lines.
+#[pyclass(frozen, module = "pawdf._core")]
+struct Block {
+    #[pyo3(get)]
+    bbox: Rect4,
+    #[pyo3(get)]
+    orientation: &'static str,
+    #[pyo3(get)]
+    text: String,
+    #[pyo3(get)]
+    lines: Py<PyList>,
+}
+
+#[pymethods]
+impl Block {
+    fn __repr__(&self, py: Python<'_>) -> String {
+        format!(
+            "Block(lines={}, bbox={:?}, text={:?})",
+            self.lines.bind(py).len(),
+            self.bbox,
+            self.text
+        )
+    }
+}
+
+/// The blocks of one page, in reading order.
+#[pyclass(frozen, module = "pawdf._core")]
+struct Layout {
+    #[pyo3(get)]
+    blocks: Py<PyList>,
+    #[pyo3(get)]
+    diagnostics: Py<PyList>,
+}
+
+#[pymethods]
+impl Layout {
+    fn __repr__(&self, py: Python<'_>) -> String {
+        format!(
+            "Layout(blocks={}, diagnostics={})",
+            self.blocks.bind(py).len(),
+            self.diagnostics.bind(py).len()
+        )
+    }
+}
+
+fn line(py: Python<'_>, l: layout::Line) -> PyResult<Line> {
+    let words = l
+        .words
+        .into_iter()
+        .map(|w| {
+            Py::new(
+                py,
+                Word {
+                    bbox: rect(w.bbox),
+                    text: w.text,
+                    glyphs: w.glyphs,
+                },
+            )
+        })
+        .collect::<PyResult<Vec<_>>>()?;
+    Ok(Line {
+        bbox: rect(l.bbox),
+        orientation: orientation(l.orientation),
+        text: l.text,
+        words: PyList::new(py, words)?.unbind(),
+        glyphs: l.glyphs,
+    })
+}
+
+fn block(py: Python<'_>, b: layout::Block) -> PyResult<Block> {
+    let lines = b
+        .lines
+        .into_iter()
+        .map(|l| Py::new(py, line(py, l)?))
+        .collect::<PyResult<Vec<_>>>()?;
+    Ok(Block {
+        bbox: rect(b.bbox),
+        orientation: orientation(b.orientation),
+        text: b.text,
+        lines: PyList::new(py, lines)?.unbind(),
+    })
+}
+
+/// Groups a page's glyphs into blocks, lines and words with pdfminer.six's algorithm.
+/// Releases the GIL while reading and analyzing.
+#[pyfunction]
+#[pyo3(signature = (page, *, line_overlap=0.5, char_margin=2.0, line_margin=0.5, word_margin=0.1, boxes_flow=Some(0.5), detect_vertical=false))]
+#[allow(clippy::too_many_arguments)]
+fn layout_pdfminer(
+    py: Python<'_>,
+    page: &Bound<'_, Page>,
+    line_overlap: f64,
+    char_margin: f64,
+    line_margin: f64,
+    word_margin: f64,
+    boxes_flow: Option<f64>,
+    detect_vertical: bool,
+) -> PyResult<Layout> {
+    let params = layout::pdfminer::Params {
+        line_overlap,
+        char_margin,
+        line_margin,
+        word_margin,
+        boxes_flow,
+        detect_vertical,
+    };
+    let p = &page.get().0;
+    let (read, result) = py.detach(|| {
+        let content = p.content();
+        let result = layout::pdfminer::analyze(&content, p.media_box(), p.rotate(), &params);
+        (content.diagnostics, result)
+    });
+    let l = result.map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let blocks = l
+        .blocks
+        .into_iter()
+        .map(|b| Py::new(py, block(py, b)?))
+        .collect::<PyResult<Vec<_>>>()?;
+    let mut diags = read;
+    diags.extend(l.diagnostics);
+    Ok(Layout {
+        blocks: PyList::new(py, blocks)?.unbind(),
+        diagnostics: diagnostics(py, diags)?,
+    })
+}
+
 /// One page of a document.
 #[pyclass(frozen, module = "pawdf._core")]
 struct Page(r::Page);
@@ -1422,9 +1596,10 @@ impl Document {
 mod _core {
     #[pymodule_export]
     use super::{
-        Annotation, Annotations, Color, Destination, Diagnostic, Document, EncryptedError,
-        Encryption, FontInfo, FormField, FormFields, Glyph, Image, MarkedContent, MarkedContentRef,
-        ObjectRef, Outline, OutlineItem, Page, PageContent, PasswordError, Path, PdfError,
-        Permissions, SoftMask, StructElement, StructTree, UnsupportedEncryptionError, Widget,
+        Annotation, Annotations, Block, Color, Destination, Diagnostic, Document, EncryptedError,
+        Encryption, FontInfo, FormField, FormFields, Glyph, Image, Layout, Line, MarkedContent,
+        MarkedContentRef, ObjectRef, Outline, OutlineItem, Page, PageContent, PasswordError, Path,
+        PdfError, Permissions, SoftMask, StructElement, StructTree, UnsupportedEncryptionError,
+        Widget, Word, layout_pdfminer,
     };
 }

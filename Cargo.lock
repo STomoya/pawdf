@@ -184,6 +184,7 @@ dependencies = [
 name = "pawdf_pyo3"
 version = "0.1.0"
 dependencies = [
+ "pawdf_layout",
  "pawdf_reader",
  "pyo3",
 ]
