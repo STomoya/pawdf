@@ -173,12 +173,15 @@ mod tests {
 
     /// (bbox, line texts) per block, as pdfminer 20260107 reports them.
     fn run(chars: &[Char], bound: Rect) -> Vec<(Rect, Vec<String>)> {
-        let p = Params::default();
-        let lines: Vec<_> = group_objects(chars, &p)
+        run_with(chars, bound, &Params::default())
+    }
+
+    fn run_with(chars: &[Char], bound: Rect, p: &Params) -> Vec<(Rect, Vec<String>)> {
+        let lines: Vec<_> = group_objects(chars, p)
             .into_iter()
             .filter(|l| !is_empty_line(l, chars))
             .collect();
-        let blocks = group_textlines(&lines, bound, &p, &mut Work::new(1 << 20)).unwrap();
+        let blocks = group_textlines(&lines, bound, p, &mut Work::new(1 << 20)).unwrap();
         blocks
             .iter()
             .map(|b| {
@@ -250,6 +253,32 @@ mod tests {
     fn different_heights_do_not_merge() {
         let chars = [ch("a", 0., 45., 21., 55.), ch("b", 0., 12., 21., 42.)];
         assert_eq!(run(&chars, BOUND).len(), 2);
+    }
+
+    #[test]
+    fn vertical_lines_merge_right_to_left() {
+        let chars = [
+            g("c", 8., 20.),
+            g("d", 8., 9.),
+            g("a", 20., 20.),
+            g("b", 20., 9.),
+        ];
+        let p = Params {
+            detect_vertical: true,
+            ..Params::default()
+        };
+        assert_eq!(
+            run_with(&chars, BOUND, &p),
+            [(
+                Rect {
+                    x0: 8.,
+                    y0: 9.,
+                    x1: 30.,
+                    y1: 30.
+                },
+                vec!["ab".to_string(), "cd".into()]
+            )]
+        );
     }
 
     #[test]
