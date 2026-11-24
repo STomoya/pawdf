@@ -83,6 +83,12 @@ pub enum DiagnosticKind {
     /// element reached twice or nested too deep. The element or kid was kept with the entry left
     /// empty or defaulted, or cut.
     BadStructTree,
+    /// Layout analysis hit a per-page limit on blocks or work; a simpler grouping or reading
+    /// order was used for that page.
+    LayoutLimit,
+    /// A glyph box was non-finite, or became so in layout's page space; the glyph was left
+    /// out of layout analysis.
+    BadGlyphBox,
 }
 
 impl DiagnosticKind {
@@ -119,6 +125,8 @@ impl DiagnosticKind {
             DiagnosticKind::BadFormField => "bad_form_field",
             DiagnosticKind::BadOptionalContent => "bad_optional_content",
             DiagnosticKind::BadStructTree => "bad_struct_tree",
+            DiagnosticKind::LayoutLimit => "layout_limit",
+            DiagnosticKind::BadGlyphBox => "bad_glyph_box",
         }
     }
 }

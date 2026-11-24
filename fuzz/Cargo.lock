@@ -222,6 +222,14 @@ version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
  "pawdf_core",
+ "pawdf_layout",
+ "pawdf_reader",
+]
+
+[[package]]
+name = "pawdf_layout"
+version = "0.1.0"
+dependencies = [
  "pawdf_reader",
 ]
 

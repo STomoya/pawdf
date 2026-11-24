@@ -52,7 +52,8 @@ make clippy
 
 - `pawdf_core`: lexer, object model, stream filters, xref.
 - `pawdf_reader`: document- and page-level API built on `pawdf_core`.
-- Dependencies flow one way: `pawdf_pyo3` → `pawdf_reader` → `pawdf_core`.
+- `pawdf_layout`: layout analysis (words, lines, blocks) on `pawdf_reader` output. One module per algorithm.
+- Dependencies flow one way: `pawdf_pyo3` → `pawdf_layout` → `pawdf_reader` → `pawdf_core`.
 - Keep the binding thin. All parsing logic lives in the pure Rust crates. `pawdf_pyo3` only converts types and errors. `python/pawdf` only re-exports, provides type stubs, and adds small Pythonic conveniences (context managers, `__repr__`).
 - Core APIs take bytes (`&[u8]` or an owned buffer). File I/O and memory-mapping stay at the edges (the binding or the caller).
 - Load objects lazily through the xref. Do not parse the whole file up front.

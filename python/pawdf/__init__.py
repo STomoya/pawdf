@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path as _Path
 from typing import TYPE_CHECKING
 
+from pawdf import layout
 from pawdf._core import (
     Annotation,
     Annotations,
@@ -72,6 +73,7 @@ __all__ = [
     'UnsupportedEncryptionError',
     'Widget',
     '__version__',
+    'layout',
     'open',
 ]
 

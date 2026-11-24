@@ -17,6 +17,7 @@
 | `annotation` | a page's annotations                            |
 | `oc`         | optional content, from marked content and annotations |
 | `names`      | named destinations, from link annotations        |
+| `layout`     | pdfminer layout analysis of one page's content   |
 
 ```sh
 cargo +nightly fuzz run document -- -max_total_time=300

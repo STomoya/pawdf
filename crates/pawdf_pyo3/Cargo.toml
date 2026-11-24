@@ -10,3 +10,4 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 pyo3 = { workspace = true }
 pawdf_reader = { workspace = true }
+pawdf_layout = { workspace = true }

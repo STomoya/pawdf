@@ -3,6 +3,7 @@ resolver = "3"
 members = [
   "crates/pawdf_core",
   "crates/pawdf_reader",
+  "crates/pawdf_layout",
   "crates/pawdf_pyo3"
 ]
 
@@ -22,3 +23,4 @@ cbc = "0.2.1"
 stringprep = "0.1.5"
 pawdf_core = { path = "crates/pawdf_core" }
 pawdf_reader = { path = "crates/pawdf_reader" }
+pawdf_layout = { path = "crates/pawdf_layout" }

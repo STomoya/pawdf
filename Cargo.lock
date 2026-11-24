@@ -174,9 +174,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "pawdf_layout"
+version = "0.1.0"
+dependencies = [
+ "pawdf_reader",
+]
+
+[[package]]
 name = "pawdf_pyo3"
 version = "0.1.0"
 dependencies = [
+ "pawdf_layout",
  "pawdf_reader",
  "pyo3",
 ]

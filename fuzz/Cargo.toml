@@ -11,6 +11,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4.13"
 pawdf_core = { path = "../crates/pawdf_core" }
 pawdf_reader = { path = "../crates/pawdf_reader" }
+pawdf_layout = { path = "../crates/pawdf_layout" }
 
 # Keep this crate out of the main workspace; it builds only with nightly.
 [workspace]
@@ -102,6 +103,13 @@ bench = false
 [[bin]]
 name = "names"
 path = "fuzz_targets/names.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "layout"
+path = "fuzz_targets/layout.rs"
 test = false
 doc = false
 bench = false
