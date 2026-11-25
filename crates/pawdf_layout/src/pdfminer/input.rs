@@ -83,7 +83,8 @@ fn finite(r: &Rect) -> bool {
 
 /// The glyphs layout uses, in content order, with boxes in page space. Hidden glyphs and
 /// those `keep` rejects are left out. So are non-finite boxes, reported once: pdfminer accepts
-/// them, but NaN makes its ordering meaningless.
+/// them, but NaN makes its ordering meaningless. They are checked before `keep`, which could
+/// not place them and would drop them unreported.
 pub(crate) fn select<'a>(
     content: &'a PageContent,
     m: &Matrix,
@@ -93,12 +94,15 @@ pub(crate) fn select<'a>(
     let mut bad = false;
     let mut out = Vec::new();
     for (i, g) in content.glyphs.iter().enumerate() {
-        if g.hidden || !keep(g) {
+        if g.hidden {
             continue;
         }
         let bbox = apply_rect(m, g.bbox);
         if !finite(&g.bbox) || !finite(&bbox) {
             bad = true;
+            continue;
+        }
+        if !keep(g) {
             continue;
         }
         out.push(Char {

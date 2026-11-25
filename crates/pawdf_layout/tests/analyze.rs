@@ -400,3 +400,30 @@ fn non_finite_region_is_rejected() {
     );
     assert_eq!(err, Err(Error::InvalidParam { name: "regions" }));
 }
+
+#[test]
+fn non_finite_box_is_reported_in_every_region() {
+    let glyphs = vec![glyph("a", (f64::NAN, 0., 10., 10.))];
+    let rs = [Rect {
+        x0: 0.,
+        y0: 0.,
+        x1: 300.,
+        y1: 300.,
+    }; 2];
+    let layouts = analyze_regions(
+        &content(glyphs),
+        MEDIA,
+        Rotation::R0,
+        &DISPLAY,
+        &rs,
+        &Params::default(),
+    )
+    .unwrap();
+    for l in layouts {
+        assert!(l.blocks.is_empty());
+        assert_eq!(
+            l.diagnostics.iter().map(|d| d.kind).collect::<Vec<_>>(),
+            [DiagnosticKind::BadGlyphBox]
+        );
+    }
+}
