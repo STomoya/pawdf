@@ -34,7 +34,7 @@ mod order;
 mod plane;
 
 use pawdf_reader::{
-    Diagnostic, DiagnosticKind, Glyph, Location, Matrix, PageContent, Point, Rect, Rotation,
+    Diagnostic, DiagnosticKind, Location, Matrix, PageContent, Point, Rect, Rotation,
 };
 
 use blocks::RawBlock;
@@ -117,7 +117,7 @@ pub fn analyze(
     params.validate()?;
     let mut diagnostics = Vec::new();
     let (m, bound) = input::page_space(media_box, rotate);
-    let chars = input::select(content, &m, |_| true, &mut diagnostics);
+    let chars = input::select(content, &m, &mut diagnostics);
     Ok(group(&chars, bound, params, diagnostics))
 }
 
@@ -147,29 +147,35 @@ pub fn analyze_regions(
         return Err(Error::InvalidParam { name: "regions" });
     }
     let (m, bound) = input::page_space(media_box, rotate);
+    let mut diagnostics = Vec::new();
+    let chars = input::select(content, &m, &mut diagnostics);
+    let centres: Vec<_> = chars
+        .iter()
+        .map(|c| centre(display, &content.glyphs[c.glyph].bbox))
+        .collect();
     // ponytail: every region scans every glyph, O(regions × glyphs); index glyphs if pages
     // with thousands of cells get slow.
     Ok(regions
         .iter()
         .map(|r| {
-            let mut diagnostics = Vec::new();
-            let inside = |g: &Glyph| contains(r, centre(display, &g.bbox));
-            let chars = input::select(content, &m, inside, &mut diagnostics);
-            group(&chars, bound, params, diagnostics)
+            let r = Rect::from_corners(r.x0, r.y0, r.x1, r.y1);
+            let inside: Vec<_> = chars
+                .iter()
+                .zip(&centres)
+                .filter(|(_, p)| (r.x0..r.x1).contains(&p.x) && (r.y0..r.y1).contains(&p.y))
+                .map(|(c, _)| c.clone())
+                .collect();
+            group(&inside, bound, params, diagnostics.clone())
         })
         .collect())
 }
 
+/// Halves before adding, so corners near `f64::MAX` don't overflow.
 fn centre(display: &Matrix, b: &Rect) -> Point {
     display.apply(Point {
-        x: (b.x0 + b.x1) / 2.,
-        y: (b.y0 + b.y1) / 2.,
+        x: b.x0 * 0.5 + b.x1 * 0.5,
+        y: b.y0 * 0.5 + b.y1 * 0.5,
     })
-}
-
-fn contains(r: &Rect, p: Point) -> bool {
-    (r.x0.min(r.x1)..r.x0.max(r.x1)).contains(&p.x)
-        && (r.y0.min(r.y1)..r.y0.max(r.y1)).contains(&p.y)
 }
 
 fn group(chars: &[Char], bound: Rect, params: &Params, mut diagnostics: Vec<Diagnostic>) -> Layout {

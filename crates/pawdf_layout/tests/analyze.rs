@@ -427,3 +427,10 @@ fn non_finite_box_is_reported_in_every_region() {
         );
     }
 }
+
+#[test]
+fn huge_glyph_box_keeps_a_finite_centre() {
+    let g = glyph("a", (1e308, 0., 1.5e308, 10.));
+    let got = regions(vec![g], &[(1.2e308, 280., 1.3e308, 300.)]);
+    assert_eq!(got[0].trim(), "a");
+}

@@ -2,9 +2,7 @@
 
 use std::cmp::Ordering;
 
-use pawdf_reader::{
-    Diagnostic, DiagnosticKind, Glyph, Location, Matrix, PageContent, Rect, Rotation,
-};
+use pawdf_reader::{Diagnostic, DiagnosticKind, Location, Matrix, PageContent, Rect, Rotation};
 
 /// A glyph as layout sees it: its box in page space and its index in the page content.
 #[derive(Debug, Clone)]
@@ -81,14 +79,12 @@ fn finite(r: &Rect) -> bool {
     r.x0.is_finite() && r.y0.is_finite() && r.x1.is_finite() && r.y1.is_finite()
 }
 
-/// The glyphs layout uses, in content order, with boxes in page space. Hidden glyphs and
-/// those `keep` rejects are left out. So are non-finite boxes, reported once: pdfminer accepts
-/// them, but NaN makes its ordering meaningless. They are checked before `keep`, which could
-/// not place them and would drop them unreported.
+/// The glyphs layout uses, in content order, with boxes in page space. Hidden glyphs are
+/// left out. So are non-finite boxes, reported once: pdfminer accepts them, but NaN makes its
+/// ordering meaningless.
 pub(crate) fn select<'a>(
     content: &'a PageContent,
     m: &Matrix,
-    keep: impl Fn(&Glyph) -> bool,
     diags: &mut Vec<Diagnostic>,
 ) -> Vec<Char<'a>> {
     let mut bad = false;
@@ -100,9 +96,6 @@ pub(crate) fn select<'a>(
         let bbox = apply_rect(m, g.bbox);
         if !finite(&g.bbox) || !finite(&bbox) {
             bad = true;
-            continue;
-        }
-        if !keep(g) {
             continue;
         }
         out.push(Char {
