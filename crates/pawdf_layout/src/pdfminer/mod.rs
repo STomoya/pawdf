@@ -33,7 +33,9 @@ mod lines;
 mod order;
 mod plane;
 
-use pawdf_reader::{Diagnostic, DiagnosticKind, Location, PageContent, Rect, Rotation};
+use pawdf_reader::{
+    Diagnostic, DiagnosticKind, Glyph, Location, Matrix, PageContent, Point, Rect, Rotation,
+};
 
 use blocks::RawBlock;
 use input::Char;
@@ -115,10 +117,65 @@ pub fn analyze(
     params.validate()?;
     let mut diagnostics = Vec::new();
     let (m, bound) = input::page_space(media_box, rotate);
-    let chars = input::select(content, &m, &mut diagnostics);
-    let lines: Vec<_> = lines::group_objects(&chars, params)
+    let chars = input::select(content, &m, |_| true, &mut diagnostics);
+    Ok(group(&chars, bound, params, diagnostics))
+}
+
+/// Groups the glyphs in each region on their own, so text from neighbouring regions never
+/// shares a line. Returns one [`Layout`] per region, in the order given.
+///
+/// Regions are in display space: `display` is the page's
+/// [`display_matrix`](pawdf_reader::Page::display_matrix), so the origin is the top-left of
+/// the rotated crop box and y points down, in points. A box from an image rendered at `dpi`
+/// maps to it by dividing by `dpi / 72`. Corners may come in either order. A glyph belongs to
+/// a region when its box's centre is inside it; the right and bottom edges are excluded, so
+/// regions that share an edge never share a glyph.
+///
+/// Result boxes are in pdfminer's upright page space, as for [`analyze`], not in display
+/// space. Hidden glyphs are left out; invisible text is kept.
+pub fn analyze_regions(
+    content: &PageContent,
+    media_box: Rect,
+    rotate: Rotation,
+    display: &Matrix,
+    regions: &[Rect],
+    params: &Params,
+) -> Result<Vec<Layout>, Error> {
+    params.validate()?;
+    let finite = |r: &Rect| [r.x0, r.y0, r.x1, r.y1].iter().all(|v| v.is_finite());
+    if !regions.iter().all(finite) {
+        return Err(Error::InvalidParam { name: "regions" });
+    }
+    let (m, bound) = input::page_space(media_box, rotate);
+    // ponytail: every region scans every glyph, O(regions × glyphs); index glyphs if pages
+    // with thousands of cells get slow.
+    Ok(regions
+        .iter()
+        .map(|r| {
+            let mut diagnostics = Vec::new();
+            let inside = |g: &Glyph| contains(r, centre(display, &g.bbox));
+            let chars = input::select(content, &m, inside, &mut diagnostics);
+            group(&chars, bound, params, diagnostics)
+        })
+        .collect())
+}
+
+fn centre(display: &Matrix, b: &Rect) -> Point {
+    display.apply(Point {
+        x: (b.x0 + b.x1) / 2.,
+        y: (b.y0 + b.y1) / 2.,
+    })
+}
+
+fn contains(r: &Rect, p: Point) -> bool {
+    (r.x0.min(r.x1)..r.x0.max(r.x1)).contains(&p.x)
+        && (r.y0.min(r.y1)..r.y0.max(r.y1)).contains(&p.y)
+}
+
+fn group(chars: &[Char], bound: Rect, params: &Params, mut diagnostics: Vec<Diagnostic>) -> Layout {
+    let lines: Vec<_> = lines::group_objects(chars, params)
         .into_iter()
-        .filter(|l| !lines::is_empty_line(l, &chars))
+        .filter(|l| !lines::is_empty_line(l, chars))
         .collect();
     let mut work = Work::new(MAX_WORK);
     let raw = match blocks::group_textlines(&lines, bound, params, &mut work) {
@@ -133,14 +190,11 @@ pub fn analyze(
             raw
         }
     };
-    let blocks = raw
-        .iter()
-        .map(|b| finish_block(b, &lines, &chars))
-        .collect();
-    Ok(Layout {
+    let blocks = raw.iter().map(|b| finish_block(b, &lines, chars)).collect();
+    Layout {
         blocks,
         diagnostics,
-    })
+    }
 }
 
 pub(crate) fn limit() -> Diagnostic {

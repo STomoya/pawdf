@@ -1286,6 +1286,20 @@ fn block(py: Python<'_>, b: layout::Block) -> PyResult<Block> {
     })
 }
 
+fn layout_result(py: Python<'_>, read: Vec<r::Diagnostic>, l: layout::Layout) -> PyResult<Layout> {
+    let blocks = l
+        .blocks
+        .into_iter()
+        .map(|b| Py::new(py, block(py, b)?))
+        .collect::<PyResult<Vec<_>>>()?;
+    let mut diags = read;
+    diags.extend(l.diagnostics);
+    Ok(Layout {
+        blocks: PyList::new(py, blocks)?.unbind(),
+        diagnostics: diagnostics(py, diags)?,
+    })
+}
+
 /// Groups a page's glyphs into blocks, lines and words with pdfminer.six's algorithm.
 /// Releases the GIL while reading and analyzing.
 #[pyfunction]
@@ -1316,17 +1330,55 @@ fn layout_pdfminer(
         (content.diagnostics, result)
     });
     let l = result.map_err(|e| PyValueError::new_err(e.to_string()))?;
-    let blocks = l
-        .blocks
+    layout_result(py, read, l)
+}
+
+/// Groups the glyphs in each display-space region on their own, with pdfminer.six's
+/// algorithm. Releases the GIL while reading and analyzing.
+#[pyfunction]
+#[pyo3(signature = (page, regions, *, line_overlap=0.5, char_margin=2.0, line_margin=0.5, word_margin=0.1, boxes_flow=Some(0.5), detect_vertical=false))]
+#[allow(clippy::too_many_arguments)]
+fn layout_text_in_regions(
+    py: Python<'_>,
+    page: &Bound<'_, Page>,
+    regions: Vec<Rect4>,
+    line_overlap: f64,
+    char_margin: f64,
+    line_margin: f64,
+    word_margin: f64,
+    boxes_flow: Option<f64>,
+    detect_vertical: bool,
+) -> PyResult<Vec<Layout>> {
+    let params = layout::pdfminer::Params {
+        line_overlap,
+        char_margin,
+        line_margin,
+        word_margin,
+        boxes_flow,
+        detect_vertical,
+    };
+    let regions: Vec<_> = regions
         .into_iter()
-        .map(|b| Py::new(py, block(py, b)?))
-        .collect::<PyResult<Vec<_>>>()?;
-    let mut diags = read;
-    diags.extend(l.diagnostics);
-    Ok(Layout {
-        blocks: PyList::new(py, blocks)?.unbind(),
-        diagnostics: diagnostics(py, diags)?,
-    })
+        .map(|(x0, y0, x1, y1)| r::Rect { x0, y0, x1, y1 })
+        .collect();
+    let p = &page.get().0;
+    let (read, result) = py.detach(|| {
+        let content = p.content();
+        let result = layout::pdfminer::analyze_regions(
+            &content,
+            p.media_box(),
+            p.rotate(),
+            &p.display_matrix(),
+            &regions,
+            &params,
+        );
+        (content.diagnostics, result)
+    });
+    let layouts = result.map_err(|e| PyValueError::new_err(e.to_string()))?;
+    layouts
+        .into_iter()
+        .map(|l| layout_result(py, read.clone(), l))
+        .collect()
 }
 
 /// One page of a document.
@@ -1600,6 +1652,6 @@ mod _core {
         Encryption, FontInfo, FormField, FormFields, Glyph, Image, Layout, Line, MarkedContent,
         MarkedContentRef, ObjectRef, Outline, OutlineItem, Page, PageContent, PasswordError, Path,
         PdfError, Permissions, SoftMask, StructElement, StructTree, UnsupportedEncryptionError,
-        Widget, Word, layout_pdfminer,
+        Widget, Word, layout_pdfminer, layout_text_in_regions,
     };
 }

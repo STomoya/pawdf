@@ -1,5 +1,5 @@
 use pawdf_layout::Error;
-use pawdf_layout::pdfminer::{Params, analyze};
+use pawdf_layout::pdfminer::{Params, analyze, analyze_regions};
 use pawdf_reader::{
     Color, DiagnosticKind, Glyph, Location, Matrix, PageContent, Point, Rect, RenderMode, Rotation,
     WritingMode,
@@ -311,4 +311,92 @@ fn alternating_glyphs_hit_the_budget() {
     let l = analyze(&content(glyphs), MEDIA, Rotation::R0, &Params::default()).unwrap();
     assert_eq!(limits(&l), 1);
     assert_eq!(l.blocks.len(), 1 << 13);
+}
+
+/// `Page::display_matrix` of an unrotated page whose crop box is `MEDIA`.
+const DISPLAY: Matrix = Matrix {
+    a: 1.,
+    b: 0.,
+    c: 0.,
+    d: -1.,
+    e: 0.,
+    f: 300.,
+};
+
+fn regions(glyphs: Vec<Glyph>, rs: &[(f64, f64, f64, f64)]) -> Vec<String> {
+    let rs: Vec<_> = rs
+        .iter()
+        .map(|&(x0, y0, x1, y1)| Rect { x0, y0, x1, y1 })
+        .collect();
+    analyze_regions(
+        &content(glyphs),
+        MEDIA,
+        Rotation::R0,
+        &DISPLAY,
+        &rs,
+        &Params::default(),
+    )
+    .unwrap()
+    .iter()
+    .map(|l| {
+        l.blocks
+            .iter()
+            .map(|b| b.text.as_str())
+            .collect::<Vec<_>>()
+            .join("|")
+    })
+    .collect()
+}
+
+#[test]
+fn regions_split_text_that_would_share_a_line() {
+    // Display y 190..200 is user y 100..110.
+    let glyphs = vec![g("a", 10., 100.), g("b", 20., 100.)];
+    assert_eq!(run(glyphs.clone()).blocks[0].text, "ab");
+    let got = regions(glyphs, &[(20., 190., 40., 200.), (0., 190., 20., 200.)]);
+    assert_eq!(got, ["b", "a"]);
+}
+
+#[test]
+fn region_corners_may_be_reversed() {
+    let got = regions(vec![g("a", 10., 100.)], &[(20., 200., 0., 190.)]);
+    assert_eq!(got, ["a"]);
+}
+
+#[test]
+fn shared_edge_gives_the_glyph_to_one_region() {
+    // The glyph's centre is at display (15, 195).
+    let got = regions(
+        vec![g("a", 10., 100.)],
+        &[
+            (0., 0., 15., 300.),
+            (15., 0., 30., 300.),
+            (0., 0., 300., 195.),
+        ],
+    );
+    assert_eq!(got, ["", "a", ""]);
+}
+
+#[test]
+fn no_regions_give_no_layouts() {
+    assert!(regions(vec![g("a", 10., 100.)], &[]).is_empty());
+}
+
+#[test]
+fn non_finite_region_is_rejected() {
+    let bad = Rect {
+        x0: 0.,
+        y0: f64::NAN,
+        x1: 10.,
+        y1: 10.,
+    };
+    let err = analyze_regions(
+        &content(vec![]),
+        MEDIA,
+        Rotation::R0,
+        &DISPLAY,
+        &[bad],
+        &Params::default(),
+    );
+    assert_eq!(err, Err(Error::InvalidParam { name: "regions" }));
 }
