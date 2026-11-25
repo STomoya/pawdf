@@ -241,7 +241,7 @@ impl<'a> Walk<'a> {
                 Object::Stream(s) => &s.dict,
                 Object::Int(_) | Object::Null => continue,
                 _ => {
-                    self.cx.bad(at);
+                    self.cx.bad(o_at);
                     continue;
                 }
             };

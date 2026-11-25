@@ -515,9 +515,10 @@ fn bad_table_span_is_reported() {
             12,
             "<< /S /TD /P 11 0 R /A << /O /Table /RowSpan 0 /ColSpan (x) >> >>",
         ),
-        obj(13, "<< /S /TD /P 11 0 R /A [14 0 R /Junk] >>"),
+        obj(13, "<< /S /TD /P 11 0 R /A [14 0 R /Junk 15 0 R] >>"),
         obj(14, "<< /O /Table /ColSpan 4294967296 >>"),
+        obj(15, "(not a dict)"),
     ]);
-    assert_eq!(t.diagnostics, [bad(12), bad(12), bad(14), bad(13)]);
+    assert_eq!(t.diagnostics, [bad(12), bad(12), bad(14), bad(13), bad(15)]);
     assert_eq!(spans(&t), [(1, 1), (1, 1)]);
 }
