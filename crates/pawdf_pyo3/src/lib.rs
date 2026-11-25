@@ -1458,6 +1458,72 @@ impl Cell {
     }
 }
 
+/// The tables found on one page.
+#[pyclass(frozen, module = "pawdf._core")]
+struct Tables {
+    #[pyo3(get)]
+    tables: Py<PyList>,
+    #[pyo3(get)]
+    diagnostics: Py<PyList>,
+}
+
+#[pymethods]
+impl Tables {
+    fn __repr__(&self, py: Python<'_>) -> String {
+        format!(
+            "Tables(tables={}, diagnostics={})",
+            self.tables.bind(py).len(),
+            self.diagnostics.bind(py).len()
+        )
+    }
+}
+
+/// `read` comes first in the diagnostics, then those of table detection.
+fn tables_result(
+    py: Python<'_>,
+    mut read: Vec<r::Diagnostic>,
+    t: layout::table::Tables,
+) -> PyResult<Tables> {
+    let tables = t
+        .tables
+        .into_iter()
+        .map(|t| {
+            let cells = t
+                .cells
+                .into_iter()
+                .map(|c| {
+                    Py::new(
+                        py,
+                        Cell {
+                            row: c.row,
+                            col: c.col,
+                            row_span: c.row_span,
+                            col_span: c.col_span,
+                            header: c.header,
+                            bbox: c.bbox.map(rect),
+                            layout: Py::new(py, layout_result(py, &[], c.layout)?)?,
+                        },
+                    )
+                })
+                .collect::<PyResult<Vec<_>>>()?;
+            Py::new(
+                py,
+                Table {
+                    bbox: rect(t.bbox),
+                    rows: t.rows,
+                    cols: t.cols,
+                    cells: PyList::new(py, cells)?.unbind(),
+                },
+            )
+        })
+        .collect::<PyResult<Vec<_>>>()?;
+    read.extend(t.diagnostics);
+    Ok(Tables {
+        tables: PyList::new(py, tables)?.unbind(),
+        diagnostics: diagnostics(py, read)?,
+    })
+}
+
 /// The tables of a page in a tagged PDF, from the structure tree. Releases the GIL while
 /// reading and analyzing.
 #[pyfunction]
@@ -1474,7 +1540,7 @@ fn layout_tables_tagged(
     word_margin: f64,
     boxes_flow: Option<f64>,
     detect_vertical: bool,
-) -> PyResult<Vec<Table>> {
+) -> PyResult<Tables> {
     let params = layout::pdfminer::Params {
         line_overlap,
         char_margin,
@@ -1485,7 +1551,7 @@ fn layout_tables_tagged(
     };
     let region = region.map(|(x0, y0, x1, y1)| r::Rect { x0, y0, x1, y1 });
     let (p, tree) = (&page.get().0, &tree.get().tree);
-    let (read, result) = py.detach(|| {
+    let (mut read, result) = py.detach(|| {
         let content = p.content();
         let result = layout::table::tagged(
             &content,
@@ -1499,39 +1565,61 @@ fn layout_tables_tagged(
         );
         (content.diagnostics, result)
     });
-    let tables = result.map_err(|e| PyValueError::new_err(e.to_string()))?;
-    let mut read = read;
+    let t = result.map_err(|e| PyValueError::new_err(e.to_string()))?;
     read.extend_from_slice(&tree.diagnostics);
-    let read = shared_diagnostics(py, read)?;
-    tables
-        .into_iter()
-        .map(|t| {
-            let cells = t
-                .cells
-                .into_iter()
-                .map(|c| {
-                    Py::new(
-                        py,
-                        Cell {
-                            row: c.row,
-                            col: c.col,
-                            row_span: c.row_span,
-                            col_span: c.col_span,
-                            header: c.header,
-                            bbox: c.bbox.map(rect),
-                            layout: Py::new(py, layout_result(py, &read, c.layout)?)?,
-                        },
-                    )
-                })
-                .collect::<PyResult<Vec<_>>>()?;
-            Ok(Table {
-                bbox: rect(t.bbox),
-                rows: t.rows,
-                cols: t.cols,
-                cells: PyList::new(py, cells)?.unbind(),
-            })
-        })
-        .collect()
+    tables_result(py, read, t)
+}
+
+/// The tables drawn with ruling lines on a page. Releases the GIL while reading and analyzing.
+#[pyfunction]
+#[pyo3(signature = (page, region=None, *, snap_tolerance=3.0, join_tolerance=3.0, edge_min_length=3.0, intersection_tolerance=3.0, line_overlap=0.5, char_margin=2.0, line_margin=0.5, word_margin=0.1, boxes_flow=Some(0.5), detect_vertical=false))]
+#[allow(clippy::too_many_arguments)]
+fn layout_tables_ruled(
+    py: Python<'_>,
+    page: &Bound<'_, Page>,
+    region: Option<Rect4>,
+    snap_tolerance: f64,
+    join_tolerance: f64,
+    edge_min_length: f64,
+    intersection_tolerance: f64,
+    line_overlap: f64,
+    char_margin: f64,
+    line_margin: f64,
+    word_margin: f64,
+    boxes_flow: Option<f64>,
+    detect_vertical: bool,
+) -> PyResult<Tables> {
+    let params = layout::pdfminer::Params {
+        line_overlap,
+        char_margin,
+        line_margin,
+        word_margin,
+        boxes_flow,
+        detect_vertical,
+    };
+    let ruling = layout::table::RuledParams {
+        snap_tolerance,
+        join_tolerance,
+        edge_min_length,
+        intersection_tolerance,
+    };
+    let region = region.map(|(x0, y0, x1, y1)| r::Rect { x0, y0, x1, y1 });
+    let p = &page.get().0;
+    let (read, result) = py.detach(|| {
+        let content = p.content();
+        let result = layout::table::ruled(
+            &content,
+            p.media_box(),
+            p.rotate(),
+            &p.display_matrix(),
+            region,
+            &ruling,
+            &params,
+        );
+        (content.diagnostics, result)
+    });
+    let t = result.map_err(|e| PyValueError::new_err(e.to_string()))?;
+    tables_result(py, read, t)
 }
 
 /// One page of a document.
@@ -1807,7 +1895,7 @@ mod _core {
         EncryptedError, Encryption, FontInfo, FormField, FormFields, Glyph, Image, Layout, Line,
         MarkedContent, MarkedContentRef, ObjectRef, Outline, OutlineItem, Page, PageContent,
         PasswordError, Path, PdfError, Permissions, SoftMask, StructElement, StructTree, Table,
-        UnsupportedEncryptionError, Widget, Word, layout_pdfminer, layout_tables_tagged,
-        layout_text_in_regions,
+        Tables, UnsupportedEncryptionError, Widget, Word, layout_pdfminer, layout_tables_ruled,
+        layout_tables_tagged, layout_text_in_regions,
     };
 }

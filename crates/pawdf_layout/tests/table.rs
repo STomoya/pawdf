@@ -141,6 +141,7 @@ fn run(content: &PageContent, roots: Vec<StructKid>, region: Option<Rect>) -> Ve
         &Params::default(),
     )
     .unwrap()
+    .tables
 }
 
 /// `(row, col, row_span, col_span, header, text)` per cell.

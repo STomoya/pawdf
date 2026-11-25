@@ -1,4 +1,4 @@
-//! Table detection. So far only tagged PDFs are read, from their structure tree.
+//! Route 1: tables from the structure tree of a tagged PDF.
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -7,40 +7,9 @@ use pawdf_reader::{
     MarkedContentRef, Matrix, PageContent, Rect, Rotation, StructElement, StructKid, StructTree,
 };
 
+use super::{Cell, Table, Tables, finite, overlaps, union};
+use crate::Error;
 use crate::pdfminer::{self, Params};
-use crate::{Error, Layout};
-
-/// A table on one page.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Table {
-    /// Union of its cells' boxes, in display space.
-    pub bbox: Rect,
-    /// Rows of the whole table, including rows on other pages.
-    pub rows: usize,
-    /// Columns of the whole table: the widest row, counting spans.
-    pub cols: usize,
-    /// Cells of the rows on this page, row by row.
-    pub cells: Vec<Cell>,
-}
-
-/// One table cell.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Cell {
-    /// 0-based row in the whole table, so parts of a table split across pages line up.
-    pub row: usize,
-    /// 0-based column.
-    pub col: usize,
-    /// Rows it spans, clipped to the table's last row.
-    pub row_span: usize,
-    /// Columns it spans.
-    pub col_span: usize,
-    /// Whether it is a header cell (`TH`).
-    pub header: bool,
-    /// Union of its glyphs' boxes on this page, in display space; `None` when it has none.
-    pub bbox: Option<Rect>,
-    /// Its text, grouped by [`pdfminer`] with boxes in pdfminer's page space.
-    pub layout: Layout,
-}
 
 /// The tables of page `page` in a tagged PDF, from the `Table`, `TR`, `TH` and `TD` elements of
 /// `tree` (§14.8.4), in tree order. A table nested in a cell is returned on its own as
@@ -55,8 +24,7 @@ pub struct Cell {
 /// are left out, and row indices count every row, so the parts of a table split across pages
 /// can be joined. Marked content with no page, or with no sequence on this page, is ignored.
 ///
-/// Boxes are in display space, as for [`pdfminer::analyze_regions`], so a cell box can be
-/// passed back to it; `display` is the page's
+/// Boxes are in display space (see [the module](super)); `display` is the page's
 /// [`display_matrix`](pawdf_reader::Page::display_matrix). With a `region`, also in display
 /// space with corners in any order, only tables whose box overlaps it are returned. Hidden
 /// glyphs are left out.
@@ -70,11 +38,9 @@ pub fn tagged(
     display: &Matrix,
     region: Option<Rect>,
     params: &Params,
-) -> Result<Vec<Table>, Error> {
+) -> Result<Tables, Error> {
     params.validate()?;
-    if region.is_some_and(|r| ![r.x0, r.y0, r.x1, r.y1].iter().all(|v| v.is_finite())) {
-        return Err(Error::InvalidParam { name: "region" });
-    }
+    let region = super::region(region)?;
     let mut sequences: Sequences = HashMap::new();
     for m in &content.marked_contents {
         if let Some(mcid) = m.mcid {
@@ -88,7 +54,6 @@ pub fn tagged(
     for e in &tree.roots {
         find_tables(e, &mut tables);
     }
-    let region = region.map(|r| Rect::from_corners(r.x0, r.y0, r.x1, r.y1));
     let mut kept = Vec::new();
     for p in tables.iter().filter_map(|t| place(t, page, &sequences)) {
         let boxes: Vec<_> = p
@@ -105,14 +70,18 @@ pub fn tagged(
         kept.push((p, boxes, bbox));
     }
     if kept.is_empty() {
-        return Ok(Vec::new());
+        return Ok(Tables {
+            tables: Vec::new(),
+            diagnostics: Vec::new(),
+        });
     }
     let sets: Vec<Vec<usize>> = kept
         .iter()
         .flat_map(|(p, _, _)| p.cells.iter())
         .map(|c| c.glyphs.iter().flat_map(Range::clone).collect())
         .collect();
-    let mut layouts = pdfminer::analyze_sets(content, media_box, rotate, &sets, params).into_iter();
+    let (layouts, diagnostics) = pdfminer::analyze_sets(content, media_box, rotate, &sets, params);
+    let mut layouts = layouts.into_iter();
     let mut out = Vec::new();
     for (p, boxes, bbox) in kept {
         let cells = p
@@ -137,7 +106,10 @@ pub fn tagged(
             cells,
         });
     }
-    Ok(out)
+    Ok(Tables {
+        tables: out,
+        diagnostics,
+    })
 }
 
 /// Every `Table` element at or under `e`, in tree order. Recursion is bounded by the reader's
@@ -274,20 +246,6 @@ fn cell_box(content: &PageContent, display: &Matrix, glyphs: &[Range<usize>]) ->
         .map_while(|g| content.glyphs.get(g))
         .filter(|g| !g.hidden)
         .map(|g| display.transform_rect(g.bbox))
-        .filter(|b| [b.x0, b.y0, b.x1, b.y1].iter().all(|v| v.is_finite()))
+        .filter(finite)
         .reduce(|a, b| union(&a, &b))
-}
-
-fn union(a: &Rect, b: &Rect) -> Rect {
-    Rect {
-        x0: a.x0.min(b.x0),
-        y0: a.y0.min(b.y0),
-        x1: a.x1.max(b.x1),
-        y1: a.y1.max(b.y1),
-    }
-}
-
-/// Whether the boxes share some area; touching edges do not count.
-fn overlaps(a: &Rect, b: &Rect) -> bool {
-    a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1
 }
