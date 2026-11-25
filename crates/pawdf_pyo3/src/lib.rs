@@ -836,6 +836,10 @@ struct StructElement {
     #[pyo3(get)]
     page: Option<usize>,
     #[pyo3(get)]
+    row_span: u32,
+    #[pyo3(get)]
+    col_span: u32,
+    #[pyo3(get)]
     children: Py<PyList>,
 }
 
@@ -859,6 +863,8 @@ fn struct_element(py: Python<'_>, e: r::StructElement) -> PyResult<StructElement
         lang: e.lang,
         expansion: e.expansion,
         page: e.page,
+        row_span: e.row_span,
+        col_span: e.col_span,
         children: PyList::new(py, kids)?.unbind(),
     })
 }
@@ -951,6 +957,8 @@ struct StructTree {
     roots: Py<PyList>,
     #[pyo3(get)]
     diagnostics: Py<PyList>,
+    /// Kept for `layout_tables_tagged`, so the tree is not converted back from Python.
+    tree: r::StructTree,
 }
 
 #[pymethods]
@@ -1286,17 +1294,27 @@ fn block(py: Python<'_>, b: layout::Block) -> PyResult<Block> {
     })
 }
 
-fn layout_result(py: Python<'_>, read: Vec<r::Diagnostic>, l: layout::Layout) -> PyResult<Layout> {
+/// The page's reading diagnostics as Python objects, built once and shared by every layout
+/// of the page.
+fn shared_diagnostics(py: Python<'_>, read: Vec<r::Diagnostic>) -> PyResult<Vec<Py<Diagnostic>>> {
+    read.into_iter()
+        .map(|d| Py::new(py, Diagnostic(d)))
+        .collect()
+}
+
+fn layout_result(py: Python<'_>, read: &[Py<Diagnostic>], l: layout::Layout) -> PyResult<Layout> {
     let blocks = l
         .blocks
         .into_iter()
         .map(|b| Py::new(py, block(py, b)?))
         .collect::<PyResult<Vec<_>>>()?;
-    let mut diags = read;
-    diags.extend(l.diagnostics);
+    let mut diags: Vec<_> = read.iter().map(|d| d.clone_ref(py)).collect();
+    for d in l.diagnostics {
+        diags.push(Py::new(py, Diagnostic(d))?);
+    }
     Ok(Layout {
         blocks: PyList::new(py, blocks)?.unbind(),
-        diagnostics: diagnostics(py, diags)?,
+        diagnostics: PyList::new(py, diags)?.unbind(),
     })
 }
 
@@ -1330,7 +1348,7 @@ fn layout_pdfminer(
         (content.diagnostics, result)
     });
     let l = result.map_err(|e| PyValueError::new_err(e.to_string()))?;
-    layout_result(py, read, l)
+    layout_result(py, &shared_diagnostics(py, read)?, l)
 }
 
 /// Groups the glyphs in each display-space region on their own, with pdfminer.six's
@@ -1375,9 +1393,144 @@ fn layout_text_in_regions(
         (content.diagnostics, result)
     });
     let layouts = result.map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let read = shared_diagnostics(py, read)?;
     layouts
         .into_iter()
-        .map(|l| layout_result(py, read.clone(), l))
+        .map(|l| layout_result(py, &read, l))
+        .collect()
+}
+
+/// A table on one page.
+#[pyclass(frozen, module = "pawdf._core")]
+struct Table {
+    #[pyo3(get)]
+    bbox: Rect4,
+    #[pyo3(get)]
+    rows: usize,
+    #[pyo3(get)]
+    cols: usize,
+    #[pyo3(get)]
+    cells: Py<PyList>,
+}
+
+#[pymethods]
+impl Table {
+    fn __repr__(&self, py: Python<'_>) -> String {
+        format!(
+            "Table(rows={}, cols={}, cells={})",
+            self.rows,
+            self.cols,
+            self.cells.bind(py).len()
+        )
+    }
+}
+
+/// One table cell.
+#[pyclass(frozen, module = "pawdf._core")]
+struct Cell {
+    #[pyo3(get)]
+    row: usize,
+    #[pyo3(get)]
+    col: usize,
+    #[pyo3(get)]
+    row_span: usize,
+    #[pyo3(get)]
+    col_span: usize,
+    #[pyo3(get)]
+    header: bool,
+    #[pyo3(get)]
+    bbox: Option<Rect4>,
+    #[pyo3(get)]
+    layout: Py<Layout>,
+}
+
+#[pymethods]
+impl Cell {
+    fn __repr__(&self) -> String {
+        format!(
+            "Cell(row={}, col={}, row_span={}, col_span={}, header={})",
+            self.row,
+            self.col,
+            self.row_span,
+            self.col_span,
+            if self.header { "True" } else { "False" }
+        )
+    }
+}
+
+/// The tables of a page in a tagged PDF, from the structure tree. Releases the GIL while
+/// reading and analyzing.
+#[pyfunction]
+#[pyo3(signature = (page, tree, region=None, *, line_overlap=0.5, char_margin=2.0, line_margin=0.5, word_margin=0.1, boxes_flow=Some(0.5), detect_vertical=false))]
+#[allow(clippy::too_many_arguments)]
+fn layout_tables_tagged(
+    py: Python<'_>,
+    page: &Bound<'_, Page>,
+    tree: &Bound<'_, StructTree>,
+    region: Option<Rect4>,
+    line_overlap: f64,
+    char_margin: f64,
+    line_margin: f64,
+    word_margin: f64,
+    boxes_flow: Option<f64>,
+    detect_vertical: bool,
+) -> PyResult<Vec<Table>> {
+    let params = layout::pdfminer::Params {
+        line_overlap,
+        char_margin,
+        line_margin,
+        word_margin,
+        boxes_flow,
+        detect_vertical,
+    };
+    let region = region.map(|(x0, y0, x1, y1)| r::Rect { x0, y0, x1, y1 });
+    let (p, tree) = (&page.get().0, &tree.get().tree);
+    let (read, result) = py.detach(|| {
+        let content = p.content();
+        let result = layout::table::tagged(
+            &content,
+            tree,
+            p.index(),
+            p.media_box(),
+            p.rotate(),
+            &p.display_matrix(),
+            region,
+            &params,
+        );
+        (content.diagnostics, result)
+    });
+    let tables = result.map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let mut read = read;
+    read.extend_from_slice(&tree.diagnostics);
+    let read = shared_diagnostics(py, read)?;
+    tables
+        .into_iter()
+        .map(|t| {
+            let cells = t
+                .cells
+                .into_iter()
+                .map(|c| {
+                    Py::new(
+                        py,
+                        Cell {
+                            row: c.row,
+                            col: c.col,
+                            row_span: c.row_span,
+                            col_span: c.col_span,
+                            header: c.header,
+                            bbox: c.bbox.map(rect),
+                            layout: Py::new(py, layout_result(py, &read, c.layout)?)?,
+                        },
+                    )
+                })
+                .collect::<PyResult<Vec<_>>>()?;
+            Ok(Table {
+                bbox: rect(t.bbox),
+                rows: t.rows,
+                cols: t.cols,
+                cells: PyList::new(py, cells)?.unbind(),
+            })
+        })
         .collect()
 }
 
@@ -1618,12 +1771,14 @@ impl Document {
         let t = py.detach(|| self.0.structure_tree());
         let roots = t
             .roots
-            .into_iter()
+            .iter()
+            .cloned()
             .map(|e| Py::new(py, struct_element(py, e)?))
             .collect::<PyResult<Vec<_>>>()?;
         Ok(StructTree {
             roots: PyList::new(py, roots)?.unbind(),
-            diagnostics: diagnostics(py, t.diagnostics)?,
+            diagnostics: diagnostics(py, t.diagnostics.clone())?,
+            tree: t,
         })
     }
 
@@ -1648,10 +1803,11 @@ impl Document {
 mod _core {
     #[pymodule_export]
     use super::{
-        Annotation, Annotations, Block, Color, Destination, Diagnostic, Document, EncryptedError,
-        Encryption, FontInfo, FormField, FormFields, Glyph, Image, Layout, Line, MarkedContent,
-        MarkedContentRef, ObjectRef, Outline, OutlineItem, Page, PageContent, PasswordError, Path,
-        PdfError, Permissions, SoftMask, StructElement, StructTree, UnsupportedEncryptionError,
-        Widget, Word, layout_pdfminer, layout_text_in_regions,
+        Annotation, Annotations, Block, Cell, Color, Destination, Diagnostic, Document,
+        EncryptedError, Encryption, FontInfo, FormField, FormFields, Glyph, Image, Layout, Line,
+        MarkedContent, MarkedContentRef, ObjectRef, Outline, OutlineItem, Page, PageContent,
+        PasswordError, Path, PdfError, Permissions, SoftMask, StructElement, StructTree, Table,
+        UnsupportedEncryptionError, Widget, Word, layout_pdfminer, layout_tables_tagged,
+        layout_text_in_regions,
     };
 }

@@ -511,7 +511,8 @@ pub struct StructTree {
     pub diagnostics: Vec<Diagnostic>,
 }
 
-/// One structure element (§14.7.2). Attribute objects and classes are not read.
+/// One structure element (§14.7.2). Of attribute objects, only the table spans are read;
+/// attribute classes are not.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StructElement {
     /// `/S` as written, e.g. `P`, `H1`, or a custom name; empty when missing.
@@ -531,6 +532,12 @@ pub struct StructElement {
     pub expansion: Option<String>,
     /// 0-based page index of its own `/Pg`.
     pub page: Option<usize>,
+    /// `/RowSpan` of its Table attribute object (§14.8.5.7): the rows a table cell spans; 1
+    /// when absent or malformed.
+    pub row_span: u32,
+    /// `/ColSpan` of its Table attribute object (§14.8.5.7): the columns a table cell spans;
+    /// 1 when absent or malformed.
+    pub col_span: u32,
     /// Kids, in `/K` order.
     pub children: Vec<StructKid>,
 }

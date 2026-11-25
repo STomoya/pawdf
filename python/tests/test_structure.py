@@ -38,7 +38,7 @@ def test_structure_tree() -> None:
                     b'<< /S /Para /P 5 0 R /Pg 3 0 R /Alt (a) /T (t) /Lang (en) /ActualText (x) /E (e)'
                     b' /K [0 << /Type /MCR /MCID 1 /Stm 9 0 R >> << /Type /OBJR /Obj 4 0 R >> 7 0 R] >>'
                 ),
-                b'<< /S /Span /P 6 0 R >>',
+                b'<< /S /Span /P 6 0 R /A << /O /Table /RowSpan 2 /ColSpan 3 >> >>',
             )
         )
     ).structure_tree()
@@ -55,6 +55,7 @@ def test_structure_tree() -> None:
     assert (objr.object, objr.page, objr.annotation) == ((4, 0), 0, 0)
     assert isinstance(span, pawdf.StructElement)
     assert span.title is None
+    assert (p.row_span, p.col_span, span.row_span, span.col_span) == (1, 1, 2, 3)
     assert repr(p) == "StructElement(role='Para', standard='P', page=0, children=4)"
     assert repr(mcr) == 'MarkedContentRef(page=0, mcid=1, stream=(9, 0))'
     assert repr(objr) == 'ObjectRef(object=(4, 0), page=0, annotation=0)'

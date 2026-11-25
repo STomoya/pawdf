@@ -444,7 +444,7 @@ class Outline:
 
 @final
 class StructElement:
-    """One structure element of a tagged PDF. Attribute objects and classes are not read."""
+    """One structure element of a tagged PDF. Of attribute objects, only the table spans are read."""
 
     @property
     def role(self) -> str:
@@ -470,6 +470,12 @@ class StructElement:
     @property
     def page(self) -> int | None:
         """0-based page index of its own ``/Pg``."""
+    @property
+    def row_span(self) -> int:
+        """``/RowSpan`` of its Table attribute object; 1 when absent or malformed."""
+    @property
+    def col_span(self) -> int:
+        """``/ColSpan`` of its Table attribute object; 1 when absent or malformed."""
     @property
     def children(self) -> list[StructElement | MarkedContentRef | ObjectRef]:
         """Kids, in ``/K`` order."""
@@ -798,5 +804,96 @@ def layout_text_in_regions(
 
     Raises:
         ValueError: If a region is not finite, a setting is not finite, or ``boxes_flow`` is
+            outside [-1, 1].
+    """
+
+@final
+class Table:
+    """A table on one page."""
+
+    @property
+    def bbox(self) -> Rect:
+        """Union of its cells' boxes, in display space."""
+    @property
+    def rows(self) -> int:
+        """Rows of the whole table, including rows on other pages."""
+    @property
+    def cols(self) -> int:
+        """Columns of the whole table: the widest row, counting spans."""
+    @property
+    def cells(self) -> list[Cell]:
+        """Cells of the rows on this page, row by row."""
+
+@final
+class Cell:
+    """One table cell."""
+
+    @property
+    def row(self) -> int:
+        """0-based row in the whole table, so parts of a table split across pages line up."""
+    @property
+    def col(self) -> int:
+        """0-based column."""
+    @property
+    def row_span(self) -> int:
+        """Rows it spans, clipped to the table's last row."""
+    @property
+    def col_span(self) -> int:
+        """Columns it spans."""
+    @property
+    def header(self) -> bool:
+        """Whether it is a header cell (``TH``)."""
+    @property
+    def bbox(self) -> Rect | None:
+        """Union of its glyphs' boxes on this page, in display space; ``None`` when it has none."""
+    @property
+    def layout(self) -> Layout:
+        """Its text, grouped with pdfminer.six's algorithm, with boxes in pdfminer's page space."""
+
+def layout_tables_tagged(
+    page: Page,
+    tree: StructTree,
+    region: Rect | None = None,
+    *,
+    line_overlap: float = 0.5,
+    char_margin: float = 2.0,
+    line_margin: float = 0.5,
+    word_margin: float = 0.1,
+    boxes_flow: float | None = 0.5,
+    detect_vertical: bool = False,
+) -> list[Table]:
+    """Read the tables of a page in a tagged PDF from its structure tree.
+
+    Tables are the ``Table`` elements of ``tree``, in tree order; a table nested in a cell is
+    returned on its own as well. Rows are ``TR`` elements, directly or in ``THead``, ``TBody`` or
+    ``TFoot``; cells are their ``TH`` and ``TD`` elements, placed on the grid as in HTML. A cell's
+    text is the marked content under it on this page.
+
+    A table is returned when it has glyphs on this page. Rows with content only on other pages
+    are left out, and row indices count every row, so the parts of a table split across pages
+    can be joined.
+
+    Boxes are in display space, as for ``layout_text_in_regions``, so a cell box can be passed to
+    it. With a ``region``, also in display space with corners in either order, only tables whose
+    box overlaps it are returned. Each cell layout's diagnostics hold the recoveries made while
+    reading the page and the tree, then those made grouping that cell. Settings are as for
+    ``layout_pdfminer``. Releases the GIL while reading and analyzing.
+
+    Args:
+        page: The page to read.
+        tree: The document's structure tree, from ``Document.structure_tree``.
+        region: The extent of a table, in display space.
+        line_overlap: As for ``layout_pdfminer``.
+        char_margin: As for ``layout_pdfminer``.
+        line_margin: As for ``layout_pdfminer``.
+        word_margin: As for ``layout_pdfminer``.
+        boxes_flow: As for ``layout_pdfminer``.
+        detect_vertical: As for ``layout_pdfminer``.
+
+    Returns:
+        The page's tables, in tree order.
+
+    Raises:
+        ValueError: If the region is not finite, a setting is not finite, or ``boxes_flow`` is
             outside [-1, 1].
     """
