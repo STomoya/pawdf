@@ -11,8 +11,11 @@ use super::{Cell, Table, Tables, overlaps, union};
 use crate::Error;
 use crate::pdfminer::{self, Params};
 
-/// Crossing checks and cell-search steps allowed per page. A 100 × 100 grid needs about
-/// 10^4 crossing checks and as many search steps.
+/// Horizontal × vertical edge pairs checked for crossings per page. Each crossing is kept in a
+/// map, so this also bounds memory. A 100 × 100 grid needs about 10^4.
+const MAX_PAIRS: u64 = 1 << 20;
+
+/// Cell-search steps allowed per page. A 100 × 100 grid needs about 2 × 10^4.
 const MAX_WORK: u64 = 1 << 23;
 
 /// A segment is horizontal (vertical) when its ends differ by at most this in y (x), in points,
@@ -336,8 +339,7 @@ fn shares(a: &[usize], b: &[usize]) -> bool {
 /// Cells as rectangles between crossings (pdfplumber's `intersections_to_cells`), grouped into
 /// tables by shared corners and sorted by their top-left cell; `None` past the work limit.
 fn find_tables(h: &[Edge], v: &[Edge], tol: f64) -> Option<Vec<Vec<Rect>>> {
-    let mut work = (h.len() as u64).saturating_mul(v.len() as u64);
-    if work > MAX_WORK {
+    if (h.len() as u64).saturating_mul(v.len() as u64) > MAX_PAIRS {
         return None;
     }
     let mut crossings = Crossings::new();
@@ -370,6 +372,7 @@ fn find_tables(h: &[Edge], v: &[Edge], tol: f64) -> Option<Vec<Vec<Rect>>> {
     }
     let edges_at = |x: f64, y: f64| crossings.get(&key(x, y));
     let mut cells = Vec::new();
+    let mut work = 0u64;
     for &(x, y) in &points {
         let (Some(here), Some(col), Some(row)) = (
             edges_at(x, y),
@@ -382,6 +385,9 @@ fn find_tables(h: &[Edge], v: &[Edge], tol: f64) -> Option<Vec<Vec<Rect>>> {
         let right = &row[row.partition_point(|&r| r <= x)..];
         'search: for &by in below {
             work += 1;
+            if work > MAX_WORK {
+                return None;
+            }
             let Some(down) = edges_at(x, by).filter(|d| shares(&here.1, &d.1)) else {
                 continue;
             };

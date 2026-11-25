@@ -342,13 +342,13 @@ fn region_without_lines_is_one_cell() {
 #[test]
 fn too_many_lines_hit_the_work_limit() {
     let mut segs = Vec::new();
-    for i in 0..3000 {
+    for i in 0..1100 {
         let p = i as f64 * 5.;
         segs.extend([
             Segment::MoveTo(Point { x: 0., y: p }),
-            Segment::LineTo(Point { x: 15000., y: p }),
+            Segment::LineTo(Point { x: 5500., y: p }),
             Segment::MoveTo(Point { x: p, y: 0. }),
-            Segment::LineTo(Point { x: p, y: 15000. }),
+            Segment::LineTo(Point { x: p, y: 5500. }),
         ]);
     }
     let got = find(&page(vec![path(segs)], vec![]), None);
@@ -425,4 +425,25 @@ fn missing_corner_leaves_no_cell() {
             (1, 0, 1, 1, s("c")),
         ]
     );
+}
+
+#[test]
+fn column_of_crossings_hits_the_work_limit() {
+    // One vertical rule crossed by short horizontal ones: no cells, but the search below each
+    // crossing scans the rest of the column.
+    let mut segs = vec![
+        Segment::MoveTo(Point { x: 10., y: 0. }),
+        Segment::LineTo(Point { x: 10., y: 20000. }),
+    ];
+    for i in 0..4200 {
+        let y = i as f64 * 4.;
+        segs.extend([
+            Segment::MoveTo(Point { x: 0., y }),
+            Segment::LineTo(Point { x: 20., y }),
+        ]);
+    }
+    let got = find(&page(vec![path(segs)], vec![]), None);
+    assert!(got.tables.is_empty());
+    assert_eq!(got.diagnostics.len(), 1);
+    assert_eq!(got.diagnostics[0].kind, DiagnosticKind::LayoutLimit);
 }
