@@ -1,11 +1,13 @@
 //! Layout analysis: groups a page's glyphs into blocks, lines and words in reading order.
 //!
 //! Each algorithm lives in its own module and returns the shared [`Layout`] types. The only
-//! algorithm so far is [`pdfminer`], a port of pdfminer.six's layout analysis.
+//! algorithm so far is [`pdfminer`], a port of pdfminer.six's layout analysis. [`table`]
+//! finds tables and groups each cell's text with it.
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
 pub mod pdfminer;
+pub mod table;
 
 use std::fmt;
 

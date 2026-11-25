@@ -86,7 +86,7 @@ impl Default for Params {
 }
 
 impl Params {
-    fn validate(&self) -> Result<(), Error> {
+    pub(crate) fn validate(&self) -> Result<(), Error> {
         let checks = [
             ("line_overlap", self.line_overlap.is_finite()),
             ("char_margin", self.char_margin.is_finite()),
@@ -146,28 +146,54 @@ pub fn analyze_regions(
     if !regions.iter().all(finite) {
         return Err(Error::InvalidParam { name: "regions" });
     }
-    let (m, bound) = input::page_space(media_box, rotate);
-    let mut diagnostics = Vec::new();
-    let chars = input::select(content, &m, &mut diagnostics);
-    let centres: Vec<_> = chars
+    let centres: Vec<_> = content
+        .glyphs
         .iter()
-        .map(|c| centre(display, &content.glyphs[c.glyph].bbox))
+        .map(|g| centre(display, &g.bbox))
         .collect();
     // ponytail: every region scans every glyph, O(regions × glyphs); index glyphs if pages
     // with thousands of cells get slow.
-    Ok(regions
+    let sets: Vec<Vec<usize>> = regions
         .iter()
         .map(|r| {
             let r = Rect::from_corners(r.x0, r.y0, r.x1, r.y1);
-            let inside: Vec<_> = chars
-                .iter()
-                .zip(&centres)
-                .filter(|(_, p)| (r.x0..r.x1).contains(&p.x) && (r.y0..r.y1).contains(&p.y))
-                .map(|(c, _)| c.clone())
-                .collect();
+            (0..centres.len())
+                .filter(|&g| {
+                    let p = centres[g];
+                    (r.x0..r.x1).contains(&p.x) && (r.y0..r.y1).contains(&p.y)
+                })
+                .collect()
+        })
+        .collect();
+    Ok(analyze_sets(content, media_box, rotate, &sets, params))
+}
+
+/// Groups each set of glyph indices on its own, one [`Layout`] per set. Indices of hidden
+/// glyphs, of non-finite boxes, or past the page's glyphs are left out. `params` must be
+/// validated.
+pub(crate) fn analyze_sets(
+    content: &PageContent,
+    media_box: Rect,
+    rotate: Rotation,
+    sets: &[Vec<usize>],
+    params: &Params,
+) -> Vec<Layout> {
+    let (m, bound) = input::page_space(media_box, rotate);
+    let mut diagnostics = Vec::new();
+    let chars = input::select(content, &m, &mut diagnostics);
+    let mut at = vec![None; content.glyphs.len()];
+    for (i, c) in chars.iter().enumerate() {
+        at[c.glyph] = Some(i);
+    }
+    sets.iter()
+        .map(|set| {
+            let mut idx: Vec<usize> = set.iter().filter_map(|&g| *at.get(g)?).collect();
+            idx.sort_unstable();
+            idx.dedup();
+            let inside: Vec<_> = idx.iter().map(|&i| chars[i].clone()).collect();
             group(&inside, bound, params, diagnostics.clone())
         })
-        .collect())
+        .collect()
 }
 
 /// Halves before adding, so corners near `f64::MAX` don't overflow.
