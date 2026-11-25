@@ -443,3 +443,83 @@ fn non_finite_region_is_rejected() {
     );
     assert_eq!(got, Err(Error::InvalidParam { name: "region" }));
 }
+
+#[test]
+fn row_with_only_missing_sequences_is_dropped() {
+    let got = run(
+        &abcd(),
+        vec![el(
+            "Table",
+            vec![
+                el("TR", vec![td(0)]),
+                el("TR", vec![el("TD", vec![mc_on(0, 9)])]),
+            ],
+        )],
+        None,
+    );
+    assert_eq!(grid(&got[0]), [(0, 0, 1, 1, false, s("a"))]);
+}
+
+#[test]
+fn row_span_ends_after_its_rows() {
+    let got = run(
+        &abcd(),
+        vec![el(
+            "Table",
+            vec![
+                el("TR", vec![span(td(0), 2, 1), td(0)]),
+                el("TR", vec![td(1)]),
+                el("TR", vec![td(2), el("TD", vec![mc_on(0, 0), mc_on(0, 0)])]),
+            ],
+        )],
+        None,
+    );
+    let g: Vec<_> = grid(&got[0]).into_iter().map(|c| (c.0, c.1, c.5)).collect();
+    assert_eq!(
+        g,
+        [
+            (0, 0, s("a")),
+            (0, 1, s("a")),
+            (1, 1, s("b")),
+            (2, 0, s("c")),
+            (2, 1, s("a")),
+        ]
+    );
+}
+
+#[test]
+fn stream_generation_is_ignored() {
+    let mut c = abcd();
+    c.marked_contents.push(marked(
+        Some(Ref {
+            num: 9,
+            generation: 0,
+        }),
+        0,
+        3,
+    ));
+    let cell = el(
+        "TD",
+        vec![StructKid::MarkedContent(MarkedContentRef {
+            page: Some(0),
+            mcid: 0,
+            stream: Some(Ref {
+                num: 9,
+                generation: 1,
+            }),
+        })],
+    );
+    let got = run(&c, vec![el("Table", vec![el("TR", vec![cell])])], None);
+    assert_eq!(grid(&got[0])[0].5, "d");
+}
+
+#[test]
+fn table_with_only_hidden_glyphs_is_skipped() {
+    let mut c = abcd();
+    c.glyphs[0].hidden = true;
+    c.marked_contents.push(MarkedContent {
+        mcid: None,
+        ..marked(None, 0, 1)
+    });
+    assert!(run(&c, vec![el("Table", vec![el("TR", vec![td(0)])])], None).is_empty());
+}

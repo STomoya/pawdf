@@ -4,8 +4,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use pawdf_reader::{
-    MarkedContentRef, Matrix, PageContent, Rect, Ref, Rotation, StructElement, StructKid,
-    StructTree,
+    MarkedContentRef, Matrix, PageContent, Rect, Rotation, StructElement, StructKid, StructTree,
 };
 
 use crate::pdfminer::{self, Params};
@@ -76,11 +75,11 @@ pub fn tagged(
     if region.is_some_and(|r| ![r.x0, r.y0, r.x1, r.y1].iter().all(|v| v.is_finite())) {
         return Err(Error::InvalidParam { name: "region" });
     }
-    let mut sequences: HashMap<(Option<Ref>, u32), Vec<Range<usize>>> = HashMap::new();
+    let mut sequences: Sequences = HashMap::new();
     for m in &content.marked_contents {
         if let Some(mcid) = m.mcid {
             sequences
-                .entry((m.stream, mcid))
+                .entry((m.stream.map(|r| r.num), mcid))
                 .or_default()
                 .push(m.glyphs.clone());
         }
@@ -89,49 +88,48 @@ pub fn tagged(
     for e in &tree.roots {
         find_tables(e, &mut tables);
     }
-    let parts: Vec<_> = tables
-        .iter()
-        .filter_map(|t| place(t, page, &sequences))
-        .collect();
-    let sets: Vec<Vec<usize>> = parts
-        .iter()
-        .flat_map(|p| p.cells.iter().map(|c| c.glyphs.clone()))
-        .collect();
-    let mut layouts = pdfminer::analyze_sets(content, media_box, rotate, &sets, params).into_iter();
     let region = region.map(|r| Rect::from_corners(r.x0, r.y0, r.x1, r.y1));
-    let mut out = Vec::new();
-    for p in parts {
-        let cells: Vec<Cell> = p
+    let mut kept = Vec::new();
+    for p in tables.iter().filter_map(|t| place(t, page, &sequences)) {
+        let boxes: Vec<_> = p
             .cells
-            .into_iter()
-            .zip(layouts.by_ref())
-            .map(|(c, layout)| Cell {
-                row: c.row,
-                col: c.col,
-                row_span: c.row_span,
-                col_span: c.col_span,
-                header: c.header,
-                bbox: c
-                    .glyphs
-                    .iter()
-                    .filter_map(|&g| content.glyphs.get(g))
-                    .filter(|g| !g.hidden)
-                    .map(|g| display.transform_rect(g.bbox))
-                    .filter(|b| [b.x0, b.y0, b.x1, b.y1].iter().all(|v| v.is_finite()))
-                    .reduce(|a, b| union(&a, &b)),
-                layout,
-            })
-            .collect();
-        let Some(bbox) = cells
             .iter()
-            .filter_map(|c| c.bbox)
-            .reduce(|a, b| union(&a, &b))
-        else {
+            .map(|c| cell_box(content, display, &c.glyphs))
+            .collect();
+        let Some(bbox) = boxes.iter().flatten().copied().reduce(|a, b| union(&a, &b)) else {
             continue;
         };
         if region.is_some_and(|r| !overlaps(&r, &bbox)) {
             continue;
         }
+        kept.push((p, boxes, bbox));
+    }
+    if kept.is_empty() {
+        return Ok(Vec::new());
+    }
+    let sets: Vec<Vec<usize>> = kept
+        .iter()
+        .flat_map(|(p, _, _)| p.cells.iter())
+        .map(|c| c.glyphs.iter().flat_map(Range::clone).collect())
+        .collect();
+    let mut layouts = pdfminer::analyze_sets(content, media_box, rotate, &sets, params).into_iter();
+    let mut out = Vec::new();
+    for (p, boxes, bbox) in kept {
+        let cells = p
+            .cells
+            .into_iter()
+            .zip(boxes)
+            .zip(layouts.by_ref())
+            .map(|((c, bbox), layout)| Cell {
+                row: c.row,
+                col: c.col,
+                row_span: c.row_span,
+                col_span: c.col_span,
+                header: c.header,
+                bbox,
+                layout,
+            })
+            .collect();
         out.push(Table {
             bbox,
             rows: p.rows,
@@ -182,16 +180,17 @@ struct RawCell {
     row_span: usize,
     col_span: usize,
     header: bool,
-    glyphs: Vec<usize>,
+    /// Glyph index ranges, sorted and merged, so content referenced twice is counted once.
+    glyphs: Vec<Range<usize>>,
 }
+
+/// Glyph ranges of the marked-content sequences on a page, by `(stream object number, MCID)`.
+/// Generations are ignored, as `File::resolve` does.
+type Sequences = HashMap<(Option<u32>, u32), Vec<Range<usize>>>;
 
 /// Places the table's cells on its grid and keeps the rows with content on `page`; `None` when
 /// no row has.
-fn place(
-    table: &StructElement,
-    page: usize,
-    sequences: &HashMap<(Option<Ref>, u32), Vec<Range<usize>>>,
-) -> Option<Part> {
+fn place(table: &StructElement, page: usize, sequences: &Sequences) -> Option<Part> {
     let rows: Vec<&StructElement> = elements(table)
         .flat_map(|e| match e.standard.as_str() {
             "TR" => vec![e],
@@ -199,47 +198,50 @@ fn place(
             _ => vec![],
         })
         .collect();
-    // Column ranges taken in each row by cells spanning down from rows above.
-    // ponytail: a spanning cell marks every row it covers and each lookup scans the row's
-    // ranges, O(cells × rows) at worst; use interval trees if huge tagged tables get slow.
-    let mut taken: Vec<Vec<Range<usize>>> = vec![Vec::new(); rows.len()];
+    // Cells spanning down from rows above: the row they end before, and their columns.
+    // ponytail: each placement scans the open spans, O(cells × spans) at worst; use an
+    // interval tree if huge tagged tables get slow.
+    let mut spanning: Vec<(usize, Range<usize>)> = Vec::new();
     let mut cols = 0;
     let mut cells = Vec::new();
     for (r, row) in rows.iter().enumerate() {
+        spanning.retain(|(until, _)| *until > r);
         let mut col = 0;
         let mut row_cells = Vec::new();
+        let mut opened = Vec::new();
         let mut here = false;
         for cell in elements(row).filter(|c| matches!(c.standard.as_str(), "TH" | "TD")) {
-            while let Some(t) = taken[r].iter().find(|t| t.contains(&col)) {
+            while let Some((_, t)) = spanning.iter().find(|(_, t)| t.contains(&col)) {
                 col = t.end;
             }
             let row_span = (cell.row_span as usize).clamp(1, rows.len() - r);
             let col_span = cell.col_span.max(1) as usize;
             let end = col.saturating_add(col_span);
-            for t in &mut taken[r..r + row_span] {
-                t.push(col..end);
+            if row_span > 1 {
+                opened.push((r + row_span, col..end));
             }
             let mut refs = Vec::new();
             marked_refs(cell, &mut refs);
-            let refs: Vec<_> = refs.into_iter().filter(|m| m.page == Some(page)).collect();
-            here |= !refs.is_empty();
-            let glyphs = refs
-                .iter()
-                .filter_map(|m| sequences.get(&(m.stream, m.mcid)))
+            let ranges: Vec<_> = refs
+                .into_iter()
+                .filter(|m| m.page == Some(page))
+                .filter_map(|m| sequences.get(&(m.stream.map(|r| r.num), m.mcid)))
                 .flatten()
-                .flat_map(Range::clone)
+                .cloned()
                 .collect();
+            here |= !ranges.is_empty();
             row_cells.push(RawCell {
                 row: r,
                 col,
                 row_span,
                 col_span,
                 header: cell.standard == "TH",
-                glyphs,
+                glyphs: merge(ranges),
             });
             cols = cols.max(end);
             col = end;
         }
+        spanning.extend(opened);
         if here {
             cells.extend(row_cells);
         }
@@ -249,6 +251,31 @@ fn place(
         cols,
         cells,
     })
+}
+
+fn merge(mut ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
+    ranges.retain(|r| !r.is_empty());
+    ranges.sort_unstable_by_key(|r| (r.start, r.end));
+    let mut out: Vec<Range<usize>> = Vec::new();
+    for r in ranges {
+        match out.last_mut() {
+            Some(last) if r.start <= last.end => last.end = last.end.max(r.end),
+            _ => out.push(r),
+        }
+    }
+    out
+}
+
+/// Union of the boxes of a cell's visible glyphs with finite corners, in display space.
+fn cell_box(content: &PageContent, display: &Matrix, glyphs: &[Range<usize>]) -> Option<Rect> {
+    glyphs
+        .iter()
+        .flat_map(Range::clone)
+        .map_while(|g| content.glyphs.get(g))
+        .filter(|g| !g.hidden)
+        .map(|g| display.transform_rect(g.bbox))
+        .filter(|b| [b.x0, b.y0, b.x1, b.y1].iter().all(|v| v.is_finite()))
+        .reduce(|a, b| union(&a, &b))
 }
 
 fn union(a: &Rect, b: &Rect) -> Rect {
