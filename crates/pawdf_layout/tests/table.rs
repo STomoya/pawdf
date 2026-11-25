@@ -2,8 +2,8 @@ use pawdf_layout::Error;
 use pawdf_layout::pdfminer::Params;
 use pawdf_layout::table::{Table, tagged};
 use pawdf_reader::{
-    Color, Glyph, MarkedContent, MarkedContentRef, Matrix, PageContent, Point, Rect, Ref,
-    RenderMode, Rotation, StructElement, StructKid, StructTree, WritingMode,
+    Color, Glyph, MarkedContent, MarkedContentRef, Matrix, ObjectRef, PageContent, Point, Rect,
+    Ref, RenderMode, Rotation, StructElement, StructKid, StructTree, WritingMode,
 };
 
 const MEDIA: Rect = Rect {
@@ -378,11 +378,18 @@ fn form_xobject_content_is_matched_by_stream() {
     c.marked_contents.push(marked(Some(form), 0, 3));
     let in_form = el(
         "TD",
-        vec![StructKid::MarkedContent(MarkedContentRef {
-            page: Some(0),
-            mcid: 0,
-            stream: Some(form),
-        })],
+        vec![
+            StructKid::Object(ObjectRef {
+                object: form,
+                page: Some(0),
+                annotation: None,
+            }),
+            StructKid::MarkedContent(MarkedContentRef {
+                page: Some(0),
+                mcid: 0,
+                stream: Some(form),
+            }),
+        ],
     );
     let got = run(&c, vec![el("Table", vec![el("TR", vec![in_form])])], None);
     assert_eq!(grid(&got[0])[0].5, "d");

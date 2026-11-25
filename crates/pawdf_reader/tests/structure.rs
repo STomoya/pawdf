@@ -497,7 +497,10 @@ fn table_spans_from_attribute_dict_or_array() {
         ),
         obj(14, "<< /S /TD /P 11 0 R >>"),
         obj(15, "<< /S /TD /P 11 0 R /A null >>"),
-        obj(16, "<< /O /Table /ColSpan 2 /RowSpan 3 >>"),
+        obj(
+            16,
+            "<< /O /Table /ColSpan 2 /RowSpan 3 /Length 0 >>\nstream\n\nendstream",
+        ),
     ]);
     assert_eq!(t.diagnostics, []);
     assert_eq!(spans(&t), [(2, 3), (4, 2), (1, 1), (1, 1)]);
