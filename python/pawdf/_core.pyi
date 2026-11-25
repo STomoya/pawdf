@@ -444,7 +444,7 @@ class Outline:
 
 @final
 class StructElement:
-    """One structure element of a tagged PDF. Attribute objects and classes are not read."""
+    """One structure element of a tagged PDF. Of attribute objects, only the table spans are read."""
 
     @property
     def role(self) -> str:
@@ -470,6 +470,12 @@ class StructElement:
     @property
     def page(self) -> int | None:
         """0-based page index of its own ``/Pg``."""
+    @property
+    def row_span(self) -> int:
+        """``/RowSpan`` of its Table attribute object; 1 when absent or malformed."""
+    @property
+    def col_span(self) -> int:
+        """``/ColSpan`` of its Table attribute object; 1 when absent or malformed."""
     @property
     def children(self) -> list[StructElement | MarkedContentRef | ObjectRef]:
         """Kids, in ``/K`` order."""

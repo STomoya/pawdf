@@ -468,3 +468,53 @@ fn wrong_root_type_is_read_and_reported() {
     );
     assert_eq!(t.diagnostics, [bad(10)]);
 }
+
+fn spans(t: &StructTree) -> Vec<(u32, u32)> {
+    let root = &t.roots[0];
+    (0..root.children.len())
+        .map(|i| {
+            let e = child(root, i);
+            (e.row_span, e.col_span)
+        })
+        .collect()
+}
+
+#[test]
+fn table_spans_from_attribute_dict_or_array() {
+    let t = tree(&[
+        obj(10, "<< /K 11 0 R >>"),
+        obj(
+            11,
+            "<< /S /Table /P 10 0 R /K [12 0 R 13 0 R 14 0 R 15 0 R] >>",
+        ),
+        obj(
+            12,
+            "<< /S /TD /P 11 0 R /A << /O /Table /RowSpan 2 /ColSpan 3 >> >>",
+        ),
+        obj(
+            13,
+            "<< /S /TD /P 11 0 R /A [<< /O /Layout /ColSpan 9 >> 16 0 R 0 << /O /Table /RowSpan 4 >>] >>",
+        ),
+        obj(14, "<< /S /TD /P 11 0 R >>"),
+        obj(15, "<< /S /TD /P 11 0 R /A null >>"),
+        obj(16, "<< /O /Table /ColSpan 2 /RowSpan 3 >>"),
+    ]);
+    assert_eq!(t.diagnostics, []);
+    assert_eq!(spans(&t), [(2, 3), (4, 2), (1, 1), (1, 1)]);
+}
+
+#[test]
+fn bad_table_span_is_reported() {
+    let t = tree(&[
+        obj(10, "<< /K 11 0 R >>"),
+        obj(11, "<< /S /Table /P 10 0 R /K [12 0 R 13 0 R] >>"),
+        obj(
+            12,
+            "<< /S /TD /P 11 0 R /A << /O /Table /RowSpan 0 /ColSpan (x) >> >>",
+        ),
+        obj(13, "<< /S /TD /P 11 0 R /A [14 0 R /Junk] >>"),
+        obj(14, "<< /O /Table /ColSpan 4294967296 >>"),
+    ]);
+    assert_eq!(t.diagnostics, [bad(12), bad(12), bad(14), bad(13)]);
+    assert_eq!(spans(&t), [(1, 1), (1, 1)]);
+}

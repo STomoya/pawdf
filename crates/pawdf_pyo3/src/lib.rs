@@ -836,6 +836,10 @@ struct StructElement {
     #[pyo3(get)]
     page: Option<usize>,
     #[pyo3(get)]
+    row_span: u32,
+    #[pyo3(get)]
+    col_span: u32,
+    #[pyo3(get)]
     children: Py<PyList>,
 }
 
@@ -859,6 +863,8 @@ fn struct_element(py: Python<'_>, e: r::StructElement) -> PyResult<StructElement
         lang: e.lang,
         expansion: e.expansion,
         page: e.page,
+        row_span: e.row_span,
+        col_span: e.col_span,
         children: PyList::new(py, kids)?.unbind(),
     })
 }

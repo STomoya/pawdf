@@ -206,6 +206,7 @@ impl<'a> Walk<'a> {
                 ..pg
             },
         };
+        let (row_span, col_span) = self.table_spans(d, at);
         StructElement {
             role: String::from_utf8_lossy(role).into_owned(),
             standard,
@@ -215,8 +216,56 @@ impl<'a> Walk<'a> {
             lang: text(&mut self.cx, d, b"Lang", at),
             expansion: text(&mut self.cx, d, b"E", at),
             page,
+            row_span,
+            col_span,
             children: self.kids(d, at, me, kids_pg, depth),
         }
+    }
+
+    /// `/RowSpan` and `/ColSpan` from the Table attribute objects in `/A` (§14.7.6, §14.8.5.7);
+    /// a later object overrides an earlier one. Revision numbers in an `/A` array are skipped.
+    fn table_spans(&mut self, d: &Dict, at: Location) -> (u32, u32) {
+        let file = self.cx.file;
+        let mut spans = (1, 1);
+        let Some(a) = entry(d, b"A") else {
+            return spans;
+        };
+        let attrs = match file.deref(a) {
+            Object::Array(v) => v.as_slice(),
+            _ => std::slice::from_ref(a),
+        };
+        for o in attrs {
+            let o_at = o.as_ref().map_or(at, Location::Object);
+            let attr = match file.deref(o) {
+                Object::Dict(d) => d,
+                Object::Stream(s) => &s.dict,
+                Object::Int(_) | Object::Null => continue,
+                _ => {
+                    self.cx.bad(at);
+                    continue;
+                }
+            };
+            if entry(attr, b"O")
+                .map(|o| file.deref(o))
+                .and_then(Object::as_name)
+                != Some(b"Table")
+            {
+                continue;
+            }
+            for (key, span) in [(&b"RowSpan"[..], &mut spans.0), (b"ColSpan", &mut spans.1)] {
+                let Some(v) = entry(attr, key) else { continue };
+                match file
+                    .deref(v)
+                    .as_int()
+                    .and_then(|n| u32::try_from(n).ok())
+                    .filter(|&n| n > 0)
+                {
+                    Some(n) => *span = n,
+                    None => self.cx.bad(o_at),
+                }
+            }
+        }
+        spans
     }
 
     /// Follows `/RoleMap` from `role` until a name is not mapped. A broken chain leaves `role`
