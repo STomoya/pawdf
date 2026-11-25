@@ -230,16 +230,17 @@ impl<'a> Walk<'a> {
         let Some(a) = entry(d, b"A") else {
             return spans;
         };
-        let attrs = match file.deref(a) {
-            Object::Array(v) => v.as_slice(),
-            _ => std::slice::from_ref(a),
+        let (attrs, in_array) = match file.deref(a) {
+            Object::Array(v) => (v.as_slice(), true),
+            _ => (std::slice::from_ref(a), false),
         };
         for o in attrs {
             let o_at = o.as_ref().map_or(at, Location::Object);
             let attr = match file.deref(o) {
                 Object::Dict(d) => d,
                 Object::Stream(s) => &s.dict,
-                Object::Int(_) | Object::Null => continue,
+                Object::Null => continue,
+                Object::Int(_) if in_array => continue,
                 _ => {
                     self.cx.bad(o_at);
                     continue;

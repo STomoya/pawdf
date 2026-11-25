@@ -510,15 +510,19 @@ fn table_spans_from_attribute_dict_or_array() {
 fn bad_table_span_is_reported() {
     let t = tree(&[
         obj(10, "<< /K 11 0 R >>"),
-        obj(11, "<< /S /Table /P 10 0 R /K [12 0 R 13 0 R] >>"),
+        obj(11, "<< /S /Table /P 10 0 R /K [12 0 R 13 0 R 16 0 R] >>"),
         obj(
             12,
             "<< /S /TD /P 11 0 R /A << /O /Table /RowSpan 0 /ColSpan (x) >> >>",
         ),
-        obj(13, "<< /S /TD /P 11 0 R /A [14 0 R /Junk 15 0 R] >>"),
+        obj(16, "<< /S /TD /P 11 0 R /A 42 >>"),
+        obj(13, "<< /S /TD /P 11 0 R /A [14 0 R /Junk 15 0 R null] >>"),
         obj(14, "<< /O /Table /ColSpan 4294967296 >>"),
         obj(15, "(not a dict)"),
     ]);
-    assert_eq!(t.diagnostics, [bad(12), bad(12), bad(14), bad(13), bad(15)]);
-    assert_eq!(spans(&t), [(1, 1), (1, 1)]);
+    assert_eq!(
+        t.diagnostics,
+        [bad(12), bad(12), bad(14), bad(13), bad(15), bad(16)]
+    );
+    assert_eq!(spans(&t), [(1, 1), (1, 1), (1, 1)]);
 }
