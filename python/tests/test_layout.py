@@ -99,6 +99,7 @@ def test_text_in_regions() -> None:
     words = [[w.text for b in lay.blocks for ln in b.lines for w in ln.words] for lay in layouts]
     assert words == [['cd'], ['ab'], []]
     assert all(lay.diagnostics[0].kind == 'unbalanced_restore' for lay in layouts)
+    assert layouts[0].diagnostics[0] is layouts[2].diagnostics[0]
     with pytest.raises(ValueError, match='regions'):
         pawdf.layout.text_in_regions(page, [(0, float('nan'), 1, 1)])
 

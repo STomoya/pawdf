@@ -1294,17 +1294,27 @@ fn block(py: Python<'_>, b: layout::Block) -> PyResult<Block> {
     })
 }
 
-fn layout_result(py: Python<'_>, read: Vec<r::Diagnostic>, l: layout::Layout) -> PyResult<Layout> {
+/// The page's reading diagnostics as Python objects, built once and shared by every layout
+/// of the page.
+fn shared_diagnostics(py: Python<'_>, read: Vec<r::Diagnostic>) -> PyResult<Vec<Py<Diagnostic>>> {
+    read.into_iter()
+        .map(|d| Py::new(py, Diagnostic(d)))
+        .collect()
+}
+
+fn layout_result(py: Python<'_>, read: &[Py<Diagnostic>], l: layout::Layout) -> PyResult<Layout> {
     let blocks = l
         .blocks
         .into_iter()
         .map(|b| Py::new(py, block(py, b)?))
         .collect::<PyResult<Vec<_>>>()?;
-    let mut diags = read;
-    diags.extend(l.diagnostics);
+    let mut diags: Vec<_> = read.iter().map(|d| d.clone_ref(py)).collect();
+    for d in l.diagnostics {
+        diags.push(Py::new(py, Diagnostic(d))?);
+    }
     Ok(Layout {
         blocks: PyList::new(py, blocks)?.unbind(),
-        diagnostics: diagnostics(py, diags)?,
+        diagnostics: PyList::new(py, diags)?.unbind(),
     })
 }
 
@@ -1338,7 +1348,7 @@ fn layout_pdfminer(
         (content.diagnostics, result)
     });
     let l = result.map_err(|e| PyValueError::new_err(e.to_string()))?;
-    layout_result(py, read, l)
+    layout_result(py, &shared_diagnostics(py, read)?, l)
 }
 
 /// Groups the glyphs in each display-space region on their own, with pdfminer.six's
@@ -1383,9 +1393,10 @@ fn layout_text_in_regions(
         (content.diagnostics, result)
     });
     let layouts = result.map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let read = shared_diagnostics(py, read)?;
     layouts
         .into_iter()
-        .map(|l| layout_result(py, read.clone(), l))
+        .map(|l| layout_result(py, &read, l))
         .collect()
 }
 
@@ -1491,6 +1502,7 @@ fn layout_tables_tagged(
     let tables = result.map_err(|e| PyValueError::new_err(e.to_string()))?;
     let mut read = read;
     read.extend_from_slice(&tree.diagnostics);
+    let read = shared_diagnostics(py, read)?;
     tables
         .into_iter()
         .map(|t| {
@@ -1507,7 +1519,7 @@ fn layout_tables_tagged(
                             col_span: c.col_span,
                             header: c.header,
                             bbox: c.bbox.map(rect),
-                            layout: Py::new(py, layout_result(py, read.clone(), c.layout)?)?,
+                            layout: Py::new(py, layout_result(py, &read, c.layout)?)?,
                         },
                     )
                 })
