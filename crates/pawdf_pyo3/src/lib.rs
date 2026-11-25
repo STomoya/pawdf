@@ -957,6 +957,8 @@ struct StructTree {
     roots: Py<PyList>,
     #[pyo3(get)]
     diagnostics: Py<PyList>,
+    /// Kept for `layout_tables_tagged`, so the tree is not converted back from Python.
+    tree: r::StructTree,
 }
 
 #[pymethods]
@@ -1387,6 +1389,139 @@ fn layout_text_in_regions(
         .collect()
 }
 
+/// A table on one page.
+#[pyclass(frozen, module = "pawdf._core")]
+struct Table {
+    #[pyo3(get)]
+    bbox: Rect4,
+    #[pyo3(get)]
+    rows: usize,
+    #[pyo3(get)]
+    cols: usize,
+    #[pyo3(get)]
+    cells: Py<PyList>,
+}
+
+#[pymethods]
+impl Table {
+    fn __repr__(&self, py: Python<'_>) -> String {
+        format!(
+            "Table(rows={}, cols={}, cells={})",
+            self.rows,
+            self.cols,
+            self.cells.bind(py).len()
+        )
+    }
+}
+
+/// One table cell.
+#[pyclass(frozen, module = "pawdf._core")]
+struct Cell {
+    #[pyo3(get)]
+    row: usize,
+    #[pyo3(get)]
+    col: usize,
+    #[pyo3(get)]
+    row_span: usize,
+    #[pyo3(get)]
+    col_span: usize,
+    #[pyo3(get)]
+    header: bool,
+    #[pyo3(get)]
+    bbox: Option<Rect4>,
+    #[pyo3(get)]
+    layout: Py<Layout>,
+}
+
+#[pymethods]
+impl Cell {
+    fn __repr__(&self) -> String {
+        format!(
+            "Cell(row={}, col={}, row_span={}, col_span={}, header={})",
+            self.row,
+            self.col,
+            self.row_span,
+            self.col_span,
+            if self.header { "True" } else { "False" }
+        )
+    }
+}
+
+/// The tables of a page in a tagged PDF, from the structure tree. Releases the GIL while
+/// reading and analyzing.
+#[pyfunction]
+#[pyo3(signature = (page, tree, region=None, *, line_overlap=0.5, char_margin=2.0, line_margin=0.5, word_margin=0.1, boxes_flow=Some(0.5), detect_vertical=false))]
+#[allow(clippy::too_many_arguments)]
+fn layout_tables_tagged(
+    py: Python<'_>,
+    page: &Bound<'_, Page>,
+    tree: &Bound<'_, StructTree>,
+    region: Option<Rect4>,
+    line_overlap: f64,
+    char_margin: f64,
+    line_margin: f64,
+    word_margin: f64,
+    boxes_flow: Option<f64>,
+    detect_vertical: bool,
+) -> PyResult<Vec<Table>> {
+    let params = layout::pdfminer::Params {
+        line_overlap,
+        char_margin,
+        line_margin,
+        word_margin,
+        boxes_flow,
+        detect_vertical,
+    };
+    let region = region.map(|(x0, y0, x1, y1)| r::Rect { x0, y0, x1, y1 });
+    let (p, tree) = (&page.get().0, &tree.get().tree);
+    let (read, result) = py.detach(|| {
+        let content = p.content();
+        let result = layout::table::tagged(
+            &content,
+            tree,
+            p.index(),
+            p.media_box(),
+            p.rotate(),
+            &p.display_matrix(),
+            region,
+            &params,
+        );
+        (content.diagnostics, result)
+    });
+    let tables = result.map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let mut read = read;
+    read.extend_from_slice(&tree.diagnostics);
+    tables
+        .into_iter()
+        .map(|t| {
+            let cells = t
+                .cells
+                .into_iter()
+                .map(|c| {
+                    Py::new(
+                        py,
+                        Cell {
+                            row: c.row,
+                            col: c.col,
+                            row_span: c.row_span,
+                            col_span: c.col_span,
+                            header: c.header,
+                            bbox: c.bbox.map(rect),
+                            layout: Py::new(py, layout_result(py, read.clone(), c.layout)?)?,
+                        },
+                    )
+                })
+                .collect::<PyResult<Vec<_>>>()?;
+            Ok(Table {
+                bbox: rect(t.bbox),
+                rows: t.rows,
+                cols: t.cols,
+                cells: PyList::new(py, cells)?.unbind(),
+            })
+        })
+        .collect()
+}
+
 /// One page of a document.
 #[pyclass(frozen, module = "pawdf._core")]
 struct Page(r::Page);
@@ -1624,12 +1759,14 @@ impl Document {
         let t = py.detach(|| self.0.structure_tree());
         let roots = t
             .roots
-            .into_iter()
+            .iter()
+            .cloned()
             .map(|e| Py::new(py, struct_element(py, e)?))
             .collect::<PyResult<Vec<_>>>()?;
         Ok(StructTree {
             roots: PyList::new(py, roots)?.unbind(),
-            diagnostics: diagnostics(py, t.diagnostics)?,
+            diagnostics: diagnostics(py, t.diagnostics.clone())?,
+            tree: t,
         })
     }
 
@@ -1654,10 +1791,11 @@ impl Document {
 mod _core {
     #[pymodule_export]
     use super::{
-        Annotation, Annotations, Block, Color, Destination, Diagnostic, Document, EncryptedError,
-        Encryption, FontInfo, FormField, FormFields, Glyph, Image, Layout, Line, MarkedContent,
-        MarkedContentRef, ObjectRef, Outline, OutlineItem, Page, PageContent, PasswordError, Path,
-        PdfError, Permissions, SoftMask, StructElement, StructTree, UnsupportedEncryptionError,
-        Widget, Word, layout_pdfminer, layout_text_in_regions,
+        Annotation, Annotations, Block, Cell, Color, Destination, Diagnostic, Document,
+        EncryptedError, Encryption, FontInfo, FormField, FormFields, Glyph, Image, Layout, Line,
+        MarkedContent, MarkedContentRef, ObjectRef, Outline, OutlineItem, Page, PageContent,
+        PasswordError, Path, PdfError, Permissions, SoftMask, StructElement, StructTree, Table,
+        UnsupportedEncryptionError, Widget, Word, layout_pdfminer, layout_tables_tagged,
+        layout_text_in_regions,
     };
 }
