@@ -88,3 +88,16 @@ def test_rotated_page_boxes_are_upright() -> None:
     assert 0 <= x0 < x1 <= height
     assert 0 <= y0 < y1 <= width
     assert x0 == pytest.approx(200 - 2)
+
+
+def test_text_in_regions() -> None:
+    """Each display-space region gets its own layout, in the order given."""
+    page = _page(b'Q BT /F1 10 Tf 100 200 Td (ab cd) Tj ET')
+    split = page.content().glyphs[3].bbox[0]
+    left, right = (0, 0, split, 792), (split, 0, 612, 792)
+    layouts = pawdf.layout.text_in_regions(page, [right, left, (0, 0, 1, 1)])
+    words = [[w.text for b in lay.blocks for ln in b.lines for w in ln.words] for lay in layouts]
+    assert words == [['cd'], ['ab'], []]
+    assert all(lay.diagnostics[0].kind == 'unbalanced_restore' for lay in layouts)
+    with pytest.raises(ValueError, match='regions'):
+        pawdf.layout.text_in_regions(page, [(0, float('nan'), 1, 1)])

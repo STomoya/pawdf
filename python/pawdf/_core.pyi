@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from typing import Literal, TypeAlias, final
 
 Matrix: TypeAlias = tuple[float, float, float, float, float, float]
@@ -753,4 +754,49 @@ def layout_pdfminer(
 
     Raises:
         ValueError: If a setting is not finite, or ``boxes_flow`` is outside [-1, 1].
+    """
+
+def layout_text_in_regions(
+    page: Page,
+    regions: Sequence[Rect],
+    *,
+    line_overlap: float = 0.5,
+    char_margin: float = 2.0,
+    line_margin: float = 0.5,
+    word_margin: float = 0.1,
+    boxes_flow: float | None = 0.5,
+    detect_vertical: bool = False,
+) -> list[Layout]:
+    """Group the glyphs in each region on their own, with pdfminer.six's layout algorithm.
+
+    Meant for boxes from an external detector, such as table cells: text from neighbouring
+    regions never shares a line, as it can when the whole page is grouped at once.
+
+    Regions are ``(x0, y0, x1, y1)`` in display space (see ``Page.display_matrix``): the origin
+    is the top-left of the rotated crop box and y points down, in points. A box from an image
+    rendered at ``dpi`` maps to it by dividing by ``dpi / 72``. Corners may come in either order.
+    A glyph belongs to a region when its box's centre is inside it; the right and bottom edges
+    are excluded, so regions that share an edge never share a glyph.
+
+    Result boxes are in pdfminer's upright page space, as for ``layout_pdfminer``, not in display
+    space. Each layout's diagnostics hold the recoveries made while reading the page, then those
+    made grouping that region. Settings are as for ``layout_pdfminer``. Releases the GIL while
+    reading and analyzing.
+
+    Args:
+        page: The page to read.
+        regions: Boxes in display space.
+        line_overlap: As for ``layout_pdfminer``.
+        char_margin: As for ``layout_pdfminer``.
+        line_margin: As for ``layout_pdfminer``.
+        word_margin: As for ``layout_pdfminer``.
+        boxes_flow: As for ``layout_pdfminer``.
+        detect_vertical: As for ``layout_pdfminer``.
+
+    Returns:
+        One layout per region, in the order given.
+
+    Raises:
+        ValueError: If a region is not finite, a setting is not finite, or ``boxes_flow`` is
+            outside [-1, 1].
     """
