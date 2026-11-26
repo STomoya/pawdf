@@ -999,7 +999,8 @@ def layout_tables_borderless(
     between the text and a loose region don't become empty rows and columns; neighbouring rows or
     columns meet halfway across the gap. Every cell spans one row and one column.
 
-    Without a region, the table spans the column groups, and a table of one cell is left out.
+    Without a region, the table spans the column groups and needs a row that overlaps them; a
+    table of one cell is left out.
     With a ``region``, the extent of a table in display space with corners in either order, only
     words that overlap it count, the region is the table's box, and one table is always returned.
     Words that overlap the region are kept whole.

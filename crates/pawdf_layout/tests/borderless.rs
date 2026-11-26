@@ -286,3 +286,41 @@ fn bad_settings_are_rejected() {
         })
     );
 }
+
+#[test]
+fn hidden_glyph_in_a_gap_keeps_no_empty_row() {
+    let mut g = three_by_three();
+    let mut hidden = glyph("x", 20., 30.);
+    hidden.hidden = true;
+    g.push(hidden);
+    let [t] = &tables(&page(g), None)[..] else {
+        panic!("one table expected");
+    };
+    assert_eq!((t.rows, t.cols), (3, 3));
+    assert_eq!(t.cells[0].bbox, Some(r(20., 20., 80., 35.)));
+}
+
+#[test]
+fn degenerate_region_is_one_cell() {
+    let [t] = &tables(&page(three_by_three()), Some((10., 10., 10., 50.)))[..] else {
+        panic!("one table expected");
+    };
+    assert_eq!((t.rows, t.cols), (1, 1));
+    assert_eq!((t.cells[0].row_span, t.cells[0].col_span), (1, 1));
+}
+
+#[test]
+fn qualifying_row_outside_the_columns_makes_no_table() {
+    let mut g = Vec::new();
+    for y in [20., 40., 60.] {
+        g.extend(word("a", 20., y));
+        g.extend(word("b", 80., y + 10.));
+    }
+    g.extend(word("cc", 200., 200.));
+    g.extend(word("dd", 260., 200.));
+    let align = BorderlessParams {
+        min_words_horizontal: 2,
+        ..BorderlessParams::default()
+    };
+    assert_eq!(find_with(&page(g), None, &align).tables, []);
+}

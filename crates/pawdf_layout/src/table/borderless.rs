@@ -6,7 +6,7 @@ use std::cmp::Reverse;
 
 use pawdf_reader::{Matrix, PageContent, Rect, Rotation};
 
-use super::{Tables, centres, finish, grid, overlaps, placed, slot, union, whole, words};
+use super::{Grid, GridCell, Tables, centres, finish, overlaps, placed, slot, union, whole, words};
 use crate::Error;
 use crate::pdfminer::{self, Params};
 
@@ -52,7 +52,8 @@ impl Default for BorderlessParams {
 /// rows or columns meet halfway across the gap between them. Every cell spans one row and one
 /// column.
 ///
-/// Without a region, the table spans the column groups, and a table of one cell is left out.
+/// Without a region, the table spans the column groups and needs a row that overlaps them; a
+/// table of one cell is left out.
 /// With a `region`, the extent of a table, only words that overlap it count, the region is the
 /// table's box, and one table is always returned. Words that overlap the region are kept whole:
 /// each of their glyphs goes to the cell containing its centre after the centre is moved inside
@@ -93,10 +94,9 @@ pub fn borderless(
     let rows = rows(&boxes, align.min_words_horizontal);
     let extent = match region {
         Some(r) => r,
-        None if rows.is_empty() => return none(Vec::new()),
         None => match cols.iter().copied().reduce(|a, b| union(&a, &b)) {
-            Some(c) => c,
-            None => return none(Vec::new()),
+            Some(c) if rows.iter().any(|r| overlaps(r, &c)) => c,
+            _ => return none(Vec::new()),
         },
     };
     let col_right = cols.iter().map(|c| c.x1).fold(f64::NEG_INFINITY, f64::max);
@@ -129,14 +129,23 @@ pub fn borderless(
     if region.is_none() && ncols * nrows == 1 {
         return none(Vec::new());
     }
-    let cells: Vec<Rect> = ys
+    // Built directly rather than by `grid`, which would merge the equal bounds of a degenerate
+    // region and leave a table with no rows or columns.
+    let cells: Vec<GridCell> = ys
         .windows(2)
-        .flat_map(|y| {
-            xs.windows(2).map(move |x| Rect {
-                x0: x[0],
-                y0: y[0],
-                x1: x[1],
-                y1: y[1],
+        .enumerate()
+        .flat_map(|(row, y)| {
+            xs.windows(2).enumerate().map(move |(col, x)| GridCell {
+                rect: Rect {
+                    x0: x[0],
+                    y0: y[0],
+                    x1: x[1],
+                    y1: y[1],
+                },
+                row,
+                col,
+                row_span: 1,
+                col_span: 1,
             })
         })
         .collect();
@@ -144,11 +153,17 @@ pub fn borderless(
     for (g, p) in placed(extent, &centres, &whole) {
         sets[slot(&ys, p.y) * ncols + slot(&xs, p.x)].push(g);
     }
+    let grid = Grid {
+        bbox: extent,
+        xs,
+        ys,
+        cells,
+    };
     Ok(finish(
         content,
         media_box,
         rotate,
-        vec![grid(&cells)],
+        vec![grid],
         &sets,
         params,
     ))

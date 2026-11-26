@@ -146,11 +146,19 @@ fn grid(cells: &[Rect]) -> Grid {
     }
 }
 
-fn centres(content: &PageContent, display: &Matrix) -> Vec<Point> {
+/// Each glyph's centre in display space; `None` for a hidden glyph or a non-finite box, which
+/// pdfminer leaves out of every cell.
+fn centres(content: &PageContent, display: &Matrix) -> Vec<Option<Point>> {
     content
         .glyphs
         .iter()
-        .map(|g| pdfminer::centre(display, &g.bbox))
+        .map(|g| {
+            if g.hidden || !finite(&g.bbox) {
+                return None;
+            }
+            let p = pdfminer::centre(display, &g.bbox);
+            (p.x.is_finite() && p.y.is_finite()).then_some(p)
+        })
         .collect()
 }
 
@@ -199,18 +207,18 @@ fn whole(words: &[(Rect, Vec<usize>)], region: Option<Rect>, n: usize) -> Vec<bo
 /// whole.
 fn placed<'a>(
     bbox: Rect,
-    centres: &'a [Point],
+    centres: &'a [Option<Point>],
     whole: &'a [bool],
 ) -> impl Iterator<Item = (usize, Point)> + 'a {
     centres
         .iter()
         .zip(whole)
         .enumerate()
-        .filter(move |(_, (p, w))| {
+        .filter_map(move |(g, (p, w))| {
+            let p = (*p)?;
             let inside = bbox.x0 <= p.x && p.x < bbox.x1 && bbox.y0 <= p.y && p.y < bbox.y1;
-            (inside || **w) && p.x.is_finite() && p.y.is_finite()
+            (inside || *w).then_some((g, p))
         })
-        .map(|(g, (p, _))| (g, *p))
 }
 
 /// The band of sorted `bounds` holding `at`; a value outside goes to the nearest band.
