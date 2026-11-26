@@ -149,6 +149,32 @@ def test_tables_tagged() -> None:
         pawdf.layout.tables_tagged(page, t, (float('nan'), 0, 1, 1))
 
 
+def test_tables_borderless() -> None:
+    """Aligned words give a grid of cells with their text; a region becomes the table's box."""
+    rows = [(b'ab', b'cd'), (b'ef', b'gh'), (b'ij', b'kl')]
+    text = b' '.join(
+        b'1 0 0 1 20 %d Tm (%s) Tj 1 0 0 1 120 %d Tm (%s) Tj' % (y, a, y, b)
+        for y, (a, b) in zip((700, 680, 660), rows, strict=True)
+    )
+    page = _page(b'BT /F1 10 Tf ' + text + b' ET')
+    [table] = pawdf.layout.tables_borderless(page).tables
+    assert (table.rows, table.cols) == (3, 2)
+    got = [(c.row, c.col, c.header, c.layout.blocks[0].text) for c in table.cells]
+    assert got == [
+        (0, 0, False, 'ab'),
+        (0, 1, False, 'cd'),
+        (1, 0, False, 'ef'),
+        (1, 1, False, 'gh'),
+        (2, 0, False, 'ij'),
+        (2, 1, False, 'kl'),
+    ]
+    [boxed] = pawdf.layout.tables_borderless(page, (300, 150, 10, 80)).tables
+    assert boxed.bbox == pytest.approx((10, 80, 300, 150))
+    assert pawdf.layout.tables_borderless(page, min_words_vertical=4).tables == []
+    with pytest.raises(OverflowError):
+        pawdf.layout.tables_borderless(page, min_words_vertical=-1)
+
+
 def test_tables_ruled() -> None:
     """A ruled grid gives cells with their rectangles and text; reading diagnostics come first."""
     rules = b' '.join(

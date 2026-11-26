@@ -1622,6 +1622,54 @@ fn layout_tables_ruled(
     tables_result(py, read, t)
 }
 
+/// The table laid out by a page's text alone. Releases the GIL while reading and analyzing.
+#[pyfunction]
+#[pyo3(signature = (page, region=None, *, min_words_vertical=3, min_words_horizontal=1, line_overlap=0.5, char_margin=2.0, line_margin=0.5, word_margin=0.1, boxes_flow=Some(0.5), detect_vertical=false))]
+#[allow(clippy::too_many_arguments)]
+fn layout_tables_borderless(
+    py: Python<'_>,
+    page: &Bound<'_, Page>,
+    region: Option<Rect4>,
+    min_words_vertical: usize,
+    min_words_horizontal: usize,
+    line_overlap: f64,
+    char_margin: f64,
+    line_margin: f64,
+    word_margin: f64,
+    boxes_flow: Option<f64>,
+    detect_vertical: bool,
+) -> PyResult<Tables> {
+    let params = layout::pdfminer::Params {
+        line_overlap,
+        char_margin,
+        line_margin,
+        word_margin,
+        boxes_flow,
+        detect_vertical,
+    };
+    let align = layout::table::BorderlessParams {
+        min_words_vertical,
+        min_words_horizontal,
+    };
+    let region = region.map(|(x0, y0, x1, y1)| r::Rect { x0, y0, x1, y1 });
+    let p = &page.get().0;
+    let (read, result) = py.detach(|| {
+        let content = p.content();
+        let result = layout::table::borderless(
+            &content,
+            p.media_box(),
+            p.rotate(),
+            &p.display_matrix(),
+            region,
+            &align,
+            &params,
+        );
+        (content.diagnostics, result)
+    });
+    let t = result.map_err(|e| PyValueError::new_err(e.to_string()))?;
+    tables_result(py, read, t)
+}
+
 /// One page of a document.
 #[pyclass(frozen, module = "pawdf._core")]
 struct Page(r::Page);
@@ -1895,7 +1943,8 @@ mod _core {
         EncryptedError, Encryption, FontInfo, FormField, FormFields, Glyph, Image, Layout, Line,
         MarkedContent, MarkedContentRef, ObjectRef, Outline, OutlineItem, Page, PageContent,
         PasswordError, Path, PdfError, Permissions, SoftMask, StructElement, StructTree, Table,
-        Tables, UnsupportedEncryptionError, Widget, Word, layout_pdfminer, layout_tables_ruled,
-        layout_tables_tagged, layout_text_in_regions,
+        Tables, UnsupportedEncryptionError, Widget, Word, layout_pdfminer,
+        layout_tables_borderless, layout_tables_ruled, layout_tables_tagged,
+        layout_text_in_regions,
     };
 }
