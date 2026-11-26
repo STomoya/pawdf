@@ -41,7 +41,8 @@ while 1
   continue
 end
 GDB
-(sleep 0.5; while pkill -USR1 -x pawdf_bench; do sleep 0.02; done) &
+(for _ in $(seq 100); do pgrep -x pawdf_bench >/dev/null && break; sleep 0.05; done; \
+ while pkill -USR1 -x pawdf_bench; do sleep 0.02; done) &
 REPS=30 gdb -batch -x /tmp/sample.gdb --args target/profiling/pawdf_bench stages file.pdf \
   </dev/null 2>/dev/null | grep '^#0' | sed -E 's/^#0 +(0x[0-9a-f]+ in )?//; s/ \(.*//' \
   | sort | uniq -c | sort -rn | head -30

@@ -27,15 +27,25 @@ fn median(mut v: Vec<Duration>) -> Duration {
     v[v.len() / 2]
 }
 
-/// Median wall time of `REPS` runs of `f`, its result kept from being optimized away.
-fn time<T>(mut f: impl FnMut() -> Res<T>) -> Res<Duration> {
+/// Median wall time of `REPS` runs of `f` on a fresh `setup()` value. Neither the setup nor
+/// dropping the result is timed; the result is kept from being optimized away.
+fn time_with<S, T>(
+    mut setup: impl FnMut() -> Res<S>,
+    mut f: impl FnMut(S) -> Res<T>,
+) -> Res<Duration> {
     let mut v = Vec::new();
     for _ in 0..reps() {
+        let s = setup()?;
         let t = Instant::now();
-        black_box(f()?);
+        let r = black_box(f(s)?);
         v.push(t.elapsed());
+        drop(r);
     }
     Ok(median(v))
+}
+
+fn time<T>(mut f: impl FnMut() -> Res<T>) -> Res<Duration> {
+    time_with(|| Ok(()), |()| f())
 }
 
 /// Every page with its content, interpreted once up front so later stages time only themselves.
@@ -90,7 +100,10 @@ fn content_refs(f: &File, page: &Object) -> Vec<Ref> {
 fn run(mode: &str, data: &[u8]) -> Res<String> {
     let doc = || Document::from_bytes(data.to_vec());
     Ok(match mode {
-        "open" => format!("open {:?}", time(|| Ok(doc()?))?),
+        "open" => format!(
+            "open {:?}",
+            time_with(|| Ok(data.to_vec()), |v| Ok(Document::from_bytes(v)?))?
+        ),
         "resolve" => {
             // The first pass parses every object; the second is all cache hits.
             let (mut cold, mut warm, mut n) = (vec![], vec![], 0);
@@ -180,13 +193,15 @@ fn run(mode: &str, data: &[u8]) -> Res<String> {
         }
         "firstcontent" => {
             // A fresh document each run, so font loading is included.
-            let d = time(|| {
-                let d = doc()?;
-                for i in 0..d.page_count() {
-                    black_box(d.page(i)?.content());
-                }
-                Ok(())
-            })?;
+            let d = time_with(
+                || Ok(doc()?),
+                |d| {
+                    for i in 0..d.page_count() {
+                        black_box(d.page(i)?.content());
+                    }
+                    Ok(d)
+                },
+            )?;
             format!("content {d:?}")
         }
         "flow" => {
