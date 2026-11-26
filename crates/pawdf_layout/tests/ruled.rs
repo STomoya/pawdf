@@ -447,3 +447,114 @@ fn column_of_crossings_hits_the_work_limit() {
     assert_eq!(got.diagnostics.len(), 1);
     assert_eq!(got.diagnostics[0].kind, DiagnosticKind::LayoutLimit);
 }
+
+#[test]
+fn fill_closes_open_subpaths() {
+    // Neither subpath is closed: the fill adds the right side (at the second `m`) and the middle
+    // rule (at the end). The diagonals are ignored.
+    let mut frame = path(vec![
+        Segment::MoveTo(pt(110., 10.)),
+        Segment::LineTo(pt(10., 10.)),
+        Segment::LineTo(pt(10., 50.)),
+        Segment::LineTo(pt(110., 50.)),
+        Segment::MoveTo(pt(10., 30.)),
+        Segment::LineTo(pt(60., 40.)),
+        Segment::LineTo(pt(110., 30.)),
+    ]);
+    frame.stroke = false;
+    frame.fill = Some(FillRule::NonZero);
+    let got = tables(&page(vec![frame, line(60., 10., 60., 50.)], abcd()), None);
+    assert_eq!((got[0].rows, got[0].cols), (2, 2));
+}
+
+#[test]
+fn snapping_equal_positions_keeps_them_exact() {
+    // Summing pos / 11 eleven times gives 29.999999999999996 and 50.00000000000001, which the
+    // verticals ending at exactly 30 and 50 would miss with no intersection tolerance.
+    let mut paths = vec![];
+    for _ in 0..11 {
+        paths.push(line(10., 30., 110., 30.));
+        paths.push(line(10., 50., 110., 50.));
+    }
+    paths.extend([
+        line(10., 30., 10., 50.),
+        line(60., 30., 60., 50.),
+        line(110., 30., 110., 50.),
+    ]);
+    let params = RuledParams {
+        intersection_tolerance: 0.,
+        ..RuledParams::default()
+    };
+    let got = ruled(
+        &page(paths, vec![]),
+        MEDIA,
+        Rotation::R0,
+        &DISPLAY,
+        None,
+        &params,
+        &Params::default(),
+    )
+    .unwrap();
+    assert_eq!(got.tables[0].bbox, r(10., 30., 110., 50.));
+}
+
+#[test]
+fn infinite_clip_bound_hides_the_path() {
+    // 0 × -inf makes the clip's display y range NaN while its x range stays usable, so the
+    // vertical at x = 60 would otherwise escape clipping along y.
+    let mut paths = two_by_two();
+    paths[4].clip = Some(r(f64::NEG_INFINITY, 250., 300., 270.));
+    let got = tables(&page(paths, abcd()), None);
+    assert_eq!(grid(&got[0]).len(), 2);
+}
+
+#[test]
+fn edge_touching_the_region_from_outside_is_dropped() {
+    // The vertical at x = 61 only touches the region's bottom; it must not pull the one at
+    // x = 60 toward it when snapping.
+    let mut paths = two_by_two();
+    paths.push(line(61., 50., 61., 80.));
+    let got = tables(&page(paths, abcd()), Some((10., 10., 110., 50.)));
+    assert_eq!(got[0].cells[0].bbox, Some(r(10., 10., 60., 30.)));
+}
+
+#[test]
+fn collinear_pieces_at_crossings_stay_cheap() {
+    // Unjoined collinear pieces all reach the crossings near them, so each crossing lists every
+    // piece many times over; comparing those lists must stay within the work limit.
+    let p = |x: f64, y: f64| Point { x, y };
+    let mut segs = vec![];
+    for i in 0..250 {
+        let o = i as f64 * 2.;
+        for c in [0., 100_000.] {
+            segs.extend([
+                Segment::MoveTo(p(c, o)),
+                Segment::LineTo(p(c, o + 1.)),
+                Segment::MoveTo(p(c, 100_000. + o)),
+                Segment::LineTo(p(c, 100_000. + o + 1.)),
+                Segment::MoveTo(p(o, c)),
+                Segment::LineTo(p(o + 1., c)),
+                Segment::MoveTo(p(100_000. + o, c)),
+                Segment::LineTo(p(100_000. + o + 1., c)),
+            ]);
+        }
+    }
+    let params = RuledParams {
+        snap_tolerance: 0.,
+        join_tolerance: 0.,
+        edge_min_length: 0.,
+        intersection_tolerance: 1000.,
+    };
+    let got = ruled(
+        &page(vec![path(segs)], vec![]),
+        MEDIA,
+        Rotation::R0,
+        &DISPLAY,
+        None,
+        &params,
+        &Params::default(),
+    )
+    .unwrap();
+    assert!(got.tables.is_empty());
+    assert_eq!(got.diagnostics, []);
+}

@@ -2,6 +2,7 @@
 //! `TableFinder` (`pdfplumber/table.py`) and its default tolerances; results are not meant to
 //! match pdfplumber's exactly, as its edges come from pdfminer's path objects.
 
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
@@ -217,16 +218,19 @@ fn edges(content: &PageContent, display: &Matrix) -> (Vec<Edge>, Vec<Edge>) {
     let (mut h, mut v) = (Vec::new(), Vec::new());
     for p in content.paths.iter().filter(|p| !p.hidden) {
         let clip_box = p.clip.map(|c| display.transform_rect(c));
-        if clip_box.is_some_and(|c| c.x0 >= c.x1 || c.y0 >= c.y1) {
+        if clip_box.is_some_and(|c| !(c.x0 < c.x1 && c.y0 < c.y1)) {
             continue;
         }
         let (mut start, mut last) = (None, None);
-        for s in &p.segments {
-            let seg = match *s {
+        // Filling implicitly closes every open subpath (ISO 32000-2 §8.5.3.3.1).
+        let fill_close = p.fill.map(|_| Segment::Close);
+        for s in p.segments.iter().copied().chain(fill_close) {
+            let seg = match s {
                 Segment::MoveTo(q) => {
+                    let close = p.fill.and(last.zip(start));
                     start = Some(q);
                     last = Some(q);
-                    None
+                    close
                 }
                 Segment::LineTo(q) => last.replace(q).map(|a| (a, q)),
                 Segment::CurveTo(_, _, q) => {
@@ -288,7 +292,7 @@ fn edges(content: &PageContent, display: &Matrix) -> (Vec<Edge>, Vec<Edge>) {
 fn clip(e: &mut Edge, across: (f64, f64), along: (f64, f64)) -> bool {
     e.start = e.start.max(along.0);
     e.end = e.end.min(along.1);
-    (across.0..=across.1).contains(&e.pos) && e.start <= e.end
+    (across.0..=across.1).contains(&e.pos) && e.start < e.end
 }
 
 /// pdfplumber's `merge_edges` then `filter_edges`: snaps, joins, and drops short edges.
@@ -301,9 +305,17 @@ fn merge(mut edges: Vec<Edge>, p: &RuledParams) -> Vec<Edge> {
             j += 1;
         }
         let n = (j - i) as f64;
-        // Dividing first keeps the mean finite near f64::MAX; `+ 0.0` turns -0.0 into 0.0, so
-        // positions compare and hash alike.
-        let mean = edges[i..j].iter().map(|e| e.pos / n).sum::<f64>() + 0.0;
+        // Dividing first keeps the sum finite in most cases, and clamping to the cluster's range
+        // catches the rest and the rounding drift that would move equal positions; `+ 0.0` turns
+        // -0.0 into 0.0, so positions compare and hash alike.
+        let (lo, hi) = (edges[i].pos, edges[j - 1].pos);
+        let mean = edges[i..j]
+            .iter()
+            .map(|e| e.pos / n)
+            .sum::<f64>()
+            .max(lo)
+            .min(hi)
+            + 0.0;
         for e in &mut edges[i..j] {
             e.pos = mean;
         }
@@ -332,8 +344,18 @@ fn key(x: f64, y: f64) -> Key {
 /// The edges through a crossing: indices of horizontal edges, then of vertical ones.
 type Crossings = HashMap<Key, (Vec<usize>, Vec<usize>)>;
 
-fn shares(a: &[usize], b: &[usize]) -> bool {
-    a.iter().any(|i| b.contains(i))
+/// Whether two sorted index lists share an entry; each comparison is charged to `work`.
+fn shares(a: &[usize], b: &[usize], work: &mut u64) -> bool {
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() && j < b.len() {
+        *work += 1;
+        match a[i].cmp(&b[j]) {
+            Ordering::Less => i += 1,
+            Ordering::Greater => j += 1,
+            Ordering::Equal => return true,
+        }
+    }
+    false
 }
 
 /// Cells as rectangles between crossings (pdfplumber's `intersections_to_cells`), grouped into
@@ -355,6 +377,12 @@ fn find_tables(h: &[Edge], v: &[Edge], tol: f64) -> Option<Vec<Vec<Rect>>> {
                 c.1.push(vi);
             }
         }
+    }
+    // Unjoined collinear edges can meet at one crossing and push the same index many times.
+    for (hs, vs) in crossings.values_mut() {
+        hs.sort_unstable();
+        hs.dedup();
+        vs.dedup();
     }
     let mut points: Vec<(f64, f64)> = crossings
         .keys()
@@ -388,7 +416,7 @@ fn find_tables(h: &[Edge], v: &[Edge], tol: f64) -> Option<Vec<Vec<Rect>>> {
             if work > MAX_WORK {
                 return None;
             }
-            let Some(down) = edges_at(x, by).filter(|d| shares(&here.1, &d.1)) else {
+            let Some(down) = edges_at(x, by).filter(|d| shares(&here.1, &d.1, &mut work)) else {
                 continue;
             };
             for &rx in right {
@@ -396,12 +424,13 @@ fn find_tables(h: &[Edge], v: &[Edge], tol: f64) -> Option<Vec<Vec<Rect>>> {
                 if work > MAX_WORK {
                     return None;
                 }
-                let Some(across) = edges_at(rx, y).filter(|a| shares(&here.0, &a.0)) else {
+                let Some(across) = edges_at(rx, y).filter(|a| shares(&here.0, &a.0, &mut work))
+                else {
                     continue;
                 };
-                if edges_at(rx, by)
-                    .is_some_and(|c| shares(&c.1, &across.1) && shares(&c.0, &down.0))
-                {
+                if edges_at(rx, by).is_some_and(|c| {
+                    shares(&c.1, &across.1, &mut work) && shares(&c.0, &down.0, &mut work)
+                }) {
                     cells.push(Rect {
                         x0: x,
                         y0: y,
