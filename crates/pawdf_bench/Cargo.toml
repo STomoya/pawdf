@@ -1,0 +1,10 @@
+[package]
+name = "pawdf_bench"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+pawdf_core = { workspace = true }
+pawdf_reader = { workspace = true }
+pawdf_layout = { workspace = true }
