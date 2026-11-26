@@ -4,7 +4,8 @@ members = [
   "crates/pawdf_core",
   "crates/pawdf_reader",
   "crates/pawdf_layout",
-  "crates/pawdf_pyo3"
+  "crates/pawdf_pyo3",
+  "crates/pawdf_bench"
 ]
 
 [workspace.package]
@@ -24,3 +25,8 @@ stringprep = "0.1.5"
 pawdf_core = { path = "crates/pawdf_core" }
 pawdf_reader = { path = "crates/pawdf_reader" }
 pawdf_layout = { path = "crates/pawdf_layout" }
+
+# Release with symbols, for timing and stack sampling (crates/pawdf_bench).
+[profile.profiling]
+inherits = "release"
+debug = true
