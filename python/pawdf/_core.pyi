@@ -808,6 +808,19 @@ def layout_text_in_regions(
     """
 
 @final
+class Tables:
+    """The tables found on one page."""
+
+    @property
+    def tables(self) -> list[Table]:
+        """Tables, in the order of the detection function."""
+    @property
+    def diagnostics(self) -> list[Diagnostic]:
+        """Recoveries made while reading the page (and, for ``layout_tables_tagged``, the tree), then
+        those made by table detection. A cell layout holds only those made grouping its text.
+        """
+
+@final
 class Table:
     """A table on one page."""
 
@@ -816,13 +829,13 @@ class Table:
         """Union of its cells' boxes, in display space."""
     @property
     def rows(self) -> int:
-        """Rows of the whole table, including rows on other pages."""
+        """Rows of the whole table; for a tagged table, including rows on other pages."""
     @property
     def cols(self) -> int:
-        """Columns of the whole table: the widest row, counting spans."""
+        """Columns of the whole table, counting spans."""
     @property
     def cells(self) -> list[Cell]:
-        """Cells of the rows on this page, row by row."""
+        """Its cells on this page, row by row."""
 
 @final
 class Cell:
@@ -830,22 +843,24 @@ class Cell:
 
     @property
     def row(self) -> int:
-        """0-based row in the whole table, so parts of a table split across pages line up."""
+        """0-based row in the whole table; for a tagged table split across pages, the parts line up."""
     @property
     def col(self) -> int:
         """0-based column."""
     @property
     def row_span(self) -> int:
-        """Rows it spans, clipped to the table's last row."""
+        """Rows it spans."""
     @property
     def col_span(self) -> int:
         """Columns it spans."""
     @property
     def header(self) -> bool:
-        """Whether it is a header cell (``TH``)."""
+        """Whether it is a header cell (``TH``); always false for a ruled table."""
     @property
     def bbox(self) -> Rect | None:
-        """Union of its glyphs' boxes on this page, in display space; ``None`` when it has none."""
+        """In display space. A tagged cell's is the union of its glyphs' boxes on this page, ``None``
+        when it has none; a ruled cell's is the rectangle its lines enclose.
+        """
     @property
     def layout(self) -> Layout:
         """Its text, grouped with pdfminer.six's algorithm, with boxes in pdfminer's page space."""
@@ -861,7 +876,7 @@ def layout_tables_tagged(
     word_margin: float = 0.1,
     boxes_flow: float | None = 0.5,
     detect_vertical: bool = False,
-) -> list[Table]:
+) -> Tables:
     """Read the tables of a page in a tagged PDF from its structure tree.
 
     Tables are the ``Table`` elements of ``tree``, in tree order; a table nested in a cell is
@@ -875,9 +890,8 @@ def layout_tables_tagged(
 
     Boxes are in display space, as for ``layout_text_in_regions``, so a cell box can be passed to
     it. With a ``region``, also in display space with corners in either order, only tables whose
-    box overlaps it are returned. Each cell layout's diagnostics hold the recoveries made while
-    reading the page and the tree, then those made grouping that cell. Settings are as for
-    ``layout_pdfminer``. Releases the GIL while reading and analyzing.
+    box overlaps it are returned. Settings are as for ``layout_pdfminer``. Releases the GIL while
+    reading and analyzing.
 
     Args:
         page: The page to read.
@@ -891,9 +905,68 @@ def layout_tables_tagged(
         detect_vertical: As for ``layout_pdfminer``.
 
     Returns:
-        The page's tables, in tree order.
+        The page's tables, in tree order, and the diagnostics.
 
     Raises:
         ValueError: If the region is not finite, a setting is not finite, or ``boxes_flow`` is
             outside [-1, 1].
+    """
+
+def layout_tables_ruled(
+    page: Page,
+    region: Rect | None = None,
+    *,
+    snap_tolerance: float = 3.0,
+    join_tolerance: float = 3.0,
+    edge_min_length: float = 3.0,
+    intersection_tolerance: float = 3.0,
+    line_overlap: float = 0.5,
+    char_margin: float = 2.0,
+    line_margin: float = 0.5,
+    word_margin: float = 0.1,
+    boxes_flow: float | None = 0.5,
+    detect_vertical: bool = False,
+) -> Tables:
+    """Find the tables drawn with ruling lines on a page, top to bottom, then left to right.
+
+    Follows the "lines" strategy of pdfplumber and its default tolerances, without matching its
+    results exactly. Every visible painted path gives edges: its horizontal and vertical straight
+    segments, including the sides of filled rectangles, so a thin filled bar acts as a rule and a
+    shaded cell has borders. Curves are skipped. Edges are snapped, joined and filtered by length;
+    cells are the smallest rectangles whose four corners are crossings joined by edges. Cells that
+    share a corner form a table; a table of one cell is left out.
+
+    With a ``region``, the extent of a table in display space with corners in either order, edges
+    are clipped to it and its border is added, so a table ruled only between rows still gets its
+    frame. The table that starts at the region's top-left corner is returned, even with one cell.
+    Words that overlap the region are kept whole.
+
+    A glyph belongs to the cell containing its box's centre; at a shared edge it goes to the cell
+    to the right or below. Rows and columns come from the cells' distinct edges, so a merged cell
+    gets a span. Boxes are in display space, as for ``layout_text_in_regions``. A page whose
+    edges need too much work gets no tables and a ``layout_limit`` diagnostic. Settings other
+    than the tolerances are as for ``layout_pdfminer``. Releases the GIL while reading and
+    analyzing.
+
+    Args:
+        page: The page to read.
+        region: The extent of a table, in display space.
+        snap_tolerance: Parallel edges this close, in points, are moved to their mean position.
+        join_tolerance: Collinear edges with a gap up to this, in points, are joined.
+        edge_min_length: Edges shorter than this after joining, in points, are dropped.
+        intersection_tolerance: A horizontal and a vertical edge cross when each comes this close
+            to the other, in points.
+        line_overlap: As for ``layout_pdfminer``.
+        char_margin: As for ``layout_pdfminer``.
+        line_margin: As for ``layout_pdfminer``.
+        word_margin: As for ``layout_pdfminer``.
+        boxes_flow: As for ``layout_pdfminer``.
+        detect_vertical: As for ``layout_pdfminer``.
+
+    Returns:
+        The page's tables and the diagnostics.
+
+    Raises:
+        ValueError: If the region is not finite, a tolerance is negative or not finite, a setting
+            is not finite, or ``boxes_flow`` is outside [-1, 1].
     """

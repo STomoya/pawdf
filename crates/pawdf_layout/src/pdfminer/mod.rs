@@ -165,19 +165,27 @@ pub fn analyze_regions(
                 .collect()
         })
         .collect();
-    Ok(analyze_sets(content, media_box, rotate, &sets, params))
+    let (layouts, read) = analyze_sets(content, media_box, rotate, &sets, params);
+    Ok(layouts
+        .into_iter()
+        .map(|mut l| {
+            l.diagnostics.splice(0..0, read.iter().cloned());
+            l
+        })
+        .collect())
 }
 
 /// Groups each set of glyph indices on its own, one [`Layout`] per set. Indices of hidden
 /// glyphs, of non-finite boxes, or past the page's glyphs are left out. `params` must be
-/// validated.
+/// validated. Diagnostics from selecting the page's glyphs are returned once, not in each
+/// layout.
 pub(crate) fn analyze_sets(
     content: &PageContent,
     media_box: Rect,
     rotate: Rotation,
     sets: &[Vec<usize>],
     params: &Params,
-) -> Vec<Layout> {
+) -> (Vec<Layout>, Vec<Diagnostic>) {
     let (m, bound) = input::page_space(media_box, rotate);
     let mut diagnostics = Vec::new();
     let chars = input::select(content, &m, &mut diagnostics);
@@ -185,19 +193,21 @@ pub(crate) fn analyze_sets(
     for (i, c) in chars.iter().enumerate() {
         at[c.glyph] = Some(i);
     }
-    sets.iter()
+    let layouts = sets
+        .iter()
         .map(|set| {
             let mut idx: Vec<usize> = set.iter().filter_map(|&g| *at.get(g)?).collect();
             idx.sort_unstable();
             idx.dedup();
             let inside: Vec<_> = idx.iter().map(|&i| chars[i].clone()).collect();
-            group(&inside, bound, params, diagnostics.clone())
+            group(&inside, bound, params, Vec::new())
         })
-        .collect()
+        .collect();
+    (layouts, diagnostics)
 }
 
 /// Halves before adding, so corners near `f64::MAX` don't overflow.
-fn centre(display: &Matrix, b: &Rect) -> Point {
+pub(crate) fn centre(display: &Matrix, b: &Rect) -> Point {
     display.apply(Point {
         x: b.x0 * 0.5 + b.x1 * 0.5,
         y: b.y0 * 0.5 + b.y1 * 0.5,

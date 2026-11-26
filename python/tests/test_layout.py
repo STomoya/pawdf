@@ -123,7 +123,10 @@ def test_tables_tagged() -> None:
     )
     doc = pawdf.Document(_pdf(content, FONT_RES, extra=tree, catalog_extra=b'/StructTreeRoot 6 0 R'))
     page, t = doc[0], doc.structure_tree()
-    [table] = pawdf.layout.tables_tagged(page, t)
+    found = pawdf.layout.tables_tagged(page, t)
+    assert found.diagnostics == []
+    assert repr(found) == 'Tables(tables=1, diagnostics=0)'
+    [table] = found.tables
     assert (table.rows, table.cols) == (2, 3)
     got = [(c.row, c.col, c.row_span, c.col_span, c.header, c.layout.blocks[0].text) for c in table.cells]
     assert got == [
@@ -140,7 +143,31 @@ def test_tables_tagged() -> None:
     assert repr(table) == 'Table(rows=2, cols=3, cells=4)'
     assert repr(table.cells[0]) == 'Cell(row=0, col=0, row_span=1, col_span=1, header=True)'
     assert table.cells[0].layout.diagnostics == []
-    assert pawdf.layout.tables_tagged(page, t, (0, 0, 50, 50)) == []
-    assert len(pawdf.layout.tables_tagged(page, t, (150, 150, 0, 0))) == 1
+    assert pawdf.layout.tables_tagged(page, t, (0, 0, 50, 50)).tables == []
+    assert len(pawdf.layout.tables_tagged(page, t, (150, 150, 0, 0)).tables) == 1
     with pytest.raises(ValueError, match='region'):
         pawdf.layout.tables_tagged(page, t, (float('nan'), 0, 1, 1))
+
+
+def test_tables_ruled() -> None:
+    """A ruled grid gives cells with their rectangles and text; reading diagnostics come first."""
+    rules = b' '.join(
+        [b'%d %d m %d %d l' % (10, y, 110, y) for y in (790, 770, 750)]
+        + [b'%d %d m %d %d l' % (x, 790, x, 750) for x in (10, 60, 110)]
+    )
+    text = b'BT /F1 10 Tf 20 776 Td (ab) Tj 50 0 Td (cd) Tj -50 -20 Td (ef) Tj 50 0 Td (gh) Tj ET'
+    page = _page(rules + b' S ' + text + b' Q')
+    found = pawdf.layout.tables_ruled(page)
+    assert found.diagnostics[0].kind == 'unbalanced_restore'
+    [table] = found.tables
+    assert (table.rows, table.cols) == (2, 2)
+    assert table.bbox == pytest.approx((10, 2, 110, 42))
+    got = [(c.row, c.col, c.header, c.layout.blocks[0].text) for c in table.cells]
+    assert got == [(0, 0, False, 'ab'), (0, 1, False, 'cd'), (1, 0, False, 'ef'), (1, 1, False, 'gh')]
+    assert table.cells[3].bbox == pytest.approx((60, 22, 110, 42))
+    assert table.cells[0].layout.diagnostics == []
+    [one] = pawdf.layout.tables_ruled(page, (10, 2, 60, 22)).tables
+    assert [c.layout.blocks[0].text for c in one.cells] == ['ab']
+    assert pawdf.layout.tables_ruled(page, snap_tolerance=0).tables != []
+    with pytest.raises(ValueError, match='snap_tolerance'):
+        pawdf.layout.tables_ruled(page, snap_tolerance=-1)
