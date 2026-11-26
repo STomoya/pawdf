@@ -855,11 +855,12 @@ class Cell:
         """Columns it spans."""
     @property
     def header(self) -> bool:
-        """Whether it is a header cell (``TH``); always false for a ruled table."""
+        """Whether it is a header cell (``TH``); always false for a ruled or borderless table."""
     @property
     def bbox(self) -> Rect | None:
         """In display space. A tagged cell's is the union of its glyphs' boxes on this page, ``None``
-        when it has none; a ruled cell's is the rectangle its lines enclose.
+        when it has none; a ruled cell's is the rectangle its lines enclose; a borderless cell's
+        is its band of the grid.
         """
     @property
     def layout(self) -> Layout:
@@ -969,4 +970,64 @@ def layout_tables_ruled(
     Raises:
         ValueError: If the region is not finite, a tolerance is negative or not finite, a setting
             is not finite, or ``boxes_flow`` is outside [-1, 1].
+    """
+
+def layout_tables_borderless(
+    page: Page,
+    region: Rect | None = None,
+    *,
+    min_words_vertical: int = 3,
+    min_words_horizontal: int = 1,
+    line_overlap: float = 0.5,
+    char_margin: float = 2.0,
+    line_margin: float = 0.5,
+    word_margin: float = 0.1,
+    boxes_flow: float | None = 0.5,
+    detect_vertical: bool = False,
+) -> Tables:
+    """Infer the table laid out by a page's text alone, for tables drawn without ruling lines.
+
+    Follows the "text" strategy of pdfplumber and its defaults, without matching its results
+    exactly. Weaker than ``layout_tables_ruled``: without a ``region`` it reads any page with
+    aligned words as a table, ordinary paragraphs included, so call it only when a table is
+    expected.
+
+    Column boundaries are the lefts of groups of at least ``min_words_vertical`` words whose
+    lefts, rights or centres line up, plus the right of the rightmost group. Each group of at
+    least ``min_words_horizontal`` words sharing a top is a row, bounded by its top and bottom.
+    Bands of this grid holding no glyph are merged away, so the gaps between rows and the space
+    between the text and a loose region don't become empty rows and columns; neighbouring rows or
+    columns meet halfway across the gap. Every cell spans one row and one column.
+
+    Without a region, the table spans the column groups, and a table of one cell is left out.
+    With a ``region``, the extent of a table in display space with corners in either order, only
+    words that overlap it count, the region is the table's box, and one table is always returned.
+    Words that overlap the region are kept whole.
+
+    A glyph belongs to the cell containing its box's centre; at a shared edge it goes to the cell
+    to the right or below. Boxes are in display space, as for ``layout_text_in_regions``. A page
+    whose words need too much work, or whose table would have too many cells, gets no tables and
+    a ``layout_limit`` diagnostic. Other settings are as for ``layout_pdfminer``. Releases the
+    GIL while reading and analyzing.
+
+    Args:
+        page: The page to read.
+        region: The extent of a table, in display space.
+        min_words_vertical: Words that must share a left, right or centre to make a column
+            boundary.
+        min_words_horizontal: Words that must share a top to make a row.
+        line_overlap: As for ``layout_pdfminer``.
+        char_margin: As for ``layout_pdfminer``.
+        line_margin: As for ``layout_pdfminer``.
+        word_margin: As for ``layout_pdfminer``.
+        boxes_flow: As for ``layout_pdfminer``.
+        detect_vertical: As for ``layout_pdfminer``.
+
+    Returns:
+        The page's table, if any, and the diagnostics.
+
+    Raises:
+        ValueError: If the region is not finite, a setting is not finite, or ``boxes_flow`` is
+            outside [-1, 1].
+        OverflowError: If a word count is negative.
     """

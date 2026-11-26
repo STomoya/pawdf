@@ -6,9 +6,9 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
-use pawdf_reader::{Matrix, PageContent, Point, Rect, Rotation, Segment};
+use pawdf_reader::{Matrix, PageContent, Rect, Rotation, Segment};
 
-use super::{Cell, Table, Tables, overlaps, union};
+use super::{Tables, centres, finish, grid, placed, slot, whole, words};
 use crate::Error;
 use crate::pdfminer::{self, Params};
 
@@ -130,32 +130,12 @@ pub fn ruled(
             diagnostics: Vec::new(),
         });
     }
-    let centres: Vec<Point> = content
-        .glyphs
-        .iter()
-        .map(|g| pdfminer::centre(display, &g.bbox))
-        .collect();
-    let mut whole = vec![false; content.glyphs.len()];
-    if let Some(r) = region {
-        for w in pdfminer::analyze(content, media_box, rotate, params)?
-            .blocks
-            .iter()
-            .flat_map(|b| &b.lines)
-            .flat_map(|l| &l.words)
-        {
-            let b = w
-                .glyphs
-                .iter()
-                .filter_map(|&g| content.glyphs.get(g))
-                .map(|g| display.transform_rect(g.bbox))
-                .reduce(|a, b| union(&a, &b));
-            if b.is_some_and(|b| overlaps(&b, &r)) {
-                for &g in &w.glyphs {
-                    whole[g] = true;
-                }
-            }
-        }
-    }
+    let centres = centres(content, display);
+    let words = match region {
+        Some(_) => words(content, media_box, rotate, display, params)?,
+        None => Vec::new(),
+    };
+    let whole = whole(&words, region, centres.len());
     let tables: Vec<_> = grids.iter().map(|g| grid(g)).collect();
     let mut sets = Vec::new();
     for t in &tables {
@@ -163,17 +143,7 @@ pub fn ruled(
         sets.resize(first + t.cells.len(), Vec::new());
         // ponytail: every table scans every glyph and every cell, O(glyphs × cells); index
         // the slots if pages with huge ruled tables get slow.
-        for (g, p) in centres.iter().enumerate() {
-            let inside = t.bbox.x0 <= p.x && p.x < t.bbox.x1 && t.bbox.y0 <= p.y && p.y < t.bbox.y1;
-            if !(inside || whole[g]) || !p.x.is_finite() || !p.y.is_finite() {
-                continue;
-            }
-            let slot = |bounds: &[f64], at: f64| {
-                bounds
-                    .partition_point(|&b| b <= at)
-                    .clamp(1, bounds.len() - 1)
-                    - 1
-            };
+        for (g, p) in placed(t.bbox, &centres, &whole) {
             let (row, col) = (slot(&t.ys, p.y), slot(&t.xs, p.x));
             if let Some(i) = t.cells.iter().position(|c| {
                 (c.row..c.row + c.row_span).contains(&row)
@@ -183,34 +153,7 @@ pub fn ruled(
             }
         }
     }
-    let (layouts, diagnostics) = pdfminer::analyze_sets(content, media_box, rotate, &sets, params);
-    let mut layouts = layouts.into_iter();
-    let tables = tables
-        .into_iter()
-        .map(|t| Table {
-            bbox: t.bbox,
-            rows: t.ys.len() - 1,
-            cols: t.xs.len() - 1,
-            cells: t
-                .cells
-                .into_iter()
-                .zip(layouts.by_ref())
-                .map(|(c, layout)| Cell {
-                    row: c.row,
-                    col: c.col,
-                    row_span: c.row_span,
-                    col_span: c.col_span,
-                    header: false,
-                    bbox: Some(c.rect),
-                    layout,
-                })
-                .collect(),
-        })
-        .collect();
-    Ok(Tables {
-        tables,
-        diagnostics,
-    })
+    Ok(finish(content, media_box, rotate, tables, &sets, params))
 }
 
 /// Horizontal and vertical edges of the visible paths, in display space.
@@ -495,62 +438,4 @@ fn group(cells: Vec<Rect>) -> Vec<Vec<Rect>> {
         a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1))
     });
     tables
-}
-
-struct Grid {
-    bbox: Rect,
-    xs: Vec<f64>,
-    ys: Vec<f64>,
-    cells: Vec<GridCell>,
-}
-
-struct GridCell {
-    rect: Rect,
-    row: usize,
-    col: usize,
-    row_span: usize,
-    col_span: usize,
-}
-
-/// Rows and columns from the cells' distinct edges; cells sorted by row, then column.
-fn grid(cells: &[Rect]) -> Grid {
-    let bounds = |f: &dyn Fn(&Rect) -> [f64; 2]| {
-        let mut b: Vec<f64> = cells.iter().flat_map(f).collect();
-        b.sort_by(f64::total_cmp);
-        b.dedup();
-        b
-    };
-    let xs = bounds(&|c| [c.x0, c.x1]);
-    let ys = bounds(&|c| [c.y0, c.y1]);
-    let at = |b: &[f64], v: f64| b.partition_point(|&x| x < v);
-    let mut out: Vec<GridCell> = cells
-        .iter()
-        .map(|&rect| {
-            let (row, col) = (at(&ys, rect.y0), at(&xs, rect.x0));
-            GridCell {
-                rect,
-                row,
-                col,
-                row_span: at(&ys, rect.y1) - row,
-                col_span: at(&xs, rect.x1) - col,
-            }
-        })
-        .collect();
-    out.sort_by_key(|c| (c.row, c.col));
-    let bbox = cells
-        .iter()
-        .copied()
-        .reduce(|a, b| union(&a, &b))
-        .unwrap_or(Rect {
-            x0: 0.,
-            y0: 0.,
-            x1: 0.,
-            y1: 0.,
-        });
-    Grid {
-        bbox,
-        xs,
-        ys,
-        cells: out,
-    }
 }
